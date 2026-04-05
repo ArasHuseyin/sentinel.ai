@@ -1,7 +1,6 @@
 import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
-import { GeminiService } from '../utils/gemini.js';
-import type { SchemaInput } from '../utils/gemini.js';
+import type { LLMProvider, SchemaInput } from '../utils/llm-provider.js';
 import { z } from 'zod';
 
 const MAX_PAGE_TEXT_CHARS = 8000;
@@ -10,7 +9,7 @@ export class ExtractionEngine {
   constructor(
     private page: Page,
     private stateParser: StateParser,
-    private gemini: GeminiService
+    private gemini: LLMProvider
   ) {}
 
   async extract<T>(instruction: string, schema: SchemaInput<T>): Promise<T> {

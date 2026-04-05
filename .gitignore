@@ -28,4 +28,12 @@ playwright/.cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-whatsapp-aom-debug.json
+*.log
+*-debug.json
+
+# Session & Runtime
+sessions/
+logs/
+
+# Coverage
+coverage/

@@ -1,6 +1,6 @@
 import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
-import { GeminiService } from '../utils/gemini.js';
+import type { LLMProvider } from '../utils/llm-provider.js';
 
 export interface ObserveResult {
   description: string;
@@ -13,7 +13,7 @@ export class ObservationEngine {
   constructor(
     private page: Page,
     private stateParser: StateParser,
-    private gemini: GeminiService
+    private gemini: LLMProvider
   ) {}
 
   async observe(instruction?: string): Promise<ObserveResult[]> {
