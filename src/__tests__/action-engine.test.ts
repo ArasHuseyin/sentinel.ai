@@ -1,6 +1,7 @@
 import { jest, describe, it, expect } from '@jest/globals';
 import { ActionEngine } from '../api/act.js';
 import type { SimplifiedState } from '../core/state-parser.js';
+import type { LLMProvider } from '../utils/llm-provider.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -66,9 +67,9 @@ function makeMockLLM(decision: {
   action: string;
   value?: string;
   reasoning: string;
-}) {
+}): LLMProvider {
   return {
-    generateStructuredData: jest.fn(async () => decision),
+    generateStructuredData: jest.fn(async () => decision) as any,
     generateText: jest.fn(async () => ''),
   };
 }
@@ -109,7 +110,7 @@ describe('ActionEngine', () => {
     await engine.act('Fill %email% into the email field', { variables: { email: 'user@test.com' } });
 
     // The prompt passed to LLM should contain the resolved value
-    const promptArg: string = (llm.generateStructuredData as jest.Mock).mock.calls[0][0];
+    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     expect(promptArg).toContain('user@test.com');
     expect(promptArg).not.toContain('%email%');
   });
@@ -173,7 +174,7 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click submit');
 
-    const promptArg: string = (llm.generateStructuredData as jest.Mock).mock.calls[0][0];
+    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     expect(promptArg).toContain('https://shop.example.com');
     expect(promptArg).toContain('My Shop');
   });

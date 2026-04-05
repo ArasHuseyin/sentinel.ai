@@ -85,6 +85,17 @@ export class StateParser {
       uiElements.push(element);
     }
 
+    // DOM-Snapshot als Fallback wenn AOM zu wenige Elemente liefert (z.B. SPAs wie WhatsApp)
+    if (uiElements.length < 5) {
+      const domElements = await this.parseDOMSnapshot();
+      const existingNames = new Set(uiElements.map(e => e.name));
+      for (const el of domElements) {
+        if (!existingNames.has(el.name)) {
+          uiElements.push(el);
+        }
+      }
+    }
+
     const state: SimplifiedState = {
       url: this.page.url(),
       title: await this.page.title(),
@@ -94,6 +105,64 @@ export class StateParser {
     this.cachedState = state;
     this.cacheTimestamp = Date.now();
     return state;
+  }
+
+  private async parseDOMSnapshot(): Promise<UIElement[]> {
+    const rawElements = await this.page.evaluate(() => {
+      const results: any[] = [];
+      const seen = new Set<string>();
+
+      const candidates = Array.from(document.querySelectorAll(
+        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick]'
+      ));
+
+      const MAX_ELEMENTS = 200;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+
+      for (const el of candidates) {
+        if (results.length >= MAX_ELEMENTS) break;
+        const htmlEl = el as HTMLElement;
+        const rect = htmlEl.getBoundingClientRect();
+
+        if (rect.width < 5 || rect.height < 5) continue;
+        if (rect.top < 0 || rect.left < 0) continue;
+        if (rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
+
+        const name =
+          htmlEl.getAttribute('aria-label') ||
+          htmlEl.getAttribute('title') ||
+          htmlEl.getAttribute('data-testid') ||
+          htmlEl.getAttribute('placeholder') ||
+          htmlEl.textContent?.trim().slice(0, 80) ||
+          '';
+
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          tag: htmlEl.tagName.toLowerCase(),
+          role: htmlEl.getAttribute('role') || htmlEl.tagName.toLowerCase(),
+          name,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+
+      return results;
+    });
+
+    return rawElements.map((el: any) => ({
+      id: this.elementCounter++,
+      role: el.role,
+      name: el.name,
+      boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
+    }));
   }
 
   private isInteractive(node: any): boolean {

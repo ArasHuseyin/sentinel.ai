@@ -1,6 +1,7 @@
 import { jest, describe, it, expect } from '@jest/globals';
 import { Verifier } from '../reliability/verifier.js';
 import type { SimplifiedState } from '../core/state-parser.js';
+import type { LLMProvider } from '../utils/llm-provider.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -13,9 +14,9 @@ function makeState(overrides: Partial<SimplifiedState> = {}): SimplifiedState {
   };
 }
 
-function makeMockLLM(response: { success: boolean; confidence: number; explanation: string }) {
+function makeMockLLM(response: { success: boolean; confidence: number; explanation: string }): LLMProvider {
   return {
-    generateStructuredData: jest.fn(async () => response),
+    generateStructuredData: jest.fn(async () => response) as any,
     generateText: jest.fn(async () => ''),
   };
 }
@@ -82,7 +83,7 @@ describe('Verifier', () => {
 
     await verifier.verifyAction('Fill in email', before, after);
 
-    const promptArg: string = (llm.generateStructuredData as jest.Mock).mock.calls[0][0];
+    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     expect(promptArg).toContain('Fill in email');
     expect(promptArg).toContain('Before Page');
     expect(promptArg).toContain('After Page');

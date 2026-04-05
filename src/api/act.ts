@@ -2,6 +2,7 @@ import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
 import type { UIElement } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
+import type { VisionGrounding } from '../core/vision-grounding.js';
 
 export interface ActOptions {
   variables?: Record<string, string>;
@@ -47,7 +48,8 @@ export class ActionEngine {
   constructor(
     private page: Page,
     private stateParser: StateParser,
-    private gemini: LLMProvider
+    private gemini: LLMProvider,
+    private visionGrounding?: VisionGrounding
   ) {}
 
   async act(instruction: string, options?: ActOptions): Promise<ActionResult> {
@@ -136,6 +138,33 @@ export class ActionEngine {
         action: actionLabel,
       };
     } catch (primaryError: any) {
+      // Vision-Grounding als zweite Stufe (nur wenn aktiviert)
+      if (this.visionGrounding && target) {
+        try {
+          const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
+          const screenshot = await this.visionGrounding.takeScreenshot(this.page);
+          const bbox = await this.visionGrounding.findElement(
+            `${decision.action} on "${target.name}"`,
+            screenshot,
+            viewport.width,
+            viewport.height
+          );
+          if (bbox) {
+            const cx = bbox.x + bbox.width / 2;
+            const cy = bbox.y + bbox.height / 2;
+            await this.page.mouse.click(cx, cy);
+            await waitForPageSettle(this.page);
+            return {
+              success: true,
+              message: `Successfully performed ${decision.action} on "${target.name}" (via Vision Grounding)`,
+              action: actionLabel,
+            };
+          }
+        } catch (visionError: any) {
+          console.warn(`[Act] Vision fallback failed: ${visionError.message}`);
+        }
+      }
+
       console.warn(`[Act] Primary action failed, trying semantic fallback... (${primaryError.message})`);
       try {
         await this.performSemanticFallback(decision.action, target, decision.value);

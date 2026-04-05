@@ -43,6 +43,7 @@ function makeMockPage(url = 'https://example.com', title = 'Example') {
   return {
     url: () => url,
     title: jest.fn(async () => title),
+    evaluate: jest.fn(async () => []),
   };
 }
 

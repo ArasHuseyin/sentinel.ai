@@ -143,14 +143,14 @@ export class Sentinel extends EventEmitter {
     const cdp = this.driver.getCDPSession();
 
     this.stateParser = new StateParser(page, cdp);
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini);
+    if (this.visionFallback) {
+      this.visionGrounding = new VisionGrounding(this.apiKey);
+    }
+    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
     this.agentLoop = new AgentLoop(this.actionEngine, this.stateParser, this.gemini);
-    if (this.visionFallback) {
-      this.visionGrounding = new VisionGrounding(this.apiKey);
-    }
 
     this.log(1, '🚀 Sentinel initialized');
   }
