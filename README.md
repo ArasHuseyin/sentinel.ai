@@ -31,7 +31,7 @@ Set your Gemini API key in your environment or via a `.env` file:
 
 ```env
 GEMINI_API_KEY=your_api_key_here
-GEMINI_VERSION=gemini-2.0-flash # recommended for speed
+GEMINI_VERSION=gemini-3-flash-preview # recommended for speed
 ```
 
 ### 3. Usage
