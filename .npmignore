@@ -1,0 +1,6 @@
+src/
+*.test.ts
+*-test.ts
+demo.ts
+.env
+tsconfig.json
