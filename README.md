@@ -20,7 +20,7 @@ Think of it as a **fast, lightweight, and cost-effective alternative to Stagehan
 ### 1. Installation
 
 ```bash
-npm install @sentineljs/sentinel playwright
+npm install @isoldex/sentinel playwright
 ```
 > [!NOTE] 
 > Playwright is a peer dependency. Make sure to install it alongside Sentinel.
@@ -37,7 +37,7 @@ GEMINI_VERSION=gemini-3-flash-preview # recommended for speed
 ### 3. Usage
 
 ```typescript
-import { Sentinel, z } from '@sentineljs/sentinel';
+import { Sentinel, z } from '@isoldex/sentinel';
 
 async function run() {
   const sentinel = new Sentinel({
