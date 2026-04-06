@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.2.1] - 2026-04-06
+
+### Fixed
+
+- Added `"default"` entry to `exports` field in `package.json` — fixes `ERR_PACKAGE_PATH_NOT_EXPORTED` when importing Sentinel via `tsx` or CJS-based loaders in consumer projects
+
+---
+
+## [2.2.0] - 2026-04-06
+
+### Changed
+
+#### 🔌 Updated LLM Provider Defaults & Documentation
+- `ClaudeProvider` default model updated to `claude-sonnet-4-6`
+- README: Supported Models table updated with current Claude 4.6 models (`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-6`) and latest Gemini models
+- README: Quickstart section clarifies that `.env` is only required for the default Gemini provider and is loaded automatically via `dotenv`
+- Added `llm-providers.test.ts` — test coverage for all four LLM providers (Gemini, OpenAI, Claude, Ollama) including model defaults and README completeness check
+
+---
+
 ## [2.1.0] - 2026-04-06
 
 ### Fixed

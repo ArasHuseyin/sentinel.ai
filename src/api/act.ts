@@ -3,6 +3,7 @@ import { StateParser } from '../core/state-parser.js';
 import type { UIElement } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { VisionGrounding } from '../core/vision-grounding.js';
+import { withTimeout } from '../utils/with-timeout.js';
 
 export interface ActOptions {
   variables?: Record<string, string>;
@@ -36,12 +37,46 @@ function interpolateVariables(instruction: string, variables?: Record<string, st
 }
 
 /**
- * Waits for the page to settle after an action.
+ * Waits for the DOM to stabilise after an action.
+ *
+ * Uses a MutationObserver to detect when the DOM stops changing (300 ms of
+ * silence) rather than `networkidle`, which is unreliable on SPAs that keep
+ * persistent WebSocket / SSE connections open. Falls back gracefully if the
+ * page is in the middle of a navigation (no body) or if the evaluate call
+ * fails for any reason.
+ *
+ * Typical settle time: ~300 ms.  Hard cap: min(timeout, 3 000) ms.
  */
 async function waitForPageSettle(page: Page, timeout = 3000): Promise<void> {
-  await page.waitForLoadState('networkidle', { timeout }).catch(() => {
-    // Page might be a SPA that never fully idles – that is OK
-  });
+  const stabilityMs = 300;
+  const hardCapMs = Math.min(timeout, 3000);
+
+  try {
+    await page.evaluate(
+      ({ stabilityMs, hardCapMs }: { stabilityMs: number; hardCapMs: number }) =>
+        new Promise<void>(resolve => {
+          let timer: ReturnType<typeof setTimeout> = setTimeout(resolve, stabilityMs);
+          const observer = new MutationObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(resolve, stabilityMs);
+          });
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            characterData: true,
+          });
+          // Hard cap – never block longer than this
+          setTimeout(() => {
+            observer.disconnect();
+            resolve();
+          }, hardCapMs);
+        }),
+      { stabilityMs, hardCapMs }
+    );
+  } catch {
+    // Page is navigating, has no body, or the script was interrupted — proceed anyway.
+  }
 }
 
 export class ActionEngine {
@@ -152,7 +187,7 @@ export class ActionEngine {
           if (bbox) {
             const cx = bbox.x + bbox.width / 2;
             const cy = bbox.y + bbox.height / 2;
-            await this.page.mouse.click(cx, cy);
+            await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${target.name}"`);
             await waitForPageSettle(this.page);
             return {
               success: true,
@@ -201,37 +236,77 @@ export class ActionEngine {
     const cx = x + width / 2;
     const cy = y + height / 2;
 
+    // Viewport bounds check: if the element is outside the visible area, the
+    // AOM bounding box is stale or the element hasn't been scrolled into view.
+    // Throw immediately so the semantic fallback (which calls scrollIntoViewIfNeeded)
+    // can handle it — cheaper than a misplaced click.
+    const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
+    if (cx < 0 || cy < 0 || cx > viewport.width || cy > viewport.height) {
+      throw new Error(
+        `Element "${target.name}" is outside viewport at (${cx.toFixed(0)}, ${cy.toFixed(0)}) — triggering scroll fallback`
+      );
+    }
+
     switch (action) {
       case 'click':
-        await this.page.mouse.click(cx, cy);
+        if (target.role === 'radio' || target.role === 'checkbox') {
+          // CSS-styled radio/checkbox inputs are often visually replaced by a
+          // <label> or <div>; the actual <input> is hidden (display:none / opacity:0).
+          // Playwright's mouse.click on invisible inputs is unreliable — use JS instead.
+          await this.page.evaluate(
+            ({ x, y }: { x: number; y: number }) => {
+              const el = document.elementFromPoint(x, y) as HTMLElement | null;
+              if (!el) return;
+              // Case 1: element wraps a hidden <input type="radio|checkbox">
+              const hiddenInput = el.querySelector(
+                'input[type="radio"], input[type="checkbox"]'
+              ) as HTMLInputElement | null;
+              if (hiddenInput) { hiddenInput.click(); return; }
+              // Case 2: element is inside a <label> that controls a hidden input
+              const label = el.closest('label') as HTMLLabelElement | null;
+              if (label) { label.click(); return; }
+              // Case 3: element itself is the best we can do
+              el.click();
+            },
+            { x: cx, y: cy }
+          );
+        } else {
+          await withTimeout(this.page.mouse.click(cx, cy), 10_000, `click "${target.name}"`);
+        }
         break;
 
       case 'double-click':
-        await this.page.mouse.dblclick(cx, cy);
+        await withTimeout(this.page.mouse.dblclick(cx, cy), 10_000, `double-click "${target.name}"`);
         break;
 
       case 'right-click':
-        await this.page.mouse.click(cx, cy, { button: 'right' });
+        await withTimeout(
+          this.page.mouse.click(cx, cy, { button: 'right' }),
+          10_000,
+          `right-click "${target.name}"`
+        );
         break;
 
       case 'fill':
-        await this.page.mouse.click(cx, cy, { clickCount: 3 });
-        await this.page.keyboard.type(value || '');
+        await withTimeout(this.page.mouse.click(cx, cy, { clickCount: 3 }), 10_000, `focus "${target.name}"`);
+        await withTimeout(this.page.keyboard.type(value || ''), 10_000, `type into "${target.name}"`);
         break;
 
       case 'hover':
-        await this.page.mouse.move(cx, cy);
+        await withTimeout(this.page.mouse.move(cx, cy), 10_000, `hover "${target.name}"`);
         break;
 
       case 'press':
-        // Focus the element first, then press the key
-        await this.page.mouse.click(cx, cy);
-        await this.page.keyboard.press(value || 'Enter');
+        await withTimeout(this.page.mouse.click(cx, cy), 10_000, `focus "${target.name}"`);
+        await withTimeout(
+          this.page.keyboard.press(value || 'Enter'),
+          10_000,
+          `press "${value}" on "${target.name}"`
+        );
         break;
 
       case 'select':
-        // Use Playwright's selectOption via coordinate-based locator
-        await this.page.mouse.click(cx, cy);
+        await withTimeout(this.page.mouse.click(cx, cy), 10_000, `open select "${target.name}"`);
         await this.page.evaluate(
           ({ x, y, val }: { x: number; y: number; val: string }) => {
             const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
@@ -281,6 +356,46 @@ export class ActionEngine {
     }
   }
 
+  /**
+   * Tries multiple Playwright locator strategies in order of specificity.
+   * Returns the first locator that resolves to a visible element, or falls
+   * back to the most specific strategy if none is currently visible (e.g.
+   * the element exists but is off-screen and needs scrolling).
+   */
+  private async findBestLocator(target: UIElement) {
+    const strategies = [
+      // 1. Exact ARIA role + exact accessible name (most specific)
+      target.name
+        ? this.page.getByRole(target.role as any, { name: target.name, exact: true })
+        : null,
+      // 2. ARIA role + partial/case-insensitive name match
+      target.name
+        ? this.page.getByRole(target.role as any, { name: target.name })
+        : null,
+      // 3. CSS role attribute + hasText (original strategy)
+      target.name
+        ? this.page.locator(`[role="${target.role}"]`, { hasText: target.name }).first()
+        : this.page.locator(`[role="${target.role}"]`).first(),
+      // 4. Plain text match as last resort
+      target.name
+        ? this.page.getByText(target.name, { exact: false }).first()
+        : null,
+    ].filter((l): l is NonNullable<typeof l> => l !== null);
+
+    for (const locator of strategies) {
+      try {
+        const isVisible = await locator.isVisible({ timeout: 1500 });
+        if (isVisible) return locator;
+      } catch {
+        continue;
+      }
+    }
+
+    // None visible right now — return the most specific strategy anyway.
+    // The caller's scrollIntoViewIfNeeded / click will handle it.
+    return strategies[0]!;
+  }
+
   private async performSemanticFallback(
     action: ActionType,
     target: UIElement | null,
@@ -298,14 +413,21 @@ export class ActionEngine {
 
     if (!target) throw new Error('No target element for semantic fallback: ' + action);
 
-    const locator = this.page.locator(
-      `[role="${target.role}"]`,
-      target.name ? { hasText: target.name } : undefined
-    ).first();
+    const locator = await this.findBestLocator(target);
 
     switch (action) {
       case 'click':
-        await locator.click({ timeout: 5000 });
+        if (target?.role === 'radio' || target?.role === 'checkbox') {
+          // Playwright's check() handles hidden inputs by clicking their label —
+          // more reliable than click() for CSS-styled form controls.
+          try {
+            await locator.check({ timeout: 5000 });
+          } catch {
+            await locator.click({ timeout: 5000 });
+          }
+        } else {
+          await locator.click({ timeout: 5000 });
+        }
         break;
 
       case 'double-click':

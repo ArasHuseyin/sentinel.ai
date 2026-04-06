@@ -38,14 +38,17 @@ function makeMockLocator() {
     scrollIntoViewIfNeeded: jest.fn(async () => {}),
     evaluate: jest.fn(async () => {}),
     boundingBox: jest.fn(async () => ({ x: 10, y: 20, width: 80, height: 30 })),
+    isVisible: jest.fn(async () => true),
     first: jest.fn(() => locator),
   };
   return locator;
 }
 
-function makeMockPage() {
+function makeMockPage(viewportOverride?: { width: number; height: number }) {
+  const locatorInstance = makeMockLocator();
   return {
     url: () => 'https://example.com',
+    viewportSize: jest.fn(() => viewportOverride ?? { width: 1280, height: 720 }),
     waitForLoadState: jest.fn(async () => {}),
     mouse: {
       click: jest.fn(async () => {}),
@@ -58,7 +61,9 @@ function makeMockPage() {
     },
     evaluate: jest.fn(async () => {}),
     waitForTimeout: jest.fn(async () => {}),
-    locator: jest.fn(() => makeMockLocator()),
+    locator: jest.fn(() => locatorInstance),
+    getByRole: jest.fn(() => locatorInstance),
+    getByText: jest.fn(() => locatorInstance),
   };
 }
 
@@ -177,5 +182,54 @@ describe('ActionEngine', () => {
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     expect(promptArg).toContain('https://shop.example.com');
     expect(promptArg).toContain('My Shop');
+  });
+
+  it('falls through to semantic fallback when element is outside viewport', async () => {
+    // Viewport is 200×200 but the element sits at y=500 → out of bounds
+    const page = makeMockPage({ width: 200, height: 200 });
+    const outOfViewportState = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(outOfViewportState);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click the submit button');
+
+    // Primary action (mouse.click) must NOT have been called
+    expect((page.mouse.click as jest.Mock).mock.calls).toHaveLength(0);
+    // Semantic fallback locator click must have been called instead
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    expect(locator.click).toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('via fallback');
+  });
+
+  it('returns failure when both primary and semantic fallback fail', async () => {
+    const locatorInstance = makeMockLocator();
+    const page = {
+      viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
+      waitForLoadState: jest.fn(async () => {}),
+      mouse: { click: jest.fn(async () => { throw new Error('primary failed'); }), dblclick: jest.fn(async () => {}), move: jest.fn(async () => {}) },
+      keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
+      evaluate: jest.fn(async () => {}),
+      waitForTimeout: jest.fn(async () => {}),
+      locator: jest.fn(() => locatorInstance),
+      getByRole: jest.fn(() => locatorInstance),
+      getByText: jest.fn(() => locatorInstance),
+    };
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
+
+    // Make the locator's click fail and isVisible return false (no strategy visible)
+    locatorInstance.click.mockRejectedValue(new Error('fallback failed'));
+    locatorInstance.isVisible.mockResolvedValue(false);
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click submit');
+
+    expect(result.success).toBe(false);
   });
 });

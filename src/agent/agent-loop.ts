@@ -134,6 +134,20 @@ export class AgentLoop {
       } else {
         consecutiveFailures = 0;
       }
+
+      // Instruction-loop detection: same instruction attempted 3 times in a row
+      // (regardless of success/failure) indicates the planner is stuck.
+      const recentHistory = this.memory.getHistory().slice(-3);
+      if (
+        recentHistory.length === 3 &&
+        new Set(recentHistory.map(s => s.instruction)).size === 1
+      ) {
+        console.error(
+          `[Agent] ❌ Aborting: instruction loop detected — ` +
+          `"${recentHistory[0]?.instruction}" repeated 3 times without progress.`
+        );
+        break;
+      }
     }
 
     // 6. Final reflection – did we actually achieve the goal?

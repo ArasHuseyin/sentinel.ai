@@ -38,10 +38,16 @@ npm install @isoldex/sentinel playwright
 
 ### 2. Configuration
 
+Sentinel uses environment variables for the default Gemini provider. Create a `.env` file in your project root:
+
 ```env
 GEMINI_API_KEY=your_api_key_here
-GEMINI_VERSION=gemini-2.0-flash   # recommended for speed
+GEMINI_VERSION=gemini-3-flash-preview   # or: gemini-2.5-pro-preview-05-06
 ```
+
+> **Note:** The `.env` file is only required when using the default Gemini provider. If you pass a custom `provider` (OpenAI, Claude, Ollama), no `.env` is needed.
+
+Sentinel loads `.env` automatically via `dotenv` — no extra setup required.
 
 ### 3. Basic Usage
 
@@ -164,7 +170,20 @@ await sentinel.goto('https://github.com'); // already logged in!
 
 ## 🔌 Multi-LLM Providers
 
-Swap out Gemini for OpenAI, Claude, or a local Ollama model:
+Swap out Gemini for OpenAI, Claude, or a local Ollama model.
+
+### Supported Models
+
+| Provider | Model | Notes |
+|---|---|---|
+| **Gemini** | `gemini-3-flash-preview` | Recommended – fast & cheap |
+| **Gemini** | `gemini-2.5-pro-preview-05-06` | Most capable Gemini model |
+| **OpenAI** | `gpt-4o` | Best OpenAI model for agents |
+| **OpenAI** | `gpt-4o-mini` | Faster, cheaper GPT-4o |
+| **Claude** | `claude-opus-4-6` | Most capable Claude model |
+| **Claude** | `claude-sonnet-4-6` | Balanced speed & quality |
+| **Claude** | `claude-haiku-4-6` | Fastest Claude model |
+| **Ollama** | `llama3.2`, `mistral`, … | Local, no API key needed |
 
 ```typescript
 import { Sentinel, OpenAIProvider, ClaudeProvider, OllamaProvider } from '@isoldex/sentinel';
@@ -178,7 +197,7 @@ const sentinel = new Sentinel({
 // Anthropic Claude
 const sentinel = new Sentinel({
   apiKey: 'gemini-key',
-  provider: new ClaudeProvider({ apiKey: process.env.ANTHROPIC_API_KEY!, model: 'claude-3-5-sonnet-20241022' }),
+  provider: new ClaudeProvider({ apiKey: process.env.ANTHROPIC_API_KEY!, model: 'claude-opus-4-6' }), // or: claude-sonnet-4-6, claude-haiku-4-6
 });
 
 // Local Ollama (no API key needed)

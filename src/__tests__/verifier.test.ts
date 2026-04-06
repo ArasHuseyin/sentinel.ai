@@ -74,18 +74,126 @@ describe('Verifier', () => {
     expect(result.done).toBe(true);
   });
 
-  it('passes action description and both states to LLM prompt', async () => {
+  it('passes action description and page context to LLM prompt', async () => {
+    // Use identical states (same URL, title, elements) so all fast paths are skipped
+    // and the LLM slow path is reached.
     const llm = makeMockLLM({ success: true, confidence: 0.8, explanation: 'Done' });
     const verifier = new Verifier({} as any, {} as any, llm);
 
-    const before = makeState({ title: 'Before Page' });
-    const after = makeState({ title: 'After Page' });
+    const sameState = makeState({ url: 'https://example.com', title: 'Stable Page' });
 
-    await verifier.verifyAction('Fill in email', before, after);
+    await verifier.verifyAction('Fill in email', sameState, sameState);
 
+    expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     expect(promptArg).toContain('Fill in email');
-    expect(promptArg).toContain('Before Page');
-    expect(promptArg).toContain('After Page');
+    expect(promptArg).toContain('Stable Page');
+  });
+
+  // ─── New fast paths ────────────────────────────────────────────────────────
+
+  it('auto-succeeds when page title changes (fast path)', async () => {
+    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const before = makeState({ title: 'Home' });
+    const after = makeState({ title: 'Dashboard' });
+
+    const result = await verifier.verifyAction('Click Dashboard link', before, after);
+
+    expect(result.success).toBe(true);
+    expect(result.confidence).toBe(0.90);
+    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+  });
+
+  it('auto-succeeds when element count increases by more than 3 (fast path)', async () => {
+    const makeElements = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: i,
+        role: 'button',
+        name: `El ${i}`,
+        boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
+      }));
+
+    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const before = makeState({ elements: makeElements(3) });
+    const after  = makeState({ elements: makeElements(8) }); // delta = 5 > 3
+
+    const result = await verifier.verifyAction('Open dropdown', before, after);
+
+    expect(result.success).toBe(true);
+    expect(result.confidence).toBe(0.88);
+    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+  });
+
+  it('auto-succeeds when element count decreases by more than 3 (fast path)', async () => {
+    const makeElements = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: i,
+        role: 'button',
+        name: `El ${i}`,
+        boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
+      }));
+
+    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const before = makeState({ elements: makeElements(8) });
+    const after  = makeState({ elements: makeElements(3) }); // delta = 5 > 3
+
+    const result = await verifier.verifyAction('Close modal', before, after);
+
+    expect(result.success).toBe(true);
+    expect(result.confidence).toBe(0.88);
+    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+  });
+
+  it('falls through to LLM when element delta is exactly 3 (not >3)', async () => {
+    const makeElements = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: i,
+        role: 'button',
+        name: `El ${i}`,
+        boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
+      }));
+
+    const llm = makeMockLLM({ success: true, confidence: 0.75, explanation: 'OK' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const before = makeState({ elements: makeElements(5) });
+    const after  = makeState({ elements: makeElements(8) }); // delta = 3, not > 3
+
+    await verifier.verifyAction('Minor change', before, after);
+
+    expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns unverified success (confidence 0.5) when LLM throws', async () => {
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn(async () => { throw new Error('Rate limit 429'); }) as any,
+      generateText: jest.fn(async () => ''),
+    };
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const state = makeState();
+    const result = await verifier.verifyAction('Click button', state, state);
+
+    expect(result.success).toBe(true);
+    expect(result.confidence).toBe(0.5);
+    expect(result.message).toContain('Unverified');
+  });
+
+  it('does not throw when LLM throws — act() loop stays alive', async () => {
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn(async () => { throw new Error('Network error'); }) as any,
+      generateText: jest.fn(async () => ''),
+    };
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const state = makeState();
+    // Must resolve, not reject
+    await expect(verifier.verifyAction('Click anything', state, state)).resolves.toBeDefined();
   });
 });
