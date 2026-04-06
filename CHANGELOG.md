@@ -53,6 +53,12 @@ The post-action DOM settle mechanism has been replaced. Instead of waiting for `
 #### Verifier: LLM error resilience
 When the LLM call inside the Verifier throws an unexpected error, the Verifier now returns `{ success: true, confidence: 0.5 }` instead of propagating the exception. Automation continues rather than aborting on transient provider errors.
 
+### Documentation
+
+- Published [VitePress documentation site](https://arashuseyin.github.io/sentinel-docs/) covering the full API reference, configuration guide, LLM provider setup, architecture overview, and error handling.
+- Added support and business contact email (`hueseyin.aras1@gmail.com`) to README and npm package metadata.
+- Removed internal Development section from README (repository is private).
+
 ---
 
 ## [2.2.1] - 2026-04-06
