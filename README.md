@@ -100,7 +100,7 @@ Sentinel works with any supported LLM provider. The built-in provider uses Gemin
 ```env
 # Only needed when using the built-in Gemini provider:
 GEMINI_API_KEY=your_api_key_here
-GEMINI_VERSION=gemini-2.0-flash   # optional, defaults to gemini-2.0-flash
+GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-2.0-flash
 ```
 
 ---

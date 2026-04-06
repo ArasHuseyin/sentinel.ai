@@ -120,7 +120,7 @@ export class Sentinel extends EventEmitter {
     this.visionFallback = options.visionFallback ?? false;
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
-    this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-1.5-flash');
+    this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview');
   }
 
   // ─── Playwright passthrough ───────────────────────────────────────────────

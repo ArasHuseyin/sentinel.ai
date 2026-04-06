@@ -94,7 +94,7 @@ export class GeminiProvider implements LLMProvider {
 
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
     return withRetry(async () => {
-      const params: any = { model: process.env.GEMINI_VERSION || 'gemini-1.5-flash' };
+      const params: any = { model: process.env.GEMINI_VERSION || 'gemini-3-flash-preview' };
       if (systemInstruction) {
         params.systemInstruction = { role: 'system', parts: [{ text: systemInstruction }] };
       }

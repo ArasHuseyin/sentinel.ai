@@ -18,7 +18,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 // Gemini-Modell – kann per .env überschrieben werden
-process.env.GEMINI_VERSION ??= 'gemini-2.0-flash';
+process.env.GEMINI_VERSION ??= 'gemini-3-flash-preview';
 
 import { Sentinel, z } from './index.js';
 
