@@ -655,4 +655,4 @@ npm test           # run tests
 
 ---
 
-Licensed under [ISC](LICENSE). Author: Huseyin Aras.
+Licensed under [ISC](LICENSE). Author: Huseyin Aras — [hueseyin.aras1@gmail.com](mailto:hueseyin.aras1@gmail.com)
