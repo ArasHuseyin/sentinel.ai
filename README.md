@@ -100,7 +100,7 @@ Sentinel works with any supported LLM provider. The built-in provider uses Gemin
 ```env
 # Only needed when using the built-in Gemini provider:
 GEMINI_API_KEY=your_api_key_here
-GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-2.0-flash
+GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-3-flash-preview
 ```
 
 ---
@@ -117,7 +117,7 @@ GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-2.0-flash
 | `viewport` | `{ width: number; height: number }` | `1280x720` | Viewport dimensions |
 | `verbose` | `0 \| 1 \| 2` | `1` | Log verbosity: 0 = silent, 1 = key actions, 2 = full debug |
 | `enableCaching` | `boolean` | `true` | Cache AOM state between calls (500ms TTL). Set to `false` for always-fresh state. |
-| `visionFallback` | `boolean` | `false` | Enable Vision fallback when AOM cannot locate an element (uses Gemini Vision; requires `apiKey`) |
+| `visionFallback` | `boolean` | `false` | Enable Vision fallback when AOM cannot locate an element. Uses the configured provider's `analyzeImage` — works with Gemini, OpenAI, Claude, and Ollama vision models. |
 | `provider` | `LLMProvider` | GeminiService | Custom LLM provider (see [LLM Providers](#llm-providers)) |
 | `sessionPath` | `string` | — | Path to a session file. If the file exists, it is loaded on `init()`. |
 | `proxy` | `ProxyOptions` | — | Proxy server configuration |
@@ -377,7 +377,7 @@ const png = await sentinel.screenshot();
 
 #### `sentinel.describeScreen(): Promise<string>`
 
-Use Gemini Vision to produce a natural language description of the current page. Requires `visionFallback: true` in `SentinelOptions`.
+Uses the configured provider's vision capability to produce a natural language description of the current page. Requires `visionFallback: true` in `SentinelOptions`.
 
 ```typescript
 const sentinel = new Sentinel({
@@ -487,7 +487,7 @@ const sentinel = new Sentinel({
   apiKey: '',
   provider: new GeminiProvider({
     apiKey: process.env.GEMINI_API_KEY!,
-    model: 'gemini-2.0-flash',  // or set GEMINI_VERSION in .env
+    model: 'gemini-3-flash-preview',  // or set GEMINI_VERSION in .env
   }),
 });
 ```
@@ -519,7 +519,7 @@ const sentinel = new Sentinel({
 |---|---|---|---|---|
 | OpenAI | `OpenAIProvider` | `gpt-4o` | `npm install openai` | Supports any OpenAI-compatible API via `baseURL` |
 | Claude | `ClaudeProvider` | `claude-sonnet-4-6` | `npm install @anthropic-ai/sdk` | — |
-| Gemini | `GeminiProvider` | `gemini-2.0-flash` | none (bundled) | Set `GEMINI_VERSION` env var to override model |
+| Gemini | `GeminiProvider` | `gemini-3-flash-preview` | none (bundled) | Set `GEMINI_VERSION` env var to override model |
 | Ollama | `OllamaProvider` | — (required) | none | Runs locally; no API key needed |
 
 All providers implement automatic retry with exponential backoff on rate limit errors (HTTP 429/503), connection resets, and timeouts (up to 3 attempts).
@@ -563,7 +563,7 @@ Produces a normalized list of interactive UI elements from the current page stat
 Translates a natural language instruction into a Playwright action using a three-layer fallback:
 
 1. **Coordinate click** — computes element coordinates from the AOM bounding box and uses `page.mouse.wheel` / `page.mouse.click`.
-2. **Vision Grounding** — if coordinate click fails or the element is off-screen, captures a screenshot and uses a vision-capable model to locate the element visually (requires `visionFallback: true` and Gemini `apiKey`).
+2. **Vision Grounding** — if coordinate click fails or the element is off-screen, captures a screenshot and uses the configured provider's vision capability to locate the element visually (requires `visionFallback: true`; supported by Gemini, OpenAI, Claude, and Ollama vision models).
 3. **Playwright locators** — four-strategy chain: exact role+name, inexact role+name, CSS `:has-text`, plain text locator.
 
 Before clicking, a viewport bounds check confirms the element is visible. If not, `scrollIntoViewIfNeeded` is called before retrying. Radio and checkbox inputs styled to hide the native control are handled via `querySelector` + `closest('label')` traversal.
