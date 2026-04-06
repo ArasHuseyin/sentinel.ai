@@ -72,6 +72,14 @@ export interface SentinelOptions {
    */
   sessionPath?: string;
   /**
+   * Path to a persistent browser profile directory.
+   * Stores cookies, localStorage, IndexedDB, and ServiceWorkers on disk.
+   * Use this for services that authenticate via IndexedDB (e.g. WhatsApp Web).
+   * The directory is created automatically if it does not exist.
+   * When set, sessionPath is ignored.
+   */
+  userDataDir?: string;
+  /**
    * Custom LLM provider. If set, overrides the default Gemini provider.
    * @example new OpenAIProvider({ apiKey: '...', model: 'gpt-4o' })
    */
@@ -110,6 +118,7 @@ export class Sentinel extends EventEmitter {
       ...(options.proxy ? { proxy: options.proxy } : {}),
       ...(options.humanLike ? { humanLike: options.humanLike } : {}),
       ...(options.sessionPath ? { sessionPath: options.sessionPath } : {}),
+      ...(options.userDataDir ? { userDataDir: options.userDataDir } : {}),
     };
     this.driver = new SentinelDriver(driverOptions);
     // Use custom provider if supplied, otherwise fall back to GeminiService

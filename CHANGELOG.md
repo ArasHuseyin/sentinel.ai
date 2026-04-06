@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [2.4.0] - 2026-04-06
+
+### Added
+
+#### Persistent browser profile (`userDataDir`)
+New `userDataDir` option in `SentinelOptions` enables a persistent Chromium profile directory. Unlike `sessionPath` (which only saves cookies and localStorage), `userDataDir` persists the entire browser profile including **IndexedDB**, ServiceWorkers, and cached credentials. This is required for services that store authentication data in IndexedDB (e.g. WhatsApp Web, progressive web apps, and other SPA-based messaging platforms).
+
+```typescript
+const sentinel = new Sentinel({
+  apiKey: process.env.GEMINI_API_KEY!,
+  userDataDir: './profiles/whatsapp',  // created automatically if missing
+});
+```
+
+On first run: complete the login once (e.g. scan WhatsApp QR code). On all subsequent runs the session is restored automatically from the profile directory — no QR code or re-authentication required.
+
+When `userDataDir` is set, `sessionPath` is ignored.
+
+---
+
 ## [2.3.2] - 2026-04-06
 
 ### Fixed

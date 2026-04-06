@@ -1,6 +1,6 @@
 {
   "name": "@isoldex/sentinel",
-  "version": "2.3.2",
+  "version": "2.4.0",
   "description": "AI-powered browser automation with Gemini – fast, cheap Stagehand alternative",
   "type": "module",
   "main": "dist/index.js",

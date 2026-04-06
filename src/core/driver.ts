@@ -16,6 +16,7 @@ export interface DriverOptions {
   viewport?: { width: number; height: number };
   browser?: BrowserType;
   sessionPath?: string;
+  userDataDir?: string;
   proxy?: ProxyOptions;
   stealth?: boolean;
   humanLike?: boolean;
@@ -38,27 +39,46 @@ export class SentinelDriver {
       ? ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage']
       : [];
 
-    this.browser = await launcher.launch({
-      headless: this.options.headless ?? false,
-      args: launchArgs,
-      ...(this.options.proxy ? { proxy: this.options.proxy } : {}),
-    });
-
-    // Load storageState from session file if provided
-    const storageState = this.options.sessionPath && fs.existsSync(this.options.sessionPath)
-      ? JSON.parse(fs.readFileSync(this.options.sessionPath, 'utf-8'))
-      : undefined;
-
-    this.context = await this.browser.newContext({
+    const contextOptions = {
       viewport: this.options.viewport || { width: 1280, height: 720 },
       userAgent: this.getRandomUserAgent(),
       locale: 'de-AT',
       timezoneId: 'Europe/Vienna',
-      ...(storageState ? { storageState } : {}),
-    });
+      ...(this.options.proxy ? { proxy: this.options.proxy } : {}),
+    };
 
-    if (storageState) {
-      console.log(`[Driver] Session loaded from ${this.options.sessionPath}`);
+    if (this.options.userDataDir) {
+      // Persistent context: stores cookies, localStorage, IndexedDB, ServiceWorkers
+      // on disk — survives browser restarts without needing saveSession().
+      // userDataDir is a path to a directory; Playwright creates it if it doesn't exist.
+      if (!fs.existsSync(this.options.userDataDir)) {
+        fs.mkdirSync(this.options.userDataDir, { recursive: true });
+      }
+      this.context = await launcher.launchPersistentContext(this.options.userDataDir, {
+        headless: this.options.headless ?? false,
+        args: launchArgs,
+        ...contextOptions,
+      });
+      console.log(`[Driver] Persistent context loaded from ${this.options.userDataDir}`);
+    } else {
+      // Standard context: cookies + localStorage only (via optional storageState file)
+      this.browser = await launcher.launch({
+        headless: this.options.headless ?? false,
+        args: launchArgs,
+      });
+
+      const storageState = this.options.sessionPath && fs.existsSync(this.options.sessionPath)
+        ? JSON.parse(fs.readFileSync(this.options.sessionPath, 'utf-8'))
+        : undefined;
+
+      this.context = await this.browser.newContext({
+        ...contextOptions,
+        ...(storageState ? { storageState } : {}),
+      });
+
+      if (storageState) {
+        console.log(`[Driver] Session loaded from ${this.options.sessionPath}`);
+      }
     }
 
     const page = await this.context.newPage();
@@ -155,7 +175,10 @@ export class SentinelDriver {
   }
 
   async close() {
-    if (this.browser) {
+    if (this.options.userDataDir) {
+      // Persistent context has no separate browser object — close the context directly.
+      await this.context?.close();
+    } else if (this.browser) {
       await this.browser.close();
     }
   }

@@ -119,7 +119,8 @@ GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-3-flash-p
 | `enableCaching` | `boolean` | `true` | Cache AOM state between calls (500ms TTL). Set to `false` for always-fresh state. |
 | `visionFallback` | `boolean` | `false` | Enable Vision fallback when AOM cannot locate an element. Uses the configured provider's `analyzeImage` — works with Gemini, OpenAI, Claude, and Ollama vision models. |
 | `provider` | `LLMProvider` | GeminiService | Custom LLM provider (see [LLM Providers](#llm-providers)) |
-| `sessionPath` | `string` | — | Path to a session file. If the file exists, it is loaded on `init()`. |
+| `sessionPath` | `string` | — | Path to a session file. If the file exists, it is loaded on `init()`. Saves cookies and localStorage only. |
+| `userDataDir` | `string` | — | Path to a persistent browser profile directory. Persists cookies, localStorage, **IndexedDB**, and ServiceWorkers. Required for services that use IndexedDB for auth (e.g. WhatsApp Web). Takes precedence over `sessionPath`. |
 | `proxy` | `ProxyOptions` | — | Proxy server configuration |
 | `humanLike` | `boolean` | `false` | Add random human-like delays between actions |
 | `domSettleTimeoutMs` | `number` | `3000` | Maximum time (ms) to wait for the DOM to settle after an action |
