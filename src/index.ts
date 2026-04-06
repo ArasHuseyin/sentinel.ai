@@ -144,7 +144,7 @@ export class Sentinel extends EventEmitter {
 
     this.stateParser = new StateParser(page, cdp);
     if (this.visionFallback) {
-      this.visionGrounding = new VisionGrounding(this.apiKey);
+      this.visionGrounding = new VisionGrounding(this.gemini);
     }
     this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);

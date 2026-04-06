@@ -92,6 +92,23 @@ export class GeminiProvider implements LLMProvider {
     });
   }
 
+  async analyzeImage(prompt: string, imageBase64: string, mimeType = 'image/png'): Promise<string> {
+    return withRetry(async () => {
+      const result = await this.textModel.generateContent({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType, data: imageBase64 } },
+            ],
+          },
+        ],
+      });
+      return result.response.text();
+    });
+  }
+
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
     return withRetry(async () => {
       const params: any = { model: process.env.GEMINI_VERSION || 'gemini-3-flash-preview' };

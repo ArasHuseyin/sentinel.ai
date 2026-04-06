@@ -75,6 +75,24 @@ export class OpenAIProvider implements LLMProvider {
     });
   }
 
+  async analyzeImage(prompt: string, imageBase64: string, mimeType = 'image/png'): Promise<string> {
+    return withRetry(async () => {
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
+              { type: 'text', text: prompt },
+            ],
+          },
+        ],
+      });
+      return response.choices[0]?.message?.content ?? '';
+    });
+  }
+
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
     return withRetry(async () => {
       const messages: any[] = [];

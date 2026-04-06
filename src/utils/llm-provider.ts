@@ -17,6 +17,13 @@ export interface LLMProvider {
    * Generate a plain text response.
    */
   generateText(prompt: string, systemInstruction?: string): Promise<string>;
+
+  /**
+   * Analyze an image with a text prompt.
+   * Optional — implement only for vision-capable models.
+   * Returns a plain text response (JSON parsing is handled by the caller).
+   */
+  analyzeImage?(prompt: string, imageBase64: string, mimeType?: string): Promise<string>;
 }
 
 /**

@@ -75,6 +75,26 @@ export class ClaudeProvider implements LLMProvider {
     });
   }
 
+  async analyzeImage(prompt: string, imageBase64: string, mimeType = 'image/png'): Promise<string> {
+    return withRetry(async () => {
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mimeType, data: imageBase64 } },
+              { type: 'text', text: prompt },
+            ],
+          },
+        ],
+      });
+      const textBlock = response.content.find((c: any) => c.type === 'text');
+      return textBlock?.text ?? '';
+    });
+  }
+
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
     return withRetry(async () => {
       const response = await this.client.messages.create({

@@ -1,5 +1,5 @@
 import type { Page } from 'playwright';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import type { LLMProvider } from '../utils/llm-provider.js';
 
 export interface BoundingBox {
   x: number;
@@ -15,18 +15,20 @@ export interface VisionElement {
 }
 
 /**
- * Vision-based element grounding using Gemini's multimodal capabilities.
+ * Vision-based element grounding using any vision-capable LLMProvider.
  * Used as a fallback when the AOM (Accessibility Tree) cannot find an element.
+ *
+ * Supported out of the box: GeminiProvider, OpenAIProvider, ClaudeProvider,
+ * OllamaProvider (with a vision model such as llava or bakllava).
  */
 export class VisionGrounding {
-  private genAI: GoogleGenerativeAI;
-  private model: any;
-
-  constructor(apiKey: string) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    const modelName = process.env.GEMINI_VERSION;
-    if (!modelName) throw new Error('GEMINI_VERSION must be set in .env');
-    this.model = this.genAI.getGenerativeModel({ model: modelName });
+  constructor(private provider: LLMProvider) {
+    if (!provider.analyzeImage) {
+      console.warn(
+        '[VisionGrounding] The configured LLM provider does not implement analyzeImage. ' +
+        'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
+      );
+    }
   }
 
   /**
@@ -37,8 +39,8 @@ export class VisionGrounding {
   }
 
   /**
-   * Asks Gemini Vision to find an element matching the instruction and return its bounding box.
-   * Returns null if the element cannot be found.
+   * Asks the vision-capable LLM to find an element matching the instruction and return its bounding box.
+   * Returns null if the element cannot be found or the provider does not support vision.
    */
   async findElement(
     instruction: string,
@@ -46,6 +48,8 @@ export class VisionGrounding {
     viewportWidth: number,
     viewportHeight: number
   ): Promise<BoundingBox | null> {
+    if (!this.provider.analyzeImage) return null;
+
     const base64 = screenshot.toString('base64');
 
     const prompt = `
@@ -55,50 +59,25 @@ Task: Find the UI element that matches this instruction: "${instruction}"
 
 The screenshot is ${viewportWidth}x${viewportHeight} pixels.
 
-Return the bounding box of the element as JSON with these fields:
-- x: left edge in pixels
-- y: top edge in pixels  
-- width: element width in pixels
-- height: element height in pixels
-- found: true if element was found, false if not visible
+Return ONLY a JSON object with these fields (no markdown, no explanation):
+{
+  "found": true or false,
+  "x": left edge in pixels,
+  "y": top edge in pixels,
+  "width": element width in pixels,
+  "height": element height in pixels,
+  "reasoning": "brief explanation"
+}
 
-Be precise. If the element is not visible in the screenshot, set found to false.
-    `;
-
-    const schema = {
-      type: 'object',
-      properties: {
-        found: { type: 'boolean' },
-        x: { type: 'number' },
-        y: { type: 'number' },
-        width: { type: 'number' },
-        height: { type: 'number' },
-        reasoning: { type: 'string' },
-      },
-      required: ['found', 'reasoning'],
-    };
+If the element is not visible, set found to false and omit x/y/width/height.
+    `.trim();
 
     try {
-      const result = await this.model.generateContent({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: 'image/png', data: base64 } },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-        },
-      });
+      const raw = await this.provider.analyzeImage(prompt, base64, 'image/png');
+      const parsed = extractJSON(raw);
 
-      const parsed = JSON.parse(result.response.text());
-
-      if (!parsed.found) {
-        console.warn(`[Vision] Element not found: "${instruction}" — ${parsed.reasoning}`);
+      if (!parsed?.found) {
+        console.warn(`[Vision] Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`);
         return null;
       }
 
@@ -116,30 +95,37 @@ Be precise. If the element is not visible in the screenshot, set found to false.
   }
 
   /**
-   * Describes the current page visually using Gemini Vision.
+   * Describes the current page visually.
    * Useful for debugging and agent context building.
    */
   async describeScreen(screenshot: Buffer): Promise<string> {
-    const base64 = screenshot.toString('base64');
+    if (!this.provider.analyzeImage) return 'Vision not available — provider does not support analyzeImage.';
 
+    const base64 = screenshot.toString('base64');
     try {
-      const result = await this.model.generateContent({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: 'Describe this webpage screenshot briefly: what page is it, what are the main UI elements visible, and what actions are possible?',
-              },
-              { inlineData: { mimeType: 'image/png', data: base64 } },
-            ],
-          },
-        ],
-      });
-      return result.response.text();
+      return await this.provider.analyzeImage(
+        'Describe this webpage screenshot briefly: what page is it, what are the main UI elements visible, and what actions are possible?',
+        base64,
+        'image/png'
+      );
     } catch (err: any) {
       console.error(`[Vision] describeScreen failed: ${err.message}`);
       return 'Could not describe screen.';
     }
+  }
+}
+
+/**
+ * Extracts the first JSON object from a string, handling markdown code fences.
+ */
+function extractJSON(text: string): any {
+  try {
+    return JSON.parse(text.trim());
+  } catch {
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
+    if (match) {
+      try { return JSON.parse(match[1]!.trim()); } catch { /* fall through */ }
+    }
+    return null;
   }
 }

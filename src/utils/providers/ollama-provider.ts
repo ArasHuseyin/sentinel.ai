@@ -77,6 +77,27 @@ export class OllamaProvider implements LLMProvider {
     });
   }
 
+  async analyzeImage(prompt: string, imageBase64: string, _mimeType?: string): Promise<string> {
+    return withRetry(async () => {
+      const response = await fetch(`${this.baseURL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          stream: false,
+          messages: [
+            { role: 'user', content: prompt, images: [imageBase64] },
+          ],
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`[OllamaProvider] HTTP ${response.status}: ${await response.text()}`);
+      }
+      const data = await response.json() as any;
+      return data?.message?.content ?? '';
+    });
+  }
+
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
     return withRetry(async () => {
       const messages: any[] = [];
