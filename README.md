@@ -6,6 +6,8 @@ Describe what you want to do. Sentinel figures out how.
 
 > A fast, lightweight alternative to BrowserUse, Stagehand, and AutoGPT — with multi-LLM support, vision grounding, a full autonomous agent loop, and robust self-healing built in.
 
+**[Full documentation →](https://arashuseyin.github.io/sentinel-docs/)**
+
 ---
 
 ## Table of Contents
