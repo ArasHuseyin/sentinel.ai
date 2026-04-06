@@ -642,17 +642,4 @@ See the [`examples/`](./examples) directory for ready-to-run scripts:
 
 ---
 
-## Development
-
-```bash
-git clone https://github.com/ArasHuseyin/sentinel.ai.git
-cd sentinel.ai
-npm install
-npx tsc --noEmit   # type-check
-npm run build      # compile to dist/
-npm test           # run tests
-```
-
----
-
 Licensed under [ISC](LICENSE). Author: Huseyin Aras — [hueseyin.aras1@gmail.com](mailto:hueseyin.aras1@gmail.com)
