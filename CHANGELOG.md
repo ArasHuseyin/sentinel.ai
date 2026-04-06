@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [2.3.2] - 2026-04-06
+
+### Fixed
+
+- Include `README.md` and `CHANGELOG.md` in npm package `files` list so they appear on the npm registry page.
+- DOM context enrichment now skips hidden elements (`offsetParent === null`) when collecting headings, paragraphs, and leaf texts — prevents hidden popovers and modals from polluting card button context.
+- `img[alt]` enrichment skips hidden images and filters out file-description-style alt texts (e.g. containing `/`, `icon`, `logo`, `check`).
+
+---
+
 ## [2.3.1] - 2026-04-06
 
 ### Added
