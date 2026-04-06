@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [2.3.1] - 2026-04-06
+
+### Added
+
+#### Native vision support for all LLM providers
+Added optional `analyzeImage(prompt, imageBase64, mimeType?)` method to the `LLMProvider` interface. All four built-in providers now implement it:
+
+- **GeminiProvider** — uses the configured Gemini model
+- **OpenAIProvider** — uses GPT-4o (or the configured model)
+- **ClaudeProvider** — uses Claude 3 multimodal API
+- **OllamaProvider** — uses the configured model with the Ollama `images` field (llava, bakllava, etc.)
+
+`VisionGrounding` now accepts any `LLMProvider` instead of a raw Gemini API key. Setting `visionFallback: true` works with any vision-capable provider — no `GEMINI_VERSION` or Gemini API key required for non-Gemini setups. Providers that do not implement `analyzeImage` log a warning and skip vision grounding gracefully.
+
+### Changed
+
+#### Default Gemini model updated to `gemini-3-flash-preview`
+The built-in fallback model name in `GeminiProvider`, `index.ts`, and `onix-test.ts` has been updated from `gemini-2.0-flash` to `gemini-3-flash-preview`.
+
+---
+
 ## [2.3.0] - 2026-04-06
 
 ### Added
