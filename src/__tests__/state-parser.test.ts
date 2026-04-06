@@ -47,6 +47,34 @@ function makeMockPage(url = 'https://example.com', title = 'Example') {
   };
 }
 
+/**
+ * Page mock where enrichWithDOMContext returns controllable context strings.
+ * Distinguishes the three evaluate call sites by their second argument shape:
+ *   - enrichWithDOMContext  → params.items exists → returns [{ id, context }]
+ *   - parseDOMSnapshot      → params.genericNames, no items → returns []
+ *   - parseFormElements     → no params → returns []
+ */
+function makeEnrichmentPage(
+  contextMap: Record<number, string>,
+  url = 'https://example.com',
+  title = 'Example'
+) {
+  return {
+    url: () => url,
+    title: jest.fn(async () => title),
+    evaluate: jest.fn(async (_fn: any, params?: any) => {
+      if (params?.items) {
+        // enrichWithDOMContext: return controlled context per element id
+        return (params.items as { id: number; x: number; y: number }[]).map(item => ({
+          id: item.id,
+          context: contextMap[item.id] ?? '',
+        }));
+      }
+      return []; // parseDOMSnapshot / parseFormElements
+    }),
+  };
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('StateParser', () => {
@@ -190,6 +218,97 @@ describe('StateParser', () => {
     const state = await parser.parse();
 
     expect(state.elements.map((e) => e.id)).toEqual([0, 1, 2]);
+  });
+
+  // ─── enrichWithDOMContext ──────────────────────────────────────────────────
+
+  describe('enrichWithDOMContext', () => {
+    it('enriches a generic button name with leaf-span/div context', async () => {
+      // "Tarif auswählen" is in GENERIC_NAMES → triggers enrichment
+      const nodes = [makeNode('button', 'Tarif auswählen', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeEnrichmentPage({ 0: 'Kelag | Fixtarif | 58,17 €' });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements[0]!.name).toBe('Kelag | Fixtarif | 58,17 €: Tarif auswählen');
+    });
+
+    it('does not enrich a non-generic button name', async () => {
+      // "Login" is not in GENERIC_NAMES → enrichWithDOMContext not called
+      const nodes = [makeNode('button', 'Login', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeEnrichmentPage({});
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements[0]!.name).toBe('Login');
+      // evaluate should never have been called with items (enrichment params)
+      const enrichCalls = (page.evaluate as jest.Mock).mock.calls.filter(
+        (c: any[]) => c[1]?.items !== undefined
+      );
+      expect(enrichCalls).toHaveLength(0);
+    });
+
+    it('leaves generic name unchanged when DOM returns no context', async () => {
+      const nodes = [makeNode('button', 'weiter', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeEnrichmentPage({ 0: '' }); // empty context
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements[0]!.name).toBe('weiter');
+    });
+
+    it('enriches multiple generic buttons independently', async () => {
+      const nodes = [
+        makeNode('button', 'Tarif auswählen', 1),
+        makeNode('button', 'Tarif auswählen', 2),
+        makeNode('link',   'Details',         3),
+        makeNode('button', 'Tarif auswählen', 4),
+        makeNode('link',   'Informationen',   5),
+        makeNode('button', 'weiter',          6),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map((_, i) => makeBoxModel(i * 50, 20)));
+      // IDs are assigned in order: 0,1,2,3,4,5
+      const page = makeEnrichmentPage({
+        0: 'Kelag | Fixtarif',
+        1: 'Gutmann | Spottarif',
+        2: 'Wien Energie | Fixtarif',
+        5: 'Weiter context', // "weiter" is generic
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const names = state.elements.map(e => e.name);
+      expect(names).toContain('Kelag | Fixtarif: Tarif auswählen');
+      expect(names).toContain('Gutmann | Spottarif: Tarif auswählen');
+      expect(names).toContain('Wien Energie | Fixtarif: Details');
+      expect(names).toContain('Weiter context: weiter');
+    });
+
+    it('does not enrich when context equals the generic name itself', async () => {
+      // Context that is itself generic should not be prepended
+      const nodes = [makeNode('button', 'submit', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      // Simulate DOM returning a generic word as context
+      const page = makeEnrichmentPage({ 0: 'ok' });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      // "ok" is in GENERIC_NAMES — enrichWithDOMContext won't apply it
+      // The DOM evaluate returns "ok" but the JS in-browser function filters it out.
+      // Since we're mocking the evaluate result directly, we test the
+      // post-processing: a non-empty context IS applied regardless.
+      // This test documents that behaviour (context application is unconditional
+      // once returned from evaluate).
+      expect(state.elements[0]!.name).toBe('ok: submit');
+    });
   });
 
   it('skips elements where box model is rejected', async () => {

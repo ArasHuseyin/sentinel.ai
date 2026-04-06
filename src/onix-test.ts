@@ -50,6 +50,7 @@ async function runOnixAutomation() {
     visionFallback:    true,   // Onix ist eine komplexe SPA – Vision Grounding aktiviert
     humanLike:         true,
     domSettleTimeoutMs: 4000,
+    viewport:          { width: 1920, height: 1080 },
     ...(sessionExists ? { sessionPath: SESSION_PATH } : {}),
   });
 
@@ -68,7 +69,7 @@ async function runOnixAutomation() {
     await sentinel.act('Klicke auf den Anmelden-Button',                                     { retries: 0 });
 
     log('Warte auf Dashboard...');
-    await delay(8000);
+    await delay(3500);
 
     // ── 2. Navigation zum Tarifrechner ──────────────────────────────────────
     log('(3) Prüfe ob Tarifrechner / Auftragsanlage sichtbar...');
@@ -80,7 +81,7 @@ async function runOnixAutomation() {
     if (!dashboardCheck.visible) {
       log('Tarifrechner nicht direkt sichtbar – navigiere über Menü...');
       await sentinel.act('Klicke im linken Menü auf "Auftragsverwaltung" oder den Tarifrechner-Button');
-      await delay(5000);
+      await delay(3000);
     }
 
     // ── 3. Tarifrechner ausfüllen ───────────────────────────────────────────
@@ -95,7 +96,7 @@ async function runOnixAutomation() {
     await sentinel.act('Drücke Enter um das Formular abzusenden',                            { retries: 1 });
 
     log('Warte auf Tarif-Ergebnisse...');
-    await delay(10000);
+    await delay(2500);
 
     // ── 4. Kelag-Tarif auswählen ────────────────────────────────────────────
     log('(5) Suche und wähle Kelag-Tarif...');
@@ -108,7 +109,7 @@ async function runOnixAutomation() {
       'Suche in der Anbieterliste nach dem Anbieter "Kelag" (achte auf den Namen oder das Logo). ' +
       'Klicke beim Kelag-Angebot auf den Button "Tarif auswählen". ' +
       'Falls mehrere Kelag-Angebote vorhanden sind, nimm das oberste.',
-      { retries: 2 }
+      { retries: 3 }
     );
 
     log('Warte auf Kundendaten-Formular...');
@@ -152,7 +153,7 @@ async function runOnixAutomation() {
 
   } finally {
     log('Schließe Browser in 10 Sekunden...');
-    await delay(10000);
+    await delay(20000);
     await sentinel.close();
   }
 }

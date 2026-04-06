@@ -220,13 +220,16 @@ export class ActionEngine {
     target: UIElement | null,
     value?: string
   ): Promise<void> {
-    // Scroll actions that don't need a target element
+    // Scroll actions that don't need a target element.
+    // mouse.wheel dispatches a native wheel event at the current cursor position so
+    // the browser routes it to whichever element is actually scrollable — works for
+    // both window-level scroll and scrollable container divs (SPAs, iframes, etc.).
     if (action === 'scroll-down' && !target) {
-      await this.page.evaluate(() => window.scrollBy(0, 600));
+      await this.page.mouse.wheel(0, 600);
       return;
     }
     if (action === 'scroll-up' && !target) {
-      await this.page.evaluate(() => window.scrollBy(0, -600));
+      await this.page.mouse.wheel(0, -600);
       return;
     }
 
@@ -401,13 +404,14 @@ export class ActionEngine {
     target: UIElement | null,
     value?: string
   ): Promise<void> {
-    // Page-level scroll fallback
+    // Page-level scroll fallback — mouse.wheel is more reliable than PageDown
+    // because it targets whichever element is under the cursor.
     if (action === 'scroll-down' && !target) {
-      await this.page.keyboard.press('PageDown');
+      await this.page.mouse.wheel(0, 600);
       return;
     }
     if (action === 'scroll-up' && !target) {
-      await this.page.keyboard.press('PageUp');
+      await this.page.mouse.wheel(0, -600);
       return;
     }
 

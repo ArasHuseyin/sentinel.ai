@@ -405,6 +405,23 @@ export class StateParser {
               }
             }
 
+            // Collect short leaf-span/leaf-div texts (badges, labels, tags)
+            // Only leaf elements (no child elements) to avoid grabbing container text
+            for (const node of Array.from(container.querySelectorAll('span, div'))) {
+              if (node.children.length > 0) continue; // skip containers
+              const t = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+              if (
+                t.length > 2 && t.length < 35 &&
+                !isGeneric(t) &&
+                t !== headingText &&
+                !headingText.includes(t) &&
+                !extraParts.includes(t)
+              ) {
+                extraParts.push(t);
+                if (extraParts.length >= 3) break;
+              }
+            }
+
             const parts = headingText ? [headingText, ...extraParts] : extraParts;
             const contextText = parts.join(' | ');
 
