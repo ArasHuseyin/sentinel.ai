@@ -386,6 +386,15 @@ export class StateParser {
               return { id, context: dataContext };
             }
 
+            // img[alt] is often the brand/provider name in card UIs (logos)
+            const imgAlt = (() => {
+              for (const img of Array.from(container.querySelectorAll('img[alt]'))) {
+                const alt = (img as HTMLImageElement).alt.replace(/\s+/g, ' ').trim();
+                if (alt.length > 1 && alt.length < 60 && !isGeneric(alt)) return alt;
+              }
+              return '';
+            })();
+
             // Build a richer label from heading + relevant p elements
             const heading = container.querySelector('h1, h2, h3, h4, strong, b');
             const headingText = heading?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
@@ -422,7 +431,11 @@ export class StateParser {
               }
             }
 
-            const parts = headingText ? [headingText, ...extraParts] : extraParts;
+            const parts = [
+              ...(imgAlt && imgAlt !== headingText ? [imgAlt] : []),
+              ...(headingText ? [headingText] : []),
+              ...extraParts,
+            ];
             const contextText = parts.join(' | ');
 
             if (contextText.length > 2 && contextText.length < 120 && !isGeneric(contextText)) {
