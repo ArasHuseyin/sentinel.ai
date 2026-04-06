@@ -49,6 +49,16 @@ export class StateParser {
     this.elementCounter = 0;
     const { nodes } = await this.cdp.send('Accessibility.getFullAXTree');
 
+    // Build node maps for subtree text extraction
+    const nodeMap = new Map<string, any>();
+    const childrenMap = new Map<string, string[]>();
+    for (const node of nodes) {
+      nodeMap.set(node.nodeId, node);
+      if (node.childIds?.length) {
+        childrenMap.set(node.nodeId, node.childIds);
+      }
+    }
+
     // Step 1: Filter interactive nodes synchronously (no I/O)
     const interactiveNodes = nodes.filter(
       (node: any) => this.isInteractive(node) && node.backendDOMNodeId
@@ -73,7 +83,8 @@ export class StateParser {
       const { model } = fulfilled.value;
       if (!model?.content || model.content.length < 8) continue;
 
-      const element = this.nodeToUIElement(node);
+      const subtextContext = node?.nodeId ? this.extractSubtreeText(node.nodeId, nodeMap, childrenMap) : '';
+      const element = this.nodeToUIElement(node, subtextContext);
       if (!element) continue;
 
       const x = model.content[0]!;
@@ -179,14 +190,45 @@ export class StateParser {
     return interactiveRoles.includes(node.role?.value) && !node.ignored;
   }
 
+  /**
+   * Extracts all visible text from the AOM subtree of a node.
+   * Generic – works for headings, paragraphs, spans, icons, etc.
+   * Returns a compact string (max 120 chars).
+   */
+  private extractSubtreeText(
+    nodeId: string,
+    nodeMap: Map<string, any>,
+    childrenMap: Map<string, string[]>,
+    depth = 0
+  ): string {
+    if (depth > 6) return '';
+    const children = childrenMap.get(nodeId) || [];
+    const parts: string[] = [];
+
+    for (const childId of children) {
+      const child = nodeMap.get(childId);
+      if (!child || child.ignored) continue;
+
+      const childName = child.name?.value?.trim();
+      if (childName) {
+        parts.push(childName);
+      } else {
+        const deeper = this.extractSubtreeText(childId, nodeMap, childrenMap, depth + 1);
+        if (deeper) parts.push(deeper);
+      }
+    }
+
+    return parts.join(' ').slice(0, 120);
+  }
+
   // Made synchronous – no async needed, no await inside
-  private nodeToUIElement(node: any): UIElement | null {
+  private nodeToUIElement(node: any, subtextContext = ''): UIElement | null {
     const role = node.role?.value || 'unknown';
     const name = node.name?.value || '';
     const description = node.description?.value || '';
 
-    // Use description as fallback name (common in SPA list items)
-    const effectiveName = name || description;
+    // Priority: name → description → subtree text
+    const effectiveName = name || description || subtextContext;
 
     // Skip completely nameless elements unless they are a textbox (always useful)
     if (!effectiveName && role !== 'textbox') return null;
@@ -205,7 +247,7 @@ export class StateParser {
       id: this.elementCounter++,
       role,
       name: effectiveName,
-      description,
+      description: description || (name ? subtextContext : ''),
       boundingClientRect: { x: 0, y: 0, width: 0, height: 0 },
       state,
     };

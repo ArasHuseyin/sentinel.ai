@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.0] - 2026-04-06
+
+### Fixed
+
+#### 🧠 More Robust AOM Parsing (`src/core/state-parser.ts`)
+- Interactive elements without `aria-label` or `aria-labelledby` (e.g. cards with a child `<h4>`) are now correctly recognized
+- New method `extractSubtreeText()` — generically extracts visible text from the AOM subtree of a node (recursive up to depth 6, max. 120 characters)
+- Covers all cases where the semantic name lives in a child element: headings, paragraphs, spans, icons, etc.
+- `nodeToUIElement()` now uses priority `name → description → subtree text` as the effective name
+
+---
+
 ## [2.0.0] - 2026-04-05
 
 ### 🚀 Major Release — Sentinel becomes a full AI Agent Framework
