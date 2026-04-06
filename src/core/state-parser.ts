@@ -386,22 +386,35 @@ export class StateParser {
               return { id, context: dataContext };
             }
 
-            // img[alt] is often the brand/provider name in card UIs (logos)
+            // img[alt] is often the brand/provider name in card UIs (logos).
+            // Skip hidden images and alts that look like file descriptions.
             const imgAlt = (() => {
               for (const img of Array.from(container.querySelectorAll('img[alt]'))) {
-                const alt = (img as HTMLImageElement).alt.replace(/\s+/g, ' ').trim();
-                if (alt.length > 1 && alt.length < 60 && !isGeneric(alt)) return alt;
+                const el = img as HTMLImageElement;
+                if (el.offsetParent === null) continue;
+                const alt = el.alt.replace(/\s+/g, ' ').trim();
+                if (
+                  alt.length > 1 && alt.length < 60 &&
+                  !isGeneric(alt) &&
+                  !/[/\\]|icon|logo|check|image|photo|pic|banner|avatar/i.test(alt)
+                ) return alt;
               }
               return '';
             })();
 
-            // Build a richer label from heading + relevant p elements
-            const heading = container.querySelector('h1, h2, h3, h4, strong, b');
+            // Only consider visible headings — querySelector also matches elements
+            // inside hidden popovers/modals (display:none) which would produce
+            // wrong context. offsetParent === null for any display:none element.
+            const heading = Array.from(
+              container.querySelectorAll('h1, h2, h3, h4, strong, b')
+            ).find(h => (h as HTMLElement).offsetParent !== null) ?? null;
             const headingText = heading?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 
-            // Collect up to 2 short, non-generic p texts that add new information
+            // Collect up to 2 short, non-generic p texts that add new information.
+            // Skip hidden elements (inside popovers, modals, tooltips).
             const extraParts: string[] = [];
             for (const p of Array.from(container.querySelectorAll('p'))) {
+              if ((p as HTMLElement).offsetParent === null) continue;
               const t = p.textContent?.replace(/\s+/g, ' ').trim() ?? '';
               if (
                 t.length > 2 && t.length < 60 &&
@@ -414,10 +427,11 @@ export class StateParser {
               }
             }
 
-            // Collect short leaf-span/leaf-div texts (badges, labels, tags)
-            // Only leaf elements (no child elements) to avoid grabbing container text
+            // Collect short leaf-span/leaf-div texts (badges, labels, tags).
+            // Only visible leaf elements (no child elements).
             for (const node of Array.from(container.querySelectorAll('span, div'))) {
-              if (node.children.length > 0) continue; // skip containers
+              if (node.children.length > 0) continue;
+              if ((node as HTMLElement).offsetParent === null) continue;
               const t = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
               if (
                 t.length > 2 && t.length < 35 &&
