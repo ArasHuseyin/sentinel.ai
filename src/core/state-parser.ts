@@ -53,7 +53,6 @@ function isGenericName(name: string): boolean {
 const FORM_INPUT_ROLES = new Set(['textbox', 'combobox', 'spinbutton', 'searchbox']);
 
 export class StateParser {
-  private elementCounter = 0;
   private cachedState: SimplifiedState | null = null;
   private cacheTimestamp = 0;
 
@@ -70,7 +69,7 @@ export class StateParser {
       return this.cachedState;
     }
 
-    this.elementCounter = 0;
+    const counter = { n: 0 };
     const { nodes } = await this.cdp.send('Accessibility.getFullAXTree');
 
     // ─── Build lookup maps ────────────────────────────────────────────────────
@@ -115,7 +114,7 @@ export class StateParser {
         ? this.extractSubtreeText(node.nodeId, nodeMap, childrenMap)
         : '';
 
-      const element = this.nodeToUIElement(node, subtextContext, parentMap, nodeMap);
+      const element = this.nodeToUIElement(node, subtextContext, parentMap, nodeMap, counter);
       if (!element) continue;
 
       const x = model.content[0]!;
@@ -130,7 +129,7 @@ export class StateParser {
     // ─── DOM Fallback 1: sparse AOM (< 5 elements) ───────────────────────────
     // Full DOM snapshot when AOM yields too few elements (SPAs, shadow DOM, etc.)
     if (uiElements.length < 5) {
-      const domElements = await this.parseDOMSnapshot();
+      const domElements = await this.parseDOMSnapshot(counter);
       const existingNames = new Set(uiElements.map(e => e.name));
       for (const el of domElements) {
         if (!existingNames.has(el.name)) {
@@ -154,7 +153,7 @@ export class StateParser {
     // If no textbox / combobox / spinbutton is present, query the DOM directly.
     const hasFormInputs = uiElements.some(e => FORM_INPUT_ROLES.has(e.role));
     if (!hasFormInputs) {
-      const formElements = await this.parseFormElements();
+      const formElements = await this.parseFormElements(counter);
       const existingNames = new Set(uiElements.map(e => e.name));
       for (const el of formElements) {
         if (!existingNames.has(el.name) && el.name) {
@@ -176,7 +175,7 @@ export class StateParser {
 
   // ─── Private: DOM snapshot (sparse-AOM fallback) ─────────────────────────
 
-  private async parseDOMSnapshot(): Promise<UIElement[]> {
+  private async parseDOMSnapshot(counter: { n: number }): Promise<UIElement[]> {
     const genericNamesArray = [...GENERIC_NAMES];
 
     const rawElements = await this.page.evaluate((params: { genericNames: string[] }) => {
@@ -260,7 +259,7 @@ export class StateParser {
     }, { genericNames: genericNamesArray });
 
     return rawElements.map((el: any) => ({
-      id: this.elementCounter++,
+      id: counter.n++,
       role: el.role,
       name: el.name,
       boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
@@ -274,7 +273,7 @@ export class StateParser {
    * (e.g. CSS-styled components, shadow-DOM-adjacent inputs, hidden-then-visible fields).
    * Only runs when no textbox/combobox/spinbutton was found via AOM.
    */
-  private async parseFormElements(): Promise<UIElement[]> {
+  private async parseFormElements(counter: { n: number }): Promise<UIElement[]> {
     const rawElements = await this.page.evaluate(() => {
       const results: any[] = [];
       const seen = new Set<string>();
@@ -330,7 +329,7 @@ export class StateParser {
     });
 
     return rawElements.map((el: any) => ({
-      id: this.elementCounter++,
+      id: counter.n++,
       role: el.role,
       name: el.name,
       boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
@@ -550,7 +549,8 @@ export class StateParser {
     node: any,
     subtextContext: string,
     parentMap: Map<string, string>,
-    nodeMap: Map<string, any>
+    nodeMap: Map<string, any>,
+    counter: { n: number }
   ): UIElement | null {
     const role = node.role?.value || 'unknown';
     const name = node.name?.value || '';
@@ -583,7 +583,7 @@ export class StateParser {
     }
 
     return {
-      id: this.elementCounter++,
+      id: counter.n++,
       role,
       name: effectiveName,
       description: description || (name ? subtextContext : ''),

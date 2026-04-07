@@ -46,7 +46,7 @@ async function runOnixAutomation() {
   const sentinel = new Sentinel({
     apiKey:            process.env.GEMINI_API_KEY!,
     headless:          false,
-    verbose:           1,
+    verbose:           2,
     visionFallback:    true,   // Onix ist eine komplexe SPA – Vision Grounding aktiviert
     humanLike:         true,
     domSettleTimeoutMs: 4000,
@@ -109,7 +109,7 @@ async function runOnixAutomation() {
       'Suche in der Anbieterliste nach dem Anbieter "Kelag" (achte auf den Namen oder das Logo). ' +
       'Klicke beim Kelag-Angebot auf den Button "Tarif auswählen". ' +
       'Falls mehrere Kelag-Angebote vorhanden sind, nimm das oberste.',
-      { retries: 3 }
+      { retries: 2 }
     );
 
     log('Warte auf Kundendaten-Formular...');

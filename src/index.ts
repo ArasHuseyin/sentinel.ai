@@ -108,6 +108,7 @@ export class Sentinel extends EventEmitter {
   private readonly verbose: 0 | 1 | 2;
   private readonly enableCaching: boolean;
   private readonly domSettleTimeoutMs: number;
+  private _tokenUsageCallback: ((usage: { inputTokens: number; outputTokens: number }) => void) | undefined;
 
   constructor(options: SentinelOptions) {
     super();
@@ -130,6 +131,15 @@ export class Sentinel extends EventEmitter {
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
     this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview');
+
+    // Wire token usage tracking
+    const provider = this.gemini as any;
+    if (typeof provider === 'object' && provider !== null) {
+      this._tokenUsageCallback = (usage: { inputTokens: number; outputTokens: number }) => {
+        this.tokenTracker.track('llm-call', usage.inputTokens, usage.outputTokens);
+      };
+      provider.onTokenUsage = this._tokenUsageCallback;
+    }
   }
 
   // ─── Playwright passthrough ───────────────────────────────────────────────
@@ -155,11 +165,11 @@ export class Sentinel extends EventEmitter {
     if (this.visionFallback) {
       this.visionGrounding = new VisionGrounding(this.gemini);
     }
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined);
+    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
-    this.agentLoop = new AgentLoop(this.actionEngine, this.stateParser, this.gemini);
+    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini);
 
     this.log(1, '🚀 Sentinel initialized');
   }
@@ -173,6 +183,11 @@ export class Sentinel extends EventEmitter {
   }
 
   async close() {
+    const provider = this.gemini as any;
+    if (this._tokenUsageCallback && typeof provider === 'object' && provider !== null) {
+      provider.onTokenUsage = undefined;
+      this._tokenUsageCallback = undefined;
+    }
     await this.driver.close();
     this.emit('close');
     this.log(1, '🔒 Sentinel closed');
@@ -244,15 +259,14 @@ export class Sentinel extends EventEmitter {
    */
   async act(instruction: string, options?: ActOptions & { retries?: number }): Promise<ActionResult> {
     if (!this.actionEngine || !this.stateParser || !this.verifier) {
-      throw new Error('Sentinel not initialized. Call init() first.');
+      throw new NotInitializedError();
     }
-
-    if (!this.enableCaching) this.stateParser.invalidateCache();
 
     const retries = options?.retries ?? 2;
     let currentAttempt = 0;
 
     while (currentAttempt <= retries) {
+      this.stateParser.invalidateCache();
       const stateBefore = await this.stateParser.parse();
       const result = await this.actionEngine.act(instruction, options);
 

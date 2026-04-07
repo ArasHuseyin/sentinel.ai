@@ -3,9 +3,11 @@ import type { SimplifiedState } from '../core/state-parser.js';
 import type { AgentMemory } from './memory.js';
 
 export interface PlannedStep {
+  type: 'act' | 'extract';
   instruction: string;
   reasoning: string;
   isGoalComplete: boolean;
+  extractionSchema?: Record<string, any>;
 }
 
 /**
@@ -34,24 +36,28 @@ Current page:
 Steps taken so far:
 ${memory.getSummary()}
 
-Based on the current page state and history, decide the SINGLE next action to take.
+Based on the current page state and history, decide the SINGLE next step to take.
 If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.
 If you are stuck (same action repeated 3+ times without progress), try a different approach.
 
 Respond with:
-- instruction: a clear natural language instruction for the next action (e.g. "Click the search button", "Fill 'laptop' into the search field", "Scroll down to see more results")
+- type: "act" for browser actions (click, fill, scroll, etc.), "extract" for extracting structured data from the current page
+- instruction: a clear natural language instruction for the next action (e.g. "Click the search button", "Fill 'laptop' into the search field") or extraction (e.g. "Get all product names and prices")
 - reasoning: why this is the right next step
 - isGoalComplete: true only if the goal has been fully achieved
+- extractionSchema: (optional, only when type is "extract") a JSON schema object describing the structure of data to extract
     `;
 
     const schema = {
       type: 'object',
       properties: {
+        type: { type: 'string', enum: ['act', 'extract'] },
         instruction: { type: 'string' },
         reasoning: { type: 'string' },
         isGoalComplete: { type: 'boolean' },
+        extractionSchema: { type: 'object' },
       },
-      required: ['instruction', 'reasoning', 'isGoalComplete'],
+      required: ['type', 'instruction', 'reasoning', 'isGoalComplete'],
     };
 
     return await this.gemini.generateStructuredData<PlannedStep>(prompt, schema);

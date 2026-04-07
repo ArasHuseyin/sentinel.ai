@@ -4,6 +4,7 @@ import type { UIElement } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { VisionGrounding } from '../core/vision-grounding.js';
 import { withTimeout } from '../utils/with-timeout.js';
+import { ActionError } from '../types/errors.js';
 
 export interface ActOptions {
   variables?: Record<string, string>;
@@ -19,6 +20,7 @@ export interface ActionResult {
 type ActionType =
   | 'click'
   | 'fill'
+  | 'append'
   | 'hover'
   | 'press'
   | 'select'
@@ -51,32 +53,34 @@ async function waitForPageSettle(page: Page, timeout = 3000): Promise<void> {
   const stabilityMs = 300;
   const hardCapMs = Math.min(timeout, 3000);
 
-  try {
-    await page.evaluate(
-      ({ stabilityMs, hardCapMs }: { stabilityMs: number; hardCapMs: number }) =>
-        new Promise<void>(resolve => {
-          let timer: ReturnType<typeof setTimeout> = setTimeout(resolve, stabilityMs);
-          const observer = new MutationObserver(() => {
-            clearTimeout(timer);
-            timer = setTimeout(resolve, stabilityMs);
-          });
-          observer.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            characterData: true,
-          });
-          // Hard cap – never block longer than this
-          setTimeout(() => {
-            observer.disconnect();
-            resolve();
-          }, hardCapMs);
-        }),
-      { stabilityMs, hardCapMs }
-    );
-  } catch {
-    // Page is navigating, has no body, or the script was interrupted — proceed anyway.
-  }
+  const domSettle = page.evaluate(
+    ({ stabilityMs, hardCapMs }: { stabilityMs: number; hardCapMs: number }) =>
+      new Promise<void>(resolve => {
+        let timer: ReturnType<typeof setTimeout> = setTimeout(resolve, stabilityMs);
+        const observer = new MutationObserver(() => {
+          clearTimeout(timer);
+          timer = setTimeout(resolve, stabilityMs);
+        });
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          characterData: true,
+        });
+        setTimeout(() => {
+          observer.disconnect();
+          resolve();
+        }, hardCapMs);
+      }),
+    { stabilityMs, hardCapMs }
+  ).catch(() => {});
+
+  const navigationSettle = page.waitForNavigation({
+    waitUntil: 'domcontentloaded',
+    timeout: hardCapMs,
+  }).catch(() => {});
+
+  await Promise.race([domSettle, navigationSettle]);
 }
 
 export class ActionEngine {
@@ -84,7 +88,8 @@ export class ActionEngine {
     private page: Page,
     private stateParser: StateParser,
     private gemini: LLMProvider,
-    private visionGrounding?: VisionGrounding
+    private visionGrounding?: VisionGrounding,
+    private domSettleTimeoutMs = 3000
   ) {}
 
   async act(instruction: string, options?: ActOptions): Promise<ActionResult> {
@@ -105,6 +110,7 @@ export class ActionEngine {
       - "double-click": double click on an element
       - "right-click": right-click (context menu) on an element
       - "fill": type text into an input field (requires "value")
+      - "append": add text to the end of an input field without clearing existing content (requires "value")
       - "hover": move mouse over an element
       - "press": press a keyboard key or shortcut (requires "value", e.g. "Enter", "Escape", "Tab", "Control+a")
       - "select": select an option from a <select> dropdown (requires "value" = option text or value)
@@ -112,7 +118,7 @@ export class ActionEngine {
       - "scroll-up": scroll the page up (elementId optional, use 0 if no specific element)
       - "scroll-to": scroll to bring a specific element into view (requires elementId)
 
-      If the action is "fill", "press", or "select", provide the "value" field.
+      If the action is "fill", "append", "press", or "select", provide the "value" field.
       For scroll actions without a target element, set elementId to 0.
       Provide clear reasoning for your choice.
     `;
@@ -125,7 +131,7 @@ export class ActionEngine {
           type: 'string',
           enum: [
             'click', 'double-click', 'right-click',
-            'fill', 'hover', 'press', 'select',
+            'fill', 'append', 'hover', 'press', 'select',
             'scroll-down', 'scroll-up', 'scroll-to',
           ],
         },
@@ -166,7 +172,7 @@ export class ActionEngine {
 
     try {
       await this.performAction(decision.action, target, decision.value);
-      await waitForPageSettle(this.page);
+      await waitForPageSettle(this.page, this.domSettleTimeoutMs);
       return {
         success: true,
         message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''}`,
@@ -188,7 +194,7 @@ export class ActionEngine {
             const cx = bbox.x + bbox.width / 2;
             const cy = bbox.y + bbox.height / 2;
             await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${target.name}"`);
-            await waitForPageSettle(this.page);
+            await waitForPageSettle(this.page, this.domSettleTimeoutMs);
             return {
               success: true,
               message: `Successfully performed ${decision.action} on "${target.name}" (via Vision Grounding)`,
@@ -203,7 +209,7 @@ export class ActionEngine {
       console.warn(`[Act] Primary action failed, trying semantic fallback... (${primaryError.message})`);
       try {
         await this.performSemanticFallback(decision.action, target, decision.value);
-        await waitForPageSettle(this.page);
+        await waitForPageSettle(this.page, this.domSettleTimeoutMs);
         return {
           success: true,
           message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''} (via fallback)`,
@@ -233,7 +239,7 @@ export class ActionEngine {
       return;
     }
 
-    if (!target) throw new Error('No target element provided for action: ' + action);
+    if (!target) throw new ActionError('No target element provided', { action });
 
     const { x, y, width, height } = target.boundingClientRect;
     const cx = x + width / 2;
@@ -245,8 +251,9 @@ export class ActionEngine {
     // can handle it — cheaper than a misplaced click.
     const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
     if (cx < 0 || cy < 0 || cx > viewport.width || cy > viewport.height) {
-      throw new Error(
-        `Element "${target.name}" is outside viewport at (${cx.toFixed(0)}, ${cy.toFixed(0)}) — triggering scroll fallback`
+      throw new ActionError(
+        `Element "${target.name}" is outside viewport at (${cx.toFixed(0)}, ${cy.toFixed(0)}) — triggering scroll fallback`,
+        { element: target.name, x: cx, y: cy }
       );
     }
 
@@ -293,6 +300,12 @@ export class ActionEngine {
       case 'fill':
         await withTimeout(this.page.mouse.click(cx, cy, { clickCount: 3 }), 10_000, `focus "${target.name}"`);
         await withTimeout(this.page.keyboard.type(value || ''), 10_000, `type into "${target.name}"`);
+        break;
+
+      case 'append':
+        await withTimeout(this.page.mouse.click(cx, cy), 10_000, `focus "${target.name}"`);
+        await withTimeout(this.page.keyboard.press('End'), 10_000, `move to end "${target.name}"`);
+        await withTimeout(this.page.keyboard.type(value || ''), 10_000, `append to "${target.name}"`);
         break;
 
       case 'hover':
@@ -415,7 +428,7 @@ export class ActionEngine {
       return;
     }
 
-    if (!target) throw new Error('No target element for semantic fallback: ' + action);
+    if (!target) throw new ActionError('No target element for semantic fallback', { action });
 
     const locator = await this.findBestLocator(target);
 
@@ -443,7 +456,12 @@ export class ActionEngine {
         break;
 
       case 'fill':
-        await locator.click({ clickCount: 3, timeout: 5000 });
+        await locator.fill(value || '', { timeout: 5000 });
+        break;
+
+      case 'append':
+        await locator.focus({ timeout: 5000 });
+        await locator.press('End');
         await locator.pressSequentially(value || '', { delay: 30 });
         break;
 

@@ -123,7 +123,9 @@ export class SentinelDriver {
     if (!this.pages[index]) throw new Error(`Tab ${index} does not exist`);
     await this.pages[index]!.close();
     this.pages.splice(index, 1);
-    if (this.activePageIndex >= this.pages.length) {
+    if (index < this.activePageIndex) {
+      this.activePageIndex--;
+    } else if (this.activePageIndex >= this.pages.length) {
       this.activePageIndex = Math.max(0, this.pages.length - 1);
     }
     console.log(`[Driver] Tab ${index} closed`);

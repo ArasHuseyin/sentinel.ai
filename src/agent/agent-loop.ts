@@ -1,4 +1,5 @@
 import type { ActionEngine } from '../api/act.js';
+import type { ExtractionEngine } from '../api/extract.js';
 import type { StateParser } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import { AgentMemory } from './memory.js';
@@ -11,11 +12,13 @@ export interface AgentRunOptions {
 
 export interface AgentStepEvent {
   stepNumber: number;
+  type: 'act' | 'extract';
   instruction: string;
   reasoning: string;
   success: boolean;
   pageUrl: string;
   pageTitle: string;
+  data?: any;
 }
 
 export interface AgentResult {
@@ -24,6 +27,7 @@ export interface AgentResult {
   totalSteps: number;
   message: string;
   history: AgentStepEvent[];
+  data?: any;
 }
 
 /**
@@ -36,6 +40,7 @@ export class AgentLoop {
 
   constructor(
     private actionEngine: ActionEngine,
+    private extractionEngine: ExtractionEngine,
     private stateParser: StateParser,
     private gemini: LLMProvider
   ) {
@@ -52,6 +57,7 @@ export class AgentLoop {
 
     let stepNumber = 0;
     let consecutiveFailures = 0;
+    let extractedData: any = undefined;
 
     while (stepNumber < maxSteps) {
       stepNumber++;
@@ -77,6 +83,7 @@ export class AgentLoop {
         console.log(`[Agent] ✅ Goal marked complete by planner.`);
         const event: AgentStepEvent = {
           stepNumber,
+          type: planned.type ?? 'act',
           instruction: planned.instruction,
           reasoning: planned.reasoning,
           success: true,
@@ -91,24 +98,42 @@ export class AgentLoop {
           totalSteps: stepNumber,
           message: `Goal achieved in ${stepNumber} step(s).`,
           history: stepEvents,
+          ...(extractedData !== undefined ? { data: extractedData } : {}),
         };
       }
 
       // 4. Execute the planned step
+      const stepType = planned.type ?? 'act';
       let result;
-      try {
-        result = await this.actionEngine.act(planned.instruction);
-      } catch (err: any) {
-        result = { success: false, message: err.message, action: planned.instruction };
+      let stepData: any = undefined;
+
+      if (stepType === 'extract') {
+        try {
+          const schema = planned.extractionSchema ?? { type: 'object' };
+          const extracted = await this.extractionEngine.extract(planned.instruction, schema);
+          extractedData = extracted;
+          stepData = extracted;
+          result = { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
+        } catch (err: any) {
+          result = { success: false, message: err.message, action: `extract: ${planned.instruction}` };
+        }
+      } else {
+        try {
+          result = await this.actionEngine.act(planned.instruction);
+        } catch (err: any) {
+          result = { success: false, message: err.message, action: planned.instruction };
+        }
       }
 
       const event: AgentStepEvent = {
         stepNumber,
+        type: stepType,
         instruction: planned.instruction,
         reasoning: planned.reasoning,
         success: result.success,
         pageUrl: state.url,
         pageTitle: state.title,
+        ...(stepData !== undefined ? { data: stepData } : {}),
       };
       stepEvents.push(event);
       options.onStep?.(event);
@@ -172,6 +197,7 @@ export class AgentLoop {
       totalSteps: stepNumber,
       message,
       history: stepEvents,
+      ...(extractedData !== undefined ? { data: extractedData } : {}),
     };
   }
 }

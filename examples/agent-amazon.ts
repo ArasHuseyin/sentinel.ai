@@ -30,7 +30,8 @@ async function run() {
     {
       maxSteps: 10,
       onStep: step => {
-        console.log(`\n[Step ${step.stepNumber}] ${step.success ? '✅' : '❌'} ${step.instruction}`);
+        const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
+        console.log(`\n[Step ${step.stepNumber}] ${icon} ${step.instruction}`);
         console.log(`  → ${step.reasoning}`);
       },
     }
@@ -40,6 +41,11 @@ async function run() {
   console.log(`🎯 Goal achieved: ${result.goalAchieved}`);
   console.log(`📊 Total steps: ${result.totalSteps}`);
   console.log(`💬 ${result.message}`);
+
+  if (result.data) {
+    console.log('\n📦 Extracted data:');
+    console.log(JSON.stringify(result.data, null, 2));
+  }
 
   // Token usage summary
   const usage = sentinel.getTokenUsage();

@@ -6,7 +6,198 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
-## [2.4.0] - 2026-04-06
+## [3.1.1] - 2026-04-07
+
+### Fixed
+
+#### Stale DOM state on `act()` retries
+`stateParser.invalidateCache()` was called only once before the retry loop. On the 2nd and 3rd attempt the agent re-read the DOM from a stale cache, causing it to repeat actions based on outdated state. The cache is now invalidated at the start of every attempt.
+
+#### `closeTab()` corrupts active page index
+When a tab with an index lower than the currently active tab was closed, `activePageIndex` was not decremented. All subsequent `getPage()` calls pointed to the wrong tab or crashed with `undefined`. Fixed with a pre-splice index comparison.
+
+#### `elementCounter` race condition in `StateParser`
+`elementCounter` was an instance variable reset at the start of every `parse()` call. Parallel `parse()` calls (via `Promise.allSettled`) would reset each other's counter mid-run, producing duplicate element IDs. The counter is now a local variable threaded through `parseDOMSnapshot`, `parseFormElements`, and `nodeToUIElement`.
+
+#### Wrong model in `GeminiProvider.generateText()` with `systemInstruction`
+When `generateText` was called with a `systemInstruction` argument, it created a new model instance from `process.env.GEMINI_VERSION` directly, ignoring the model passed to the constructor via `options.model`. The model name is now stored as `this.modelName` and used consistently in all code paths.
+
+#### `onTokenUsage` callback not removed on `close()`
+The token-usage callback was assigned to the LLM provider on construction but never removed. After `sentinel.close()`, the provider still held a closure reference to the `TokenTracker`, preventing garbage collection. The callback is now nulled out in `close()`.
+
+#### MCP tool handlers crash on `sessionFactory()` failure
+All seven MCP tool handlers (`sentinel_goto`, `sentinel_act`, `sentinel_extract`, `sentinel_observe`, `sentinel_run`, `sentinel_screenshot`, `sentinel_token_usage`) lacked error handling. A browser initialization failure would crash the entire MCP server process. Each handler is now wrapped in try-catch and returns a structured `isError: true` response.
+
+#### OpenAI provider: `JSON.parse` throws untyped error
+`generateStructuredData` in `OpenAIProvider` called `JSON.parse()` without a try-catch. A malformed or filtered API response would throw a raw `SyntaxError` instead of an `LLMError`, bypassing retry logic and error handlers. Fixed to match the pattern already used in `OllamaProvider`.
+
+#### Claude provider: `response.content` accessed without null guard
+All three methods in `ClaudeProvider` (`generateStructuredData`, `analyzeImage`, `generateText`) called `.find()` on `response.content` without optional chaining. With the `any`-typed response, a missing `content` field would throw a `TypeError`. Changed to `(response.content as any[])?.find(...)`.
+
+#### CLI `--headless` dead-code fallback
+`opts.headless ?? true` in `resolveSentinel()` could never evaluate to `true` — Commander always initialises the `--headless` flag to `false` when not passed. Changed to `opts.headless ?? false` for correctness.
+
+---
+
+## [3.1.0] - 2026-04-07
+
+### Added
+
+#### CLI Tool (`sentinel` / `npx @isoldex/sentinel`)
+Sentinel is now usable without writing any code. A `sentinel` binary is included in the npm package with four subcommands:
+
+```bash
+# Run an autonomous agent
+npx @isoldex/sentinel run "Search for mechanical keyboards" --url https://amazon.de --output result.json
+
+# Perform a single action
+npx @isoldex/sentinel act "Click the login button" --url https://example.com
+
+# Extract structured data
+npx @isoldex/sentinel extract "Get all product names and prices" --url https://shop.example.com --schema '{"type":"object"}'
+
+# Take a screenshot
+npx @isoldex/sentinel screenshot --url https://example.com --output page.png
+```
+
+All commands accept `--api-key`, `--headless`, and `--model` flags. The API key falls back to `GEMINI_API_KEY` in the environment. Exit code is `0` on success, `1` on failure.
+
+#### MCP Server (`sentinel-mcp`)
+Sentinel is now available as an MCP (Model Context Protocol) server. This exposes all browser automation capabilities directly to AI assistants like Cursor, Windsurf, and Claude Desktop — no code required.
+
+**Setup:** Add to your MCP client configuration:
+```json
+{
+  "mcpServers": {
+    "sentinel": {
+      "command": "npx",
+      "args": ["@isoldex/sentinel/mcp"],
+      "env": { "GEMINI_API_KEY": "your-key-here" }
+    }
+  }
+}
+```
+
+**Available tools:**
+| Tool | Description |
+|---|---|
+| `sentinel_goto` | Navigate to a URL |
+| `sentinel_act` | Perform a natural language action |
+| `sentinel_extract` | Extract structured data from the current page |
+| `sentinel_observe` | List interactive elements |
+| `sentinel_run` | Run the autonomous agent loop |
+| `sentinel_screenshot` | Take a screenshot (returns base64 image) |
+| `sentinel_close` | Close the browser session |
+| `sentinel_token_usage` | Get accumulated token usage and cost |
+
+The browser session persists across tool calls within the same MCP server process. Set `SENTINEL_HEADLESS=false` to show the browser window during development.
+
+#### Playwright Test Integration (`@isoldex/sentinel/test`)
+Drop-in integration for existing Playwright Test suites. Import the extended `test` object and use the `ai` fixture for natural language actions alongside regular Playwright assertions:
+
+```typescript
+import { test, expect } from '@isoldex/sentinel/test';
+
+test('completes checkout flow', async ({ ai, page }) => {
+  await ai.goto('https://shop.example.com');
+  await ai.act('Click the first product');
+  await ai.act('Click Add to Cart');
+  await ai.act('Proceed to checkout');
+
+  const order = await ai.extract<{ total: string; items: number }>(
+    'Get the order total and item count',
+    z.object({ total: z.string(), items: z.number() })
+  );
+
+  expect(order.items).toBeGreaterThan(0);
+  console.log('Token cost:', ai.getTokenUsage().estimatedCostUsd);
+});
+```
+
+Override Sentinel options per test or globally:
+```typescript
+// playwright.config.ts
+test.use({ sentinelOptions: { headless: false, verbose: 1 } });
+```
+
+The `ai` fixture auto-initializes before each test and auto-closes after, regardless of test outcome. The underlying Playwright page is accessible via `ai.page`.
+
+---
+
+## [3.0.0] - 2026-04-07
+
+### Breaking Changes
+
+#### AgentLoop constructor signature changed
+`AgentLoop` now requires `extractionEngine` as the second parameter:
+
+```typescript
+// Before (v2.x)
+new AgentLoop(actionEngine, stateParser, llm)
+
+// After (v3.0)
+new AgentLoop(actionEngine, extractionEngine, stateParser, llm)
+```
+
+Users who construct `AgentLoop` directly must update their call sites. Users who only use `sentinel.run()` are unaffected — the `Sentinel` class handles this automatically.
+
+---
+
+### Added
+
+#### `extract()` step type in AgentLoop (`result.data`)
+The AgentLoop planner can now issue `extract` steps in addition to `act` steps. When the planner determines that structured data should be collected mid-goal, it generates a schema and delegates to `ExtractionEngine`. The final `AgentResult` now includes a `data` field containing the extracted payload:
+
+```typescript
+const result = await sentinel.run('Go to Amazon, search for "laptop", extract top 5 results');
+console.log(result.data); // { products: [{ name: '...', price: ... }, ...] }
+```
+
+`AgentStepEvent` now includes `type: 'act' | 'extract'` and an optional `data` field for streaming UIs.
+
+#### `append` action type (ActionEngine)
+New `append` action appends text to an input field without clearing its existing content. Uses `End` key + `keyboard.type` for the primary path and `locator.pressSequentially` for the semantic fallback:
+
+```typescript
+await sentinel.act('Append " (urgent)" to the subject field');
+```
+
+#### Token usage tracking (`onTokenUsage` callback)
+All four built-in providers (`GeminiProvider`, `OpenAIProvider`, `ClaudeProvider`, `OllamaProvider`) now fire `provider.onTokenUsage({ inputTokens, outputTokens, totalTokens })` after every LLM call. The `Sentinel` class wires this automatically to `TokenTracker`, so `sentinel.getTokenUsage()` now returns accurate totals instead of zeros.
+
+#### `withRetry` unified utility (`src/utils/with-retry.ts`)
+Extracted the retry-with-exponential-backoff logic that was copy-pasted across all four providers into a single shared utility. All providers now call `withRetry(fn, label)` — 3 attempts, doubling delay from 1s, triggered on HTTP 429 / 503 / `ECONNRESET` / timeout.
+
+#### Provider test coverage: 0% → 94% (`providers.test.ts`)
+16 new unit tests covering `ClaudeProvider` and `OpenAIProvider` for `generateStructuredData`, `generateText`, and `analyzeImage`. Tests use `Object.create(Provider.prototype)` + direct client injection to bypass optional SDK dependencies entirely — no virtual mocks required in ESM.
+
+#### 10 new integration tests (`integration.test.ts`, `action-engine.test.ts`)
+- `ActionEngine`: `append` action, semantic fallback on viewport-out-of-bounds elements, both-paths-fail scenario
+- `Integration: AgentLoop`: multi-step goal completion, consecutive-failure abort, instruction loop detection
+- `Integration: ExtractionEngine`: AOM + page text combined in prompt, graceful page-text failure
+
+### Fixed
+
+#### `domSettleTimeoutMs` not forwarded to `waitForPageSettle`
+The `domSettleTimeoutMs` option was stored in the `Sentinel` constructor but never passed to `ActionEngine`, which always used the hardcoded default of 3000ms. `ActionEngine` now accepts `domSettleTimeoutMs` as a constructor parameter and passes it to all three `waitForPageSettle` call sites (primary path, Vision Grounding path, semantic fallback path).
+
+#### `waitForNavigation` race condition
+After an action, Sentinel now uses `Promise.race([domSettle, navigationSettle])` instead of only the MutationObserver. Full-page navigations triggered by clicks (form submissions, link clicks) are now awaited correctly without waiting for the full 3-second DOM-silence cap.
+
+#### Verifier Fast-Path 4 removed (false positives)
+Fast Path 4 (element count delta > 3 → auto-success) was triggering false positives on pages with dynamic content unrelated to the user action (ads, tickers, live feeds). Removed entirely. The LLM verification path now handles all non-trivial state changes.
+
+#### `NotInitializedError` in `sentinel.act()`
+`sentinel.act()` now throws `NotInitializedError` (structured error class) instead of a generic `Error('Sentinel not initialized')` when called before `init()`. Consistent with all other API methods.
+
+### Changed
+
+#### `SchemaInput<T>` type precision
+`SchemaInput<T>` changed from `z.ZodType` (unparameterized) to `z.ZodType<T>`. `extract<T>(instruction, schema)` now infers the return type correctly from the Zod schema without requiring a manual type annotation.
+
+---
+
+## [2.3.3] - 2026-04-06
 
 ### Added
 

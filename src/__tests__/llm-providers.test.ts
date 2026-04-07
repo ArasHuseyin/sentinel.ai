@@ -123,6 +123,14 @@ describe('LLM Providers – documented models', () => {
     });
   });
 
+  describe('onTokenUsage callback', () => {
+    it('GeminiProvider has onTokenUsage property', () => {
+      process.env.GEMINI_VERSION = 'gemini-3-flash-preview';
+      const provider = new GeminiProvider({ apiKey: 'test-key' });
+      expect('onTokenUsage' in provider).toBe(true);
+    });
+  });
+
   describe('README Supported Models table – completeness check', () => {
     it('all documented Gemini models are listed', () => {
       expect(GEMINI_MODELS).toContain('gemini-3-flash-preview');

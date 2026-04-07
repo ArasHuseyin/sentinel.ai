@@ -27,6 +27,12 @@ function makeActionEngine(success = true, message = 'done') {
   };
 }
 
+function makeExtractionEngine() {
+  return {
+    extract: jest.fn(async () => ({})),
+  };
+}
+
 /**
  * Creates a mock LLMProvider whose generateStructuredData returns a given
  * PlannedStep shape on every call (covers both planNextStep and reflect).
@@ -38,6 +44,7 @@ function makePlannerLLM(overrides: {
 } = {}): LLMProvider {
   return {
     generateStructuredData: jest.fn(async () => ({
+      type: 'act',
       instruction: overrides.instruction ?? 'click the button',
       reasoning: 'test reasoning',
       isGoalComplete: overrides.isGoalComplete ?? false,
@@ -57,7 +64,7 @@ describe('AgentLoop', () => {
       const actionEngine = makeActionEngine(true);
       const stateParser = makeStateParser();
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('achieve test goal', { maxSteps: 15 });
 
       // Loop detection fires after step 3 → agent stops before maxSteps
@@ -75,10 +82,10 @@ describe('AgentLoop', () => {
           // After 4 planning calls, mark goal complete on the reflect call
           if (callCount >= instructions.length) {
             callCount++;
-            return { instruction: 'done', reasoning: '', isGoalComplete: false, goalAchieved: true, reason: 'done' };
+            return { type: 'act', instruction: 'done', reasoning: '', isGoalComplete: false, goalAchieved: true, reason: 'done' };
           }
           callCount++;
-          return { instruction, reasoning: 'reason', isGoalComplete: false, goalAchieved: false, reason: '' };
+          return { type: 'act', instruction, reasoning: 'reason', isGoalComplete: false, goalAchieved: false, reason: '' };
         }) as any,
         generateText: jest.fn(async () => ''),
       };
@@ -86,7 +93,7 @@ describe('AgentLoop', () => {
       const actionEngine = makeActionEngine(true);
       const stateParser = makeStateParser();
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('achieve test goal', { maxSteps: 4 });
 
       // Should NOT have been stopped by loop detection (different instructions)
@@ -107,6 +114,7 @@ describe('AgentLoop', () => {
       (llm.generateStructuredData as jest.Mock).mockImplementation(async () => {
         step++;
         return {
+          type: 'act',
           instruction: `action step ${step}`,
           reasoning: 'retry',
           isGoalComplete: false,
@@ -115,7 +123,7 @@ describe('AgentLoop', () => {
         };
       });
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('do something', { maxSteps: 15 });
 
       expect(result.totalSteps).toBe(3);
@@ -142,6 +150,7 @@ describe('AgentLoop', () => {
         generateStructuredData: jest.fn(async () => {
           planCount++;
           return {
+            type: 'act',
             instruction: `unique step ${planCount}`,
             reasoning: '',
             isGoalComplete: false,
@@ -153,7 +162,7 @@ describe('AgentLoop', () => {
       };
       const stateParser = makeStateParser();
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('do something', { maxSteps: 6 });
 
       // Should reach maxSteps without aborting due to consecutive failures
@@ -167,7 +176,7 @@ describe('AgentLoop', () => {
       const actionEngine = makeActionEngine(true);
       const stateParser = makeStateParser();
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('click login and succeed', { maxSteps: 10 });
 
       expect(result.goalAchieved).toBe(true);
@@ -181,20 +190,86 @@ describe('AgentLoop', () => {
       let callCount = 0;
       (llm.generateStructuredData as jest.Mock).mockImplementation(async () => {
         callCount++;
-        if (callCount === 1) return { instruction: 'click A', reasoning: 'r', isGoalComplete: false, goalAchieved: false, reason: '' };
-        return { instruction: 'click A', reasoning: 'r', isGoalComplete: false, goalAchieved: false, reason: '' };
+        if (callCount === 1) return { type: 'act', instruction: 'click A', reasoning: 'r', isGoalComplete: false, goalAchieved: false, reason: '' };
+        return { type: 'act', instruction: 'click A', reasoning: 'r', isGoalComplete: false, goalAchieved: false, reason: '' };
       });
 
       const actionEngine = makeActionEngine(true);
       const stateParser = makeStateParser();
       const stepEvents: any[] = [];
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       await loop.run('goal', { maxSteps: 3, onStep: (e) => stepEvents.push(e) });
 
       // 3 steps should have fired onStep (loop detection aborts after step 3)
       expect(stepEvents).toHaveLength(3);
       expect(stepEvents[0]).toMatchObject({ stepNumber: 1, success: true });
+    });
+  });
+
+  describe('extract step type', () => {
+    it('calls extractionEngine.extract() when planner returns type: extract', async () => {
+      const extractionEngine = makeExtractionEngine();
+      extractionEngine.extract = jest.fn(async () => ({ products: ['Laptop', 'Phone'] }));
+
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn<() => Promise<any>>()
+          .mockResolvedValueOnce({ type: 'extract', instruction: 'Get products', reasoning: 'Need data', isGoalComplete: false })
+          .mockResolvedValueOnce({ type: 'act', instruction: 'done', reasoning: '', isGoalComplete: true })
+          .mockResolvedValueOnce({ goalAchieved: true, reason: 'done' }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+
+      const stateParser = makeStateParser();
+      const actionEngine = makeActionEngine(true);
+
+      const loop = new AgentLoop(actionEngine as any, extractionEngine as any, stateParser as any, llm);
+      const result = await loop.run('extract product list', { maxSteps: 10 });
+
+      expect(extractionEngine.extract).toHaveBeenCalled();
+      expect(result.data).toEqual({ products: ['Laptop', 'Phone'] });
+    });
+
+    it('stores extracted data in AgentResult.data', async () => {
+      const extractionEngine = makeExtractionEngine();
+      extractionEngine.extract = jest.fn(async () => ({ products: ['Laptop', 'Phone'] }));
+
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn<() => Promise<any>>()
+          .mockResolvedValueOnce({ type: 'extract', instruction: 'Get products', reasoning: 'Need data', isGoalComplete: false })
+          .mockResolvedValueOnce({ type: 'act', instruction: 'done', reasoning: '', isGoalComplete: true })
+          .mockResolvedValueOnce({ goalAchieved: true, reason: 'done' }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+
+      const stateParser = makeStateParser();
+      const actionEngine = makeActionEngine(true);
+
+      const loop = new AgentLoop(actionEngine as any, extractionEngine as any, stateParser as any, llm);
+      const result = await loop.run('extract product list', { maxSteps: 10 });
+
+      expect(result.data).toEqual({ products: ['Laptop', 'Phone'] });
+    });
+
+    it('records extract step in history with type: extract', async () => {
+      const extractionEngine = makeExtractionEngine();
+      extractionEngine.extract = jest.fn(async () => ({ items: [1, 2, 3] }));
+
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn<() => Promise<any>>()
+          .mockResolvedValueOnce({ type: 'extract', instruction: 'Get items', reasoning: 'Need items', isGoalComplete: false })
+          .mockResolvedValueOnce({ type: 'act', instruction: 'done', reasoning: '', isGoalComplete: true })
+          .mockResolvedValueOnce({ goalAchieved: true, reason: 'done' }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+
+      const stateParser = makeStateParser();
+      const actionEngine = makeActionEngine(true);
+
+      const loop = new AgentLoop(actionEngine as any, extractionEngine as any, stateParser as any, llm);
+      const result = await loop.run('extract items', { maxSteps: 10 });
+
+      expect(result.history[0]?.type).toBe('extract');
     });
   });
 
@@ -204,7 +279,7 @@ describe('AgentLoop', () => {
       const actionEngine = makeActionEngine(true);
       const stateParser = makeStateParser();
 
-      const loop = new AgentLoop(actionEngine as any, stateParser as any, llm);
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('test goal', { maxSteps: 15 });
 
       // Loop detection fires after 3 steps

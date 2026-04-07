@@ -91,18 +91,6 @@ export class Verifier {
       };
     }
 
-    // ── Fast path 4: Large DOM delta → modal/list loaded ─────────────────────
-    const elementDelta = Math.abs(stateAfter.elements.length - stateBefore.elements.length);
-    if (elementDelta > 3) {
-      console.log(`[Verifier] Element count changed by ${elementDelta}. Auto-success.`);
-      return {
-        done: true,
-        success: true,
-        message: `DOM changed significantly (${elementDelta} elements added/removed)`,
-        confidence: 0.88,
-      };
-    }
-
     // ── Slow path: LLM semantic verification ─────────────────────────────────
     const prompt = `
       I performed an action on a web page: "${action}"

@@ -1,29 +1,10 @@
-import type { LLMProvider, SchemaInput } from '../llm-provider.js';
+import { z } from 'zod';
+import type { LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import { LLMError } from '../../types/errors.js';
+import { withRetry } from '../with-retry.js';
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1000;
-
-async function withRetry<T>(fn: () => Promise<T>, retries = MAX_RETRIES): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastError = err;
-      const isRetryable =
-        err?.status === 429 ||
-        err?.status === 503 ||
-        err?.message?.includes('fetch failed') ||
-        err?.message?.includes('ECONNRESET') ||
-        err?.message?.includes('rate limit') ||
-        err?.message?.includes('timeout');
-      if (!isRetryable || attempt === retries - 1) throw err;
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-      console.warn(`[OpenAI] Retryable error (attempt ${attempt + 1}/${retries}). Retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
+function isZodSchema(schema: unknown): schema is z.ZodType {
+  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
 }
 
 export interface OpenAIProviderOptions {
@@ -39,6 +20,7 @@ export interface OpenAIProviderOptions {
 export class OpenAIProvider implements LLMProvider {
   private client: any;
   private model: string;
+  onTokenUsage?: (usage: TokenUsage) => void;
 
   constructor(options: OpenAIProviderOptions) {
     try {
@@ -49,11 +31,22 @@ export class OpenAIProvider implements LLMProvider {
         ...(options.baseURL ? { baseURL: options.baseURL } : {}),
       });
     } catch {
-      throw new Error(
-        '[OpenAIProvider] "openai" package not found. Install it with: npm install openai'
+      throw new LLMError(
+        '"openai" package not found. Install it with: npm install openai'
       );
     }
     this.model = options.model ?? 'gpt-4o';
+  }
+
+  private reportUsage(response: any): void {
+    const usage = response?.usage;
+    if (usage) {
+      this.onTokenUsage?.({
+        inputTokens: usage.prompt_tokens ?? 0,
+        outputTokens: usage.completion_tokens ?? 0,
+        totalTokens: usage.total_tokens ?? 0,
+      });
+    }
   }
 
   async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
@@ -70,9 +63,17 @@ export class OpenAIProvider implements LLMProvider {
           },
         },
       });
+      this.reportUsage(response);
       const content = response.choices[0]?.message?.content ?? '{}';
-      return JSON.parse(content) as T;
-    });
+      let parsed: any;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        throw new LLMError(`Failed to parse JSON response: ${content}`);
+      }
+      if (isZodSchema(schema)) return (schema as z.ZodType<T>).parse(parsed);
+      return parsed as T;
+    }, 'OpenAI');
   }
 
   async analyzeImage(prompt: string, imageBase64: string, mimeType = 'image/png'): Promise<string> {
@@ -89,8 +90,9 @@ export class OpenAIProvider implements LLMProvider {
           },
         ],
       });
+      this.reportUsage(response);
       return response.choices[0]?.message?.content ?? '';
-    });
+    }, 'OpenAI');
   }
 
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
@@ -105,7 +107,8 @@ export class OpenAIProvider implements LLMProvider {
         model: this.model,
         messages,
       });
+      this.reportUsage(response);
       return response.choices[0]?.message?.content ?? '';
-    });
+    }, 'OpenAI');
   }
 }

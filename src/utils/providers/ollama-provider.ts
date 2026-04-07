@@ -1,28 +1,10 @@
-import type { LLMProvider, SchemaInput } from '../llm-provider.js';
+import { z } from 'zod';
+import type { LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import { LLMError } from '../../types/errors.js';
+import { withRetry } from '../with-retry.js';
 
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 1000;
-
-async function withRetry<T>(fn: () => Promise<T>, retries = MAX_RETRIES): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastError = err;
-      const isRetryable =
-        err?.message?.includes('fetch failed') ||
-        err?.message?.includes('ECONNRESET') ||
-        err?.message?.includes('ECONNREFUSED') ||
-        err?.message?.includes('timeout') ||
-        (err?.status >= 500 && err?.status < 600);
-      if (!isRetryable || attempt === retries - 1) throw err;
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-      console.warn(`[Ollama] Retryable error (attempt ${attempt + 1}/${retries}). Retrying in ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  throw lastError;
+function isZodSchema(schema: unknown): schema is z.ZodType {
+  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
 }
 
 export interface OllamaProviderOptions {
@@ -38,10 +20,23 @@ export interface OllamaProviderOptions {
 export class OllamaProvider implements LLMProvider {
   private model: string;
   private baseURL: string;
+  onTokenUsage?: (usage: TokenUsage) => void;
 
   constructor(options: OllamaProviderOptions) {
     this.model = options.model;
     this.baseURL = options.baseURL ?? 'http://localhost:11434';
+  }
+
+  private reportUsage(data: any): void {
+    const promptTokens = data?.prompt_eval_count ?? 0;
+    const outputTokens = data?.eval_count ?? 0;
+    if (promptTokens || outputTokens) {
+      this.onTokenUsage?.({
+        inputTokens: promptTokens,
+        outputTokens,
+        totalTokens: promptTokens + outputTokens,
+      });
+    }
   }
 
   async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
@@ -63,18 +58,21 @@ export class OllamaProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`[OllamaProvider] HTTP ${response.status}: ${await response.text()}`);
+        throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
 
       const data = await response.json() as any;
+      this.reportUsage(data);
       const content = data?.message?.content ?? '{}';
 
       try {
-        return JSON.parse(content) as T;
+        const parsed = JSON.parse(content);
+        if (isZodSchema(schema)) return (schema as z.ZodType<T>).parse(parsed);
+        return parsed as T;
       } catch {
-        throw new Error(`[OllamaProvider] Failed to parse JSON response: ${content}`);
+        throw new LLMError(`Failed to parse JSON response: ${content}`);
       }
-    });
+    }, 'Ollama');
   }
 
   async analyzeImage(prompt: string, imageBase64: string, _mimeType?: string): Promise<string> {
@@ -91,11 +89,12 @@ export class OllamaProvider implements LLMProvider {
         }),
       });
       if (!response.ok) {
-        throw new Error(`[OllamaProvider] HTTP ${response.status}: ${await response.text()}`);
+        throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
       const data = await response.json() as any;
+      this.reportUsage(data);
       return data?.message?.content ?? '';
-    });
+    }, 'Ollama');
   }
 
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {
@@ -117,11 +116,12 @@ export class OllamaProvider implements LLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`[OllamaProvider] HTTP ${response.status}: ${await response.text()}`);
+        throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
 
       const data = await response.json() as any;
+      this.reportUsage(data);
       return data?.message?.content ?? '';
-    });
+    }, 'Ollama');
   }
 }

@@ -184,7 +184,13 @@ await sentinel.act('Fill %email% into the email field', {
 });
 ```
 
-**Supported action types:** `click`, `fill`, `hover`, `press`, `select`, `double-click`, `right-click`, `scroll-down`, `scroll-up`, `scroll-to`
+**Supported action types:** `click`, `fill`, `append`, `hover`, `press`, `select`, `double-click`, `right-click`, `scroll-down`, `scroll-up`, `scroll-to`
+
+The `append` action adds text to the end of an input field without clearing its existing content:
+
+```typescript
+await sentinel.act('Append " (urgent)" to the subject line');
+```
 
 **`ActOptions`**
 
@@ -262,6 +268,7 @@ console.log(result.goalAchieved);  // boolean
 console.log(result.totalSteps);    // number
 console.log(result.message);       // human-readable summary
 console.log(result.history);       // AgentStepEvent[]
+console.log(result.data);          // structured data extracted during the run (if any)
 ```
 
 **`AgentRunOptions`**
@@ -280,6 +287,7 @@ console.log(result.history);       // AgentStepEvent[]
 | `totalSteps` | `number` | Number of steps executed |
 | `message` | `string` | Human-readable outcome |
 | `history` | `AgentStepEvent[]` | Full step-by-step history |
+| `data` | `any` (optional) | Structured data extracted by an `extract` step during the run |
 
 The agent automatically aborts if the same instruction repeats three times without progress (loop detection) or if three consecutive steps fail.
 

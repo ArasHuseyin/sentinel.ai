@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
-/** Accepts either a Zod schema or a raw JSON Schema object */
-export type SchemaInput<T> = z.ZodType | Record<string, any>;
+/**
+ * Schema input: Zod schema (with runtime validation) or raw JSON Schema object.
+ * When using Zod, the return type T is inferred and validated at runtime.
+ * When using raw JSON Schema, T is unchecked — the caller is responsible for correctness.
+ */
+export type SchemaInput<T> = z.ZodType<T> | Record<string, any>;
 
 /**
  * Unified interface for all LLM providers.
@@ -24,6 +28,9 @@ export interface LLMProvider {
    * Returns a plain text response (JSON parsing is handled by the caller).
    */
   analyzeImage?(prompt: string, imageBase64: string, mimeType?: string): Promise<string>;
+
+  /** Optional callback invoked after each LLM call with token usage data */
+  onTokenUsage?: (usage: TokenUsage) => void;
 }
 
 /**

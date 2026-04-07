@@ -106,7 +106,7 @@ describe('Verifier', () => {
     expect(llm.generateStructuredData).not.toHaveBeenCalled();
   });
 
-  it('auto-succeeds when element count increases by more than 3 (fast path)', async () => {
+  it('falls through to LLM when element count increases by more than 3', async () => {
     const makeElements = (n: number) =>
       Array.from({ length: n }, (_, i) => ({
         id: i,
@@ -115,7 +115,7 @@ describe('Verifier', () => {
         boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
       }));
 
-    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'Dropdown opened' });
     const verifier = new Verifier({} as any, {} as any, llm);
 
     const before = makeState({ elements: makeElements(3) });
@@ -124,11 +124,11 @@ describe('Verifier', () => {
     const result = await verifier.verifyAction('Open dropdown', before, after);
 
     expect(result.success).toBe(true);
-    expect(result.confidence).toBe(0.88);
-    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+    expect(result.confidence).toBe(0.80);
+    expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
   });
 
-  it('auto-succeeds when element count decreases by more than 3 (fast path)', async () => {
+  it('falls through to LLM when element count decreases by more than 3', async () => {
     const makeElements = (n: number) =>
       Array.from({ length: n }, (_, i) => ({
         id: i,
@@ -137,7 +137,7 @@ describe('Verifier', () => {
         boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
       }));
 
-    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'Modal closed' });
     const verifier = new Verifier({} as any, {} as any, llm);
 
     const before = makeState({ elements: makeElements(8) });
@@ -146,8 +146,8 @@ describe('Verifier', () => {
     const result = await verifier.verifyAction('Close modal', before, after);
 
     expect(result.success).toBe(true);
-    expect(result.confidence).toBe(0.88);
-    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+    expect(result.confidence).toBe(0.80);
+    expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
   });
 
   it('falls through to LLM when element delta is exactly 3 (not >3)', async () => {
