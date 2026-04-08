@@ -22,7 +22,20 @@
     "sentinel-mcp": "dist/mcp/index.js"
   },
   "files": [
-    "dist",
+    "dist/agent",
+    "dist/api",
+    "dist/cli",
+    "dist/core",
+    "dist/mcp",
+    "dist/recorder",
+    "dist/reliability",
+    "dist/test",
+    "dist/types",
+    "dist/utils",
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/index.js.map",
+    "dist/index.d.ts.map",
     "README.md",
     "CHANGELOG.md"
   ],

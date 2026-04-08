@@ -29,6 +29,7 @@ const config: Config = {
   ],
   coverageReporters: ['text', 'lcov', 'html'],
   coverageDirectory: 'coverage',
+  forceExit: true,
 };
 
 export default config;
