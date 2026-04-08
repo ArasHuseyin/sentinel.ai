@@ -40,11 +40,14 @@ function makeMockCDP(nodes: any[], boxModels: any[]) {
 }
 
 function makeMockPage(url = 'https://example.com', title = 'Example') {
-  return {
+  const self: any = {
     url: () => url,
     title: jest.fn(async () => title),
     evaluate: jest.fn(async () => []),
   };
+  self.mainFrame = () => self;
+  self.frames = () => [self];
+  return self;
 }
 
 /**
@@ -59,7 +62,7 @@ function makeEnrichmentPage(
   url = 'https://example.com',
   title = 'Example'
 ) {
-  return {
+  const self: any = {
     url: () => url,
     title: jest.fn(async () => title),
     evaluate: jest.fn(async (_fn: any, params?: any) => {
@@ -73,6 +76,9 @@ function makeEnrichmentPage(
       return []; // parseDOMSnapshot / parseFormElements
     }),
   };
+  self.mainFrame = () => self;
+  self.frames = () => [self];
+  return self;
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -308,6 +314,189 @@ describe('StateParser', () => {
       // This test documents that behaviour (context application is unconditional
       // once returned from evaluate).
       expect(state.elements[0]!.name).toBe('ok: submit');
+    });
+  });
+
+  // ─── parseFrameElements ───────────────────────────────────────────────────────
+
+  describe('parseFrameElements', () => {
+    /** Build a page mock that has one main frame and optionally extra child frames. */
+    function makePageWithFrames(
+      childFrames: Array<{
+        iframeRect: { x: number; y: number; width: number; height: number } | null;
+        elements: Array<{ role: string; name: string; x: number; y: number; width: number; height: number }>;
+        evaluateThrows?: boolean;
+      }>
+    ) {
+      const mainFrame: any = {
+        url: () => 'https://example.com',
+        title: jest.fn(async () => 'Example'),
+        evaluate: jest.fn(async () => []),
+      };
+
+      const frames: any[] = [mainFrame, ...childFrames.map(cf => {
+        const frameEl = cf.iframeRect
+          ? { boundingBox: jest.fn(async () => cf.iframeRect) }
+          : null;
+        return {
+          frameElement: jest.fn(async () => frameEl),
+          evaluate: cf.evaluateThrows
+            ? jest.fn(async () => { throw new Error('cross-origin'); })
+            : jest.fn(async () => cf.elements),
+        };
+      })];
+
+      mainFrame.mainFrame = () => mainFrame;
+      mainFrame.frames = () => frames;
+      return mainFrame;
+    }
+
+    it('main-frame-only page produces no [frame] elements', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeMockPage(); // frames() returns [self], mainFrame() === self
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
+    });
+
+    it('collects elements from a same-origin child frame', async () => {
+      const nodes = [makeNode('button', 'Main Button', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 100, y: 200, width: 400, height: 300 },
+        elements: [{ role: 'button', name: 'Frame Button', x: 5, y: 10, width: 80, height: 30 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const frameBtn = state.elements.find(e => e.name === '[frame] Frame Button');
+      expect(frameBtn).toBeDefined();
+    });
+
+    it('offsets frame element coordinates by iframe bounding rect', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 100, y: 200, width: 400, height: 300 },
+        elements: [{ role: 'button', name: 'Offset Button', x: 5, y: 10, width: 80, height: 30 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const el = state.elements.find(e => e.name === '[frame] Offset Button')!;
+      expect(el).toBeDefined();
+      expect(el.boundingClientRect.x).toBe(5 + 100);
+      expect(el.boundingClientRect.y).toBe(10 + 200);
+      expect(el.boundingClientRect.width).toBe(80);
+      expect(el.boundingClientRect.height).toBe(30);
+    });
+
+    it('silently skips frame when evaluate() throws (cross-origin)', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+        elements: [],
+        evaluateThrows: true,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      // Should not throw
+      const state = await parser.parse();
+      expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
+    });
+
+    it('skips frame when frameElement() returns null', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: null, // frameElement() → null → iframeRect will not be reached
+        elements: [{ role: 'button', name: 'Frame Button', x: 0, y: 0, width: 10, height: 10 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+      expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
+    });
+
+    it('skips frame when iframe bounding box is zero-size', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 0, y: 0, width: 0, height: 0 }, // zero height
+        elements: [{ role: 'button', name: 'Invisible Frame', x: 0, y: 0, width: 10, height: 10 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+      expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
+    });
+
+    it('deduplicates frame elements against main-page elements by name', async () => {
+      // Main page already has an element called "Login" — frame version should be skipped
+      const nodes = [makeNode('button', 'Login', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+        elements: [{ role: 'button', name: 'Login', x: 5, y: 5, width: 80, height: 30 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      // [frame] Login deduplicated (name "[frame] Login" doesn't match "Login" in existingNames,
+      // so it WILL be added — but the raw name "Login" does NOT collide with [frame] prefix)
+      // The frame element is "[frame] Login", so it won't clash with "Login" from main
+      const allNames = state.elements.map(e => e.name);
+      const loginCount = allNames.filter(n => n === 'Login').length;
+      expect(loginCount).toBe(1); // only main-page Login
+    });
+
+    it('deduplicates same-named elements across multiple child frames', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'Submit', x: 5, y: 5, width: 80, height: 30 }],
+        },
+        {
+          iframeRect: { x: 0, y: 200, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'Submit', x: 5, y: 5, width: 80, height: 30 }],
+        },
+      ]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const frameSubmits = state.elements.filter(e => e.name === '[frame] Submit');
+      expect(frameSubmits).toHaveLength(1); // bug-fix: only one, not two
+    });
+
+    it('collects elements from multiple child frames', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'Frame1 Button', x: 5, y: 5, width: 80, height: 30 }],
+        },
+        {
+          iframeRect: { x: 300, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'link', name: 'Frame2 Link', x: 10, y: 10, width: 60, height: 20 }],
+        },
+      ]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements.some(e => e.name === '[frame] Frame1 Button')).toBe(true);
+      expect(state.elements.some(e => e.name === '[frame] Frame2 Link')).toBe(true);
     });
   });
 

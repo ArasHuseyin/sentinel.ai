@@ -1,6 +1,6 @@
-import { jest, describe, it, expect } from '@jest/globals';
-import { ActionEngine } from '../api/act.js';
-import type { SimplifiedState } from '../core/state-parser.js';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { ActionEngine, filterRelevantElements } from '../api/act.js';
+import type { SimplifiedState, UIElement } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -522,6 +522,22 @@ describe('ActionEngine', () => {
     expect(wheelCalls.some(args => args[1] < 0)).toBe(true);
   });
 
+  it('fill semantic fallback calls locator.fill', async () => {
+    const page = makeMockPage({ width: 200, height: 200 });
+    const state = makeState({
+      elements: [{ id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'test@example.com', reasoning: 'Fill email' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Fill in email field');
+
+    expect(result.success).toBe(true);
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    expect(locator.fill).toHaveBeenCalledWith('test@example.com', expect.anything());
+  });
+
   it('append semantic fallback calls locator.focus + press + pressSequentially', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
@@ -667,6 +683,48 @@ describe('ActionEngine', () => {
     expect((page.mouse.click as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
+  // ─── Chunk-Processing: LLM receives filtered element list ─────────────────────
+
+  it('chunk-processing: LLM prompt only contains top-N relevant elements', async () => {
+    const page = makeMockPage();
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+        { id: 2, role: 'link', name: 'Home', boundingClientRect: { x: 10, y: 100, width: 60, height: 20 } },
+        { id: 3, role: 'button', name: 'Cancel', boundingClientRect: { x: 10, y: 140, width: 80, height: 30 } },
+        { id: 4, role: 'link', name: 'About', boundingClientRect: { x: 10, y: 180, width: 60, height: 20 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit button found' });
+
+    // maxElements = 2, instruction contains "submit" → Submit button should be top-scored
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 2);
+    await engine.act('Click the submit button');
+
+    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    // "Submit" should be in the prompt; less relevant elements may be excluded
+    expect(promptArg).toContain('"Submit"');
+    // Prompt should not contain all 5 elements (maxElements = 2)
+    const elementCount = (promptArg.match(/"id":/g) ?? []).length;
+    expect(elementCount).toBeLessThanOrEqual(2);
+  });
+
+  it('chunk-processing: no filtering when element count ≤ maxElements', async () => {
+    const page = makeMockPage();
+    const state = makeState(); // 3 elements
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 10);
+    await engine.act('Click submit');
+
+    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const elementCount = (promptArg.match(/"id":/g) ?? []).length;
+    expect(elementCount).toBe(3);
+  });
+
   it('vision grounding: findElement returns null → continues to semantic fallback', async () => {
     const page = makeMockPage();
     // Primary click fails
@@ -687,5 +745,325 @@ describe('ActionEngine', () => {
     // Falls through to semantic fallback which succeeds
     expect(result.success).toBe(true);
     expect(mockVisionGrounding.findElement).toHaveBeenCalled();
+  });
+});
+
+// ─── Structured Logging / verbose levels ─────────────────────────────────────
+
+describe('ActionEngine verbose logging', () => {
+  let consoleSpy: ReturnType<typeof jest.spyOn>;
+  let warnSpy: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('verbose 0: no console output on success', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 0);
+    await engine.act('Click submit');
+
+    expect(consoleSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('verbose 1: logs action summary without reasoning', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 1);
+    await engine.act('Click submit');
+
+    const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(allOutput).toContain('[Act] click on "Submit"');
+    expect(allOutput).not.toContain('Submit found'); // no reasoning at level 1
+  });
+
+  it('verbose 2: logs action summary + reasoning', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 2);
+    await engine.act('Click submit');
+
+    const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(allOutput).toContain('[Act] click on "Submit"');
+    expect(allOutput).toContain('Submit found');
+  });
+
+  it('verbose 2: logs fallback warning on primary failure', async () => {
+    const page = makeMockPage({ width: 200, height: 200 });
+    const state = makeState({
+      elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 2);
+    await engine.act('Click submit');
+
+    const warnOutput = warnSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(warnOutput).toContain('Primary action failed');
+  });
+
+  it('verbose 0: no fallback warning even on failure', async () => {
+    const page = makeMockPage({ width: 200, height: 200 });
+    const state = makeState({
+      elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 0);
+    await engine.act('Click submit');
+
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('verbose 3: logs chunk-processing stats when filtered', async () => {
+    const manyElements = Array.from({ length: 10 }, (_, i) =>
+      ({ id: i, role: 'link', name: `Link ${i}`, boundingClientRect: { x: 0, y: i * 20, width: 60, height: 20 } })
+    );
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState({ elements: manyElements }));
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 3, 3);
+    await engine.act('Click link');
+
+    const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(allOutput).toContain('chunk-processing');
+    expect(allOutput).toContain('10 →');
+  });
+
+  it('verbose 3: logs full decision JSON', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 3);
+    await engine.act('Click submit');
+
+    const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(allOutput).toContain('[Act] decision:');
+    expect(allOutput).toContain('"elementId"');
+    expect(allOutput).toContain('"reasoning"');
+  });
+
+  it('verbose 3: no chunk-processing log when element count ≤ maxElements', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState()); // 3 elements, maxElements = 50
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 3);
+    await engine.act('Click submit');
+
+    const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(allOutput).not.toContain('chunk-processing');
+  });
+
+  it('verbose 1: cache hit logs ⚡ action label', async () => {
+    const { InMemoryLocatorCache } = await import('../core/locator-cache.js');
+    const cache = new InMemoryLocatorCache();
+    cache.set('https://example.com', 'Click submit', { action: 'click', role: 'button', name: 'Submit' });
+
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, cache, 50, 1);
+    await engine.act('Click submit');
+
+    const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(allOutput).toContain('⚡');
+    expect(allOutput).toContain('[cached]');
+  });
+
+  it('verbose 2: "All paths failed" warn is logged when both primary and fallback fail', async () => {
+    const locatorInstance = makeMockLocator();
+    (locatorInstance.click as jest.Mock<any>).mockRejectedValue(new Error('fallback failed'));
+    locatorInstance.isVisible.mockResolvedValue(false);
+
+    const page = {
+      viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
+      mouse: { click: jest.fn(async () => { throw new Error('primary failed'); }), dblclick: jest.fn(async () => {}), move: jest.fn(async () => {}), wheel: jest.fn(async () => {}) },
+      keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
+      evaluate: jest.fn(async () => {}),
+      waitForNavigation: jest.fn(async () => {}),
+      locator: jest.fn(() => locatorInstance),
+      getByRole: jest.fn(() => locatorInstance),
+      getByText: jest.fn(() => locatorInstance),
+    };
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 2);
+    const result = await engine.act('Click submit');
+
+    expect(result.success).toBe(false);
+    const warnOutput = warnSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
+    expect(warnOutput).toContain('All paths failed');
+  });
+});
+
+// ─── ActionResult.selector ────────────────────────────────────────────────────
+
+describe('ActionResult.selector', () => {
+  it('includes selector when page.evaluate returns a CSS selector string', async () => {
+    const page = makeMockPage();
+    (page.evaluate as jest.Mock).mockResolvedValueOnce('[data-testid="submit"]');
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click submit');
+    expect(result.success).toBe(true);
+    expect(result.selector).toBe('[data-testid="submit"]');
+  });
+
+  it('omits selector when page.evaluate returns null (no stable selector found)', async () => {
+    const page = makeMockPage();
+    (page.evaluate as jest.Mock).mockResolvedValueOnce(null);
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click submit');
+    expect(result.success).toBe(true);
+    expect('selector' in result).toBe(false);
+  });
+
+  it('omits selector for page-level scroll (no target element)', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'ok' });
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Scroll down');
+    expect(result.success).toBe(true);
+    expect('selector' in result).toBe(false);
+  });
+
+  it('omits selector when page.evaluate throws', async () => {
+    const page = makeMockPage();
+    (page.evaluate as jest.Mock).mockRejectedValueOnce(new Error('context lost'));
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click submit');
+    expect(result.success).toBe(true);
+    expect('selector' in result).toBe(false);
+  });
+});
+
+// ─── filterRelevantElements unit tests ────────────────────────────────────────
+
+function makeEl(id: number, role: string, name: string): UIElement {
+  return { id, role, name, boundingClientRect: { x: 0, y: 0, width: 10, height: 10 } };
+}
+
+describe('filterRelevantElements', () => {
+  it('returns list unchanged when count ≤ maxCount', () => {
+    const els = [makeEl(0, 'button', 'Submit'), makeEl(1, 'textbox', 'Email')];
+    const result = filterRelevantElements(els, 'click submit button', 5);
+    expect(result).toBe(els); // same reference, no copy
+  });
+
+  it('keeps top-N elements by keyword overlap', () => {
+    const els = [
+      makeEl(0, 'button', 'Submit'),
+      makeEl(1, 'textbox', 'Email'),
+      makeEl(2, 'link', 'Home'),
+    ];
+    const result = filterRelevantElements(els, 'fill in the email field', 1);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe('Email');
+  });
+
+  it('scores by role + name so role matches count', () => {
+    const els = [
+      makeEl(0, 'button', 'OK'),
+      makeEl(1, 'button', 'Cancel'),
+      makeEl(2, 'link', 'Home'),
+    ];
+    // "button" matches both id 0 and id 1 (role = "button"); id 0 and id 1 are tied
+    // With maxCount=2, id 2 (link, no match) should be excluded
+    const result = filterRelevantElements(els, 'click button', 2);
+    expect(result.map(e => e.id).sort()).toEqual([0, 1]);
+  });
+
+  it('fills remaining slots with score-0 elements in original order', () => {
+    const els = [
+      makeEl(0, 'link', 'Home'),
+      makeEl(1, 'link', 'About'),
+      makeEl(2, 'button', 'Submit'),
+    ];
+    const result = filterRelevantElements(els, 'click submit', 2);
+    // "Submit" should be first (score 1), then one score-0 element
+    expect(result[0]!.name).toBe('Submit');
+    expect(result).toHaveLength(2);
+  });
+
+  it('returns first maxCount when instruction produces no tokens', () => {
+    const els = [makeEl(0, 'button', 'A'), makeEl(1, 'link', 'B'), makeEl(2, 'link', 'C')];
+    const result = filterRelevantElements(els, '!@#', 2);
+    expect(result).toHaveLength(2);
+    expect(result[0]!.id).toBe(0);
+    expect(result[1]!.id).toBe(1);
+  });
+
+  it('duplicate tokens in instruction do not inflate score', () => {
+    const els = [
+      makeEl(0, 'button', 'Login'),
+      makeEl(1, 'button', 'Logout'),
+    ];
+    // "login login login" — after dedup → tokens = ["login"]
+    // Both "Login" and "Logout" partially match "log"; "Login" should win due to full "login" match
+    const result = filterRelevantElements(els, 'login login login', 1);
+    expect(result[0]!.name).toBe('Login');
+  });
+
+  it('stable sort: elements with equal score preserve original order', () => {
+    const els = [
+      makeEl(0, 'link', 'Page 1'),
+      makeEl(1, 'link', 'Page 2'),
+      makeEl(2, 'link', 'Page 3'),
+      makeEl(3, 'button', 'Submit'),
+    ];
+    // All links have score 0 for "click submit"; Submit has score 1
+    // After filter to 3: Submit first, then links 0 and 1 in original order
+    const result = filterRelevantElements(els, 'click submit button', 3);
+    expect(result[0]!.name).toBe('Submit');
+    const linkIds = result.slice(1).map(e => e.id);
+    expect(linkIds).toEqual([0, 1]); // original order preserved
+  });
+
+  it('token matching is case-insensitive', () => {
+    const els = [
+      makeEl(0, 'button', 'LOGIN'),
+      makeEl(1, 'link', 'Home'),
+      makeEl(2, 'link', 'About'),
+    ];
+    const result = filterRelevantElements(els, 'Click the login button', 1);
+    expect(result[0]!.name).toBe('LOGIN');
+  });
+
+  it('tokens shorter than 2 chars are ignored', () => {
+    const els = [
+      makeEl(0, 'button', 'A'),
+      makeEl(1, 'link', 'Go'),
+    ];
+    // Single-char tokens are stripped; "a" and "b" have no effect
+    const result = filterRelevantElements(els, 'a b', 1);
+    expect(result).toHaveLength(1);
+    // Both score 0 → first element returned
+    expect(result[0]!.id).toBe(0);
   });
 });

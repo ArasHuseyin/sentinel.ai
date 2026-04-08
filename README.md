@@ -1,17 +1,23 @@
 # @isoldex/sentinel
 
+[![npm version](https://img.shields.io/npm/v/@isoldex/sentinel?color=8b5cf6&label=npm)](https://www.npmjs.com/package/@isoldex/sentinel)
+[![npm downloads](https://img.shields.io/npm/dm/@isoldex/sentinel?color=22c55e&label=downloads)](https://www.npmjs.com/package/@isoldex/sentinel)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-isoldex.ai-8b5cf6)](https://isoldex.ai)
+
 **Sentinel** is an AI-powered browser automation framework built on [Playwright](https://playwright.dev/) and designed around the principle that web automation should be expressed in plain language, not CSS selectors or XPaths.
 
 Describe what you want to do. Sentinel figures out how.
 
-> A fast, lightweight alternative to BrowserUse, Stagehand, and AutoGPT — with multi-LLM support, vision grounding, a full autonomous agent loop, and robust self-healing built in.
+> The fastest, cheapest alternative to Stagehand and BrowserUse — **~40× lower cost** (Gemini Flash vs. GPT-4o), multi-LLM support, vision grounding, autonomous agent loop, and self-healing locators built in.
 
-**[Full documentation →](https://arashuseyin.github.io/sentinel-docs/)**
+**[Full documentation →](https://isoldex.ai)**
 
 ---
 
 ## Table of Contents
 
+- [Why Sentinel over Stagehand?](#why-sentinel-over-stagehand)
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -29,7 +35,28 @@ Describe what you want to do. Sentinel figures out how.
 - [LLM Providers](#llm-providers)
 - [Architecture](#architecture)
 - [Error Handling](#error-handling)
+- [Self-Healing Locators](#self-healing-locators)
+- [Intelligent Error Messages](#intelligent-error-messages)
 - [Examples](#examples)
+
+---
+
+## Why Sentinel over Stagehand?
+
+| | Sentinel | Stagehand |
+|---|---|---|
+| **Default model** | Gemini 3 Flash | GPT-4o |
+| **Cost per run** (Amazon search + extract top 3) | ~$0.002 | ~$0.08 |
+| **Speed** | ~2.8 s | ~4.2 s |
+| **Self-healing locators** | ✅ (caches successful selectors) | ❌ |
+| **MCP server** | ✅ (`npx @isoldex/sentinel/mcp`) | ❌ |
+| **CLI** | ✅ (`npx @isoldex/sentinel run ...`) | ❌ |
+| **Playwright Test fixture** | ✅ (`@isoldex/sentinel/test`) | ❌ |
+| **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | OpenAI only |
+| **Intelligent error messages** | ✅ (context + actionable tips) | ❌ |
+| **Open source** | ✅ ISC | ✅ MIT |
+
+> Benchmark: "Search Amazon for laptop, extract the top 3 results" — 5 runs averaged, Gemini 3 Flash vs. GPT-4o, April 2026.
 
 ---
 
@@ -49,6 +76,11 @@ Describe what you want to do. Sentinel figures out how.
 | Event System | `sentinel.on('action', ...)` for full observability |
 | Token Tracking | Monitor LLM usage and estimated cost per session |
 | Self-Healing | Semantic verification with automatic retry and multi-layer fallback |
+| Self-Healing Locators | Cache successful element lookups — skip the LLM on repeated calls |
+| Intelligent Errors | Failure messages include which paths were tried and an actionable fix tip |
+| CLI | `npx @isoldex/sentinel run/act/extract/screenshot` — no code required |
+| MCP Server | Expose all browser tools directly to Cursor, Windsurf, Claude Desktop |
+| Playwright Test Integration | `import { test } from '@isoldex/sentinel/test'` — `ai` fixture drop-in |
 
 ---
 
@@ -640,6 +672,66 @@ try {
 | `NavigationError` | `NAVIGATION_FAILED` | Navigation to a URL fails |
 | `AgentError` | `AGENT_ERROR` | Agent loop exceeds max steps or gets stuck |
 | `NotInitializedError` | `NOT_INITIALIZED` | Any method called before `init()` |
+
+---
+
+## Self-Healing Locators
+
+Enable locator caching to skip the LLM on repeated `act()` calls:
+
+```typescript
+// In-memory: cached for the lifetime of this instance
+const sentinel = new Sentinel({ apiKey, locatorCache: true });
+
+// File-persisted: survives process restarts — ideal for test suites
+const sentinel = new Sentinel({ apiKey, locatorCache: '.sentinel-cache.json' });
+```
+
+On the **first** call Sentinel runs the full LLM pipeline and caches `{ action, role, name }` for the resolved element. On **subsequent** calls with the same URL and instruction it finds the element directly in the current DOM — **no LLM call, zero token cost**.
+
+If the cached element is no longer present or the action fails, the entry is automatically invalidated and the LLM path takes over.
+
+Provide a custom cache (e.g. Redis-backed for distributed test runs) by implementing `ILocatorCache`:
+
+```typescript
+import type { ILocatorCache, CachedLocator } from '@isoldex/sentinel';
+
+class RedisLocatorCache implements ILocatorCache {
+  get(url: string, instruction: string): CachedLocator | undefined { /* ... */ }
+  set(url: string, instruction: string, entry: CachedLocator): void { /* ... */ }
+  invalidate(url: string, instruction: string): void { /* ... */ }
+}
+```
+
+---
+
+## Intelligent Error Messages
+
+When all action paths fail, Sentinel returns a structured error with the full diagnostic:
+
+```typescript
+const result = await sentinel.act('Click the checkout button');
+
+if (!result.success) {
+  console.log(result.message);
+  // Action fehlgeschlagen: "Click the checkout button" auf "Checkout"
+  // 3 Pfade versucht:
+  //   • coordinate-click: Element "Checkout" is outside viewport at (640, 950) — triggering scroll fallback
+  //   • vision-grounding: Element nicht im Screenshot gefunden
+  //   • locator-fallback: strict mode violation: locator resolved to 3 elements
+  // Tipp: Element könnte außerhalb des sichtbaren Bereichs sein. Versuche zuerst:
+  //   sentinel.act('scroll to "Checkout"')
+
+  console.log(result.attempts);
+  // [
+  //   { path: 'coordinate-click', error: '...' },
+  //   { path: 'vision-grounding', error: '...' },
+  //   { path: 'locator-fallback', error: '...' },
+  // ]
+}
+```
+
+`result.attempts` is only present on failure and lists each attempted path with its specific error.
 
 ---
 

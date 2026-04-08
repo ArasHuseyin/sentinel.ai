@@ -6,7 +6,7 @@ import type { DriverOptions, BrowserType, ProxyOptions } from './core/driver.js'
 export type { BrowserType, ProxyOptions };
 import { StateParser } from './core/state-parser.js';
 import { ActionEngine } from './api/act.js';
-import type { ActOptions, ActionResult } from './api/act.js';
+import type { ActOptions, ActionResult, ActionAttempt } from './api/act.js';
 import { ExtractionEngine } from './api/extract.js';
 import { ObservationEngine } from './api/observe.js';
 import type { ObserveResult } from './api/observe.js';
@@ -22,6 +22,18 @@ export type { LLMProvider };
 import { WorkflowRecorder } from './recorder/workflow-recorder.js';
 import type { RecordedWorkflow } from './recorder/workflow-recorder.js';
 import { TokenTracker } from './utils/token-tracker.js';
+import { createLocatorCache } from './core/locator-cache.js';
+import type { ILocatorCache, CachedLocator } from './core/locator-cache.js';
+export type { ILocatorCache, CachedLocator };
+import { createPromptCache, createCachingProvider } from './core/prompt-cache.js';
+import type { IPromptCache } from './core/prompt-cache.js';
+export type { IPromptCache };
+import { RoundRobinProxyProvider, WebshareProxyProvider } from './utils/proxy-provider.js';
+import type { IProxyProvider, WebshareProxyOptions } from './utils/proxy-provider.js';
+export { RoundRobinProxyProvider, WebshareProxyProvider };
+export type { IProxyProvider, WebshareProxyOptions };
+import { withSpan, createTracingProvider, actCounter, actDuration, agentSteps, llmTokens } from './utils/telemetry.js';
+export { slugifyInstruction } from './core/selector-generator.js';
 import { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError } from './types/errors.js';
 export { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError };
 export type { RecordedWorkflow };
@@ -32,7 +44,59 @@ export { OllamaProvider } from './utils/providers/ollama-provider.js';
 import { z } from 'zod';
 // Re-export z and types so users can do: import { Sentinel, z } from './index.js'
 export { z };
-export type { ActOptions, ActionResult, ObserveResult, AgentRunOptions, AgentResult, AgentStepEvent, BoundingBox };
+export type { ActOptions, ActionResult, ActionAttempt, ObserveResult, AgentRunOptions, AgentResult, AgentStepEvent, BoundingBox };
+
+/**
+ * A Playwright `Page` extended with Sentinel AI methods.
+ * Created by `sentinel.extend(page)`.
+ */
+export type ExtendedPage = Page & {
+  act(instruction: string, options?: ActOptions): Promise<ActionResult>;
+  extract<T>(instruction: string, schema: SchemaInput<T>): Promise<T>;
+  observe(instruction?: string): Promise<ObserveResult[]>;
+};
+
+// ─── Parallel execution types ─────────────────────────────────────────────────
+
+/** A single task for `Sentinel.parallel()`. */
+export interface ParallelTask {
+  /** URL to navigate to before running the agent. */
+  url: string;
+  /** Natural-language goal passed to `sentinel.run()`. */
+  goal: string;
+  /** Maximum agent steps (default: 15). */
+  maxSteps?: number;
+}
+
+/** Result for one task from `Sentinel.parallel()`. */
+export interface ParallelResult {
+  /** Position in the original task array — results are always returned in input order. */
+  index: number;
+  url: string;
+  goal: string;
+  goalAchieved: boolean;
+  success: boolean;
+  totalSteps: number;
+  message: string;
+  data?: unknown;
+  /** Set when the task threw an unhandled exception (browser crash, network error, etc.). */
+  error?: string;
+}
+
+export interface ParallelOptions {
+  /**
+   * Maximum number of browser sessions running simultaneously (default: 3).
+   *
+   * Monetisation note: this value is clamped to the tier limit in
+   * `Sentinel.parallel()` — set `_maxConcurrency` to enforce it.
+   */
+  concurrency?: number;
+  /**
+   * Called each time a task finishes (success or failure).
+   * Useful for progress bars, streaming dashboards, or early cancellation.
+   */
+  onProgress?: (completed: number, total: number, result: ParallelResult) => void;
+}
 
 export interface SentinelOptions {
   /** Gemini API key */
@@ -43,9 +107,12 @@ export interface SentinelOptions {
   viewport?: { width: number; height: number };
   /**
    * Verbosity level:
-   *  0 = silent, 1 = key actions only (default), 2 = full debug
+   *  0 = silent
+   *  1 = key actions only (default)
+   *  2 = + LLM reasoning + fallback warnings
+   *  3 = + chunk-processing stats + full LLM decision JSON
    */
-  verbose?: 0 | 1 | 2;
+  verbose?: 0 | 1 | 2 | 3;
   /**
    * Enable state caching between calls (default: true).
    * Set to false to always fetch a fresh AOM state.
@@ -60,9 +127,10 @@ export interface SentinelOptions {
    */
   browser?: BrowserType;
   /**
-   * Proxy configuration.
+   * Proxy configuration — either a static `ProxyOptions` object or a dynamic
+   * `IProxyProvider` (e.g. `WebshareProxyProvider`, `RoundRobinProxyProvider`).
    */
-  proxy?: ProxyOptions;
+  proxy?: ProxyOptions | IProxyProvider;
   /**
    * Add random human-like delays between actions (default: false).
    */
@@ -71,6 +139,13 @@ export interface SentinelOptions {
    * Path to a session file to load/save cookies & storage state.
    */
   sessionPath?: string;
+  /**
+   * Enable self-healing locator caching to skip the LLM on repeated actions:
+   *  false (default) — disabled
+   *  true            — in-memory cache (cleared when the Sentinel instance is closed)
+   *  string          — file path for JSON persistence across runs
+   */
+  locatorCache?: false | true | string;
   /**
    * Path to a persistent browser profile directory.
    * Stores cookies, localStorage, IndexedDB, and ServiceWorkers on disk.
@@ -88,6 +163,25 @@ export interface SentinelOptions {
    * How long (ms) to wait for the DOM to settle after navigation/actions (default: 3000).
    */
   domSettleTimeoutMs?: number;
+  /**
+   * Maximum number of page elements sent to the LLM per `act()` call (default: 50).
+   * On pages with more interactive elements, the list is pre-filtered by keyword
+   * relevance to the instruction — reducing token usage and latency significantly.
+   */
+  maxElements?: number;
+  /**
+   * Cache LLM responses so identical (prompt, schema) pairs skip the model entirely:
+   *  false  (default) — disabled
+   *  true             — in-memory cache (cleared when the Sentinel instance is closed)
+   *  string           — file path for JSON persistence across runs
+   *
+   * A cache hit costs zero tokens. Because the prompt includes the current page URL,
+   * title, and element list, the cache naturally misses whenever the DOM changes —
+   * no manual invalidation needed for normal navigation.
+   *
+   * Covers all LLM calls: `act()`, `extract()`, `observe()`, and the agent loop.
+   */
+  promptCache?: false | true | string;
 }
 
 export class Sentinel extends EventEmitter {
@@ -104,10 +198,16 @@ export class Sentinel extends EventEmitter {
   private gemini: GeminiService | LLMProvider;
   private readonly visionFallback: boolean;
   private readonly apiKey: string;
+  /** Tracks active CDP sessions created by extend() so they can be detached on re-extend. */
+  private readonly extendedPages = new WeakMap<Page, { detach(): Promise<void> }>();
 
-  private readonly verbose: 0 | 1 | 2;
+  private readonly verbose: 0 | 1 | 2 | 3;
   private readonly enableCaching: boolean;
   private readonly domSettleTimeoutMs: number;
+  private readonly maxElements: number;
+  private readonly humanLike: boolean;
+  private readonly locatorCacheInstance: ILocatorCache | null;
+  private readonly promptCacheInstance: IPromptCache | null;
   private _tokenUsageCallback: ((usage: { inputTokens: number; outputTokens: number }) => void) | undefined;
 
   constructor(options: SentinelOptions) {
@@ -127,7 +227,11 @@ export class Sentinel extends EventEmitter {
     this.verbose = options.verbose ?? 1;
     this.enableCaching = options.enableCaching ?? true;
     this.domSettleTimeoutMs = options.domSettleTimeoutMs ?? 3000;
+    this.maxElements = options.maxElements ?? 50;
+    this.humanLike = options.humanLike ?? false;
     this.visionFallback = options.visionFallback ?? false;
+    this.locatorCacheInstance = createLocatorCache(options.locatorCache ?? false);
+    this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
     this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview');
@@ -161,11 +265,35 @@ export class Sentinel extends EventEmitter {
     const page = this.driver.getPage();
     const cdp = this.driver.getCDPSession();
 
+    // Extend the token usage callback to also emit OTel token metrics.
+    // Doing this here (rather than inside createTracingProvider) avoids a race
+    // condition: modifying provider.onTokenUsage per-call is unsafe when multiple
+    // LLM calls run concurrently (e.g. via sentinel.extend()). The callback is
+    // set once at init time on the original provider.
+    const modelName = process.env.GEMINI_VERSION ?? 'unknown';
+    if (this._tokenUsageCallback) {
+      const prevCb = this._tokenUsageCallback;
+      this._tokenUsageCallback = (usage) => {
+        prevCb(usage);
+        llmTokens.add(usage.inputTokens,  { 'llm.model': modelName, direction: 'input' });
+        llmTokens.add(usage.outputTokens, { 'llm.model': modelName, direction: 'output' });
+      };
+      (this.gemini as any).onTokenUsage = this._tokenUsageCallback;
+    }
+
+    // Wrap with telemetry tracing (innermost — wraps real LLM calls with spans + metrics).
+    this.gemini = createTracingProvider(this.gemini, modelName);
+
+    // Wrap with prompt caching (outermost — cache hits bypass the tracing layer).
+    if (this.promptCacheInstance) {
+      this.gemini = createCachingProvider(this.gemini, this.promptCacheInstance);
+    }
+
     this.stateParser = new StateParser(page, cdp);
     if (this.visionFallback) {
       this.visionGrounding = new VisionGrounding(this.gemini);
     }
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs);
+    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
@@ -191,6 +319,103 @@ export class Sentinel extends EventEmitter {
     await this.driver.close();
     this.emit('close');
     this.log(1, '🔒 Sentinel closed');
+  }
+
+  // ─── Parallel execution ───────────────────────────────────────────────────
+
+  /**
+   * Run multiple independent agent tasks in parallel, each in its own browser session.
+   * Tasks are processed using a worker-pool so at most `concurrency` browsers run at once.
+   * Results are returned in the same order as the input tasks regardless of completion order.
+   *
+   * @param tasks      Array of `{ url, goal, maxSteps? }` descriptors.
+   * @param options    Shared `SentinelOptions` for every session plus `concurrency` and `onProgress`.
+   *
+   * @example
+   * const results = await Sentinel.parallel(
+   *   [
+   *     { url: 'https://amazon.de', goal: 'Find cheapest laptop' },
+   *     { url: 'https://ebay.de',   goal: 'Find cheapest laptop' },
+   *   ],
+   *   { apiKey: process.env.GEMINI_API_KEY!, concurrency: 2 }
+   * );
+   */
+  static async parallel(
+    tasks: ParallelTask[],
+    options: SentinelOptions & ParallelOptions,
+    /** @internal Injectable factory — used by tests to avoid spawning real browsers. */
+    _factory?: (opts: SentinelOptions) => Promise<Sentinel>
+  ): Promise<ParallelResult[]> {
+    if (tasks.length === 0) return [];
+
+    // ── Monetisation hook ──────────────────────────────────────────────────────
+    // Clamp concurrency to the tier limit here. Example:
+    //   const tierLimit = getTierLimit(options.apiKey);  // Free=1, Pro=5, Enterprise=∞
+    //   const concurrency = Math.min(options.concurrency ?? 3, tierLimit);
+    const concurrency = Math.max(1, options.concurrency ?? 3);
+
+    const factory = _factory ?? (async (opts: SentinelOptions) => {
+      const s = new Sentinel(opts);
+      await s.init();
+      return s;
+    });
+
+    const results: ParallelResult[] = new Array(tasks.length);
+    let completed = 0;
+
+    // Shared mutable queue — each worker pops tasks until empty
+    const queue = tasks.map((task, index) => ({ task, index }));
+
+    const runOne = async (task: ParallelTask, index: number): Promise<void> => {
+      let sentinel: Sentinel | null = null;
+      try {
+        sentinel = await factory(options);
+        await sentinel.goto(task.url);
+        const result = await sentinel.run(task.goal, { maxSteps: task.maxSteps ?? 15 });
+        results[index] = {
+          index,
+          url: task.url,
+          goal: task.goal,
+          goalAchieved: result.goalAchieved,
+          success: result.success,
+          totalSteps: result.totalSteps,
+          message: result.message,
+          ...(result.data !== undefined ? { data: result.data } : {}),
+        };
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        results[index] = {
+          index,
+          url: task.url,
+          goal: task.goal,
+          goalAchieved: false,
+          success: false,
+          totalSteps: 0,
+          message: msg,
+          error: msg,
+        };
+      } finally {
+        await sentinel?.close().catch(() => {});
+        completed++;
+        options.onProgress?.(completed, tasks.length, results[index]!);
+      }
+    };
+
+    // Worker: drains the queue sequentially
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const item = queue.shift();
+        if (!item) break;
+        await runOne(item.task, item.index);
+      }
+    };
+
+    // Spawn min(concurrency, tasks.length) workers in parallel
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, tasks.length) }, worker)
+    );
+
+    return results;
   }
 
   // ─── Recording ─────────────────────────────────────────────────────────────
@@ -240,6 +465,16 @@ export class Sentinel extends EventEmitter {
     return this.tokenTracker.getUsage();
   }
 
+  /**
+   * Clear the prompt cache.
+   * Has no effect when `promptCache` is disabled.
+   */
+  clearPromptCache(): void {
+    if (!this.promptCacheInstance) return;
+    this.promptCacheInstance.clear();
+    this.log(1, '🗑️  Prompt cache cleared');
+  }
+
   /** Export token usage log as JSON to a file path. */
   exportLogs(filePath: string): void {
     fs.writeFileSync(filePath, this.tokenTracker.exportAsJSON(), 'utf-8');
@@ -258,43 +493,70 @@ export class Sentinel extends EventEmitter {
    * await sentinel.act('Fill %email% into the email field', { variables: { email: 'tom@example.com' } });
    */
   async act(instruction: string, options?: ActOptions & { retries?: number }): Promise<ActionResult> {
-    if (!this.actionEngine || !this.stateParser || !this.verifier) {
-      throw new NotInitializedError();
-    }
+    const actionEngine = this.actionEngine;
+    const stateParser = this.stateParser;
+    const verifier = this.verifier;
+    if (!actionEngine || !stateParser || !verifier) throw new NotInitializedError();
 
-    const retries = options?.retries ?? 2;
-    let currentAttempt = 0;
+    const t0 = Date.now();
+    return withSpan('sentinel.act', { 'sentinel.instruction': instruction }, async (span) => {
+      let success = false;
+      try {
+        const retries = options?.retries ?? 2;
+        let currentAttempt = 0;
 
-    while (currentAttempt <= retries) {
-      this.stateParser.invalidateCache();
-      const stateBefore = await this.stateParser.parse();
-      const result = await this.actionEngine.act(instruction, options);
+        while (currentAttempt <= retries) {
+          stateParser.invalidateCache();
+          const stateBefore = await stateParser.parse();
+          const result = await actionEngine.act(instruction, options);
 
-      if (!result.success) {
-        this.log(1, `⚠️  Action failed: ${result.message}. Attempt ${currentAttempt + 1}/${retries + 1}`);
-        currentAttempt++;
-        continue;
+          if (!result.success) {
+            this.log(1, `⚠️  Action failed: ${result.message}. Attempt ${currentAttempt + 1}/${retries + 1}`);
+            currentAttempt++;
+            continue;
+          }
+
+          const stateAfter = await stateParser.parse();
+          const verification = await verifier.verifyAction(instruction, stateBefore, stateAfter);
+
+          if (verification.success && verification.confidence > 0.7) {
+            this.log(1, `✅ "${instruction}" verified (confidence: ${(verification.confidence * 100).toFixed(0)}%)`);
+            const actionResult: ActionResult = {
+              success: true,
+              message: verification.message,
+              ...(result.action   ? { action:   result.action }   : {}),
+              ...(result.selector ? { selector: result.selector } : {}),
+            };
+            this.recorder.record({ type: 'act', instruction, pageUrl: this.driver.getPage().url(), pageTitle: '' });
+            this.emit('action', { instruction, result: actionResult });
+            span.setAttributes({
+              'sentinel.success': true,
+              ...(actionResult.action   ? { 'sentinel.action':   actionResult.action }   : {}),
+              ...(actionResult.selector ? { 'sentinel.selector': actionResult.selector } : {}),
+            });
+            success = true;
+            return actionResult;
+          } else {
+            this.log(1,
+              `⚠️  Verification weak (${(verification.confidence * 100).toFixed(0)}%): ${verification.message}. ` +
+              `Retrying... (${currentAttempt + 1}/${retries + 1})`
+            );
+            currentAttempt++;
+          }
+        }
+
+        const failResult: ActionResult = {
+          success: false,
+          message: `Failed to execute "${instruction}" after ${retries + 1} attempts.`,
+        };
+        span.setAttributes({ 'sentinel.success': false });
+        return failResult;
+      } finally {
+        // Record metrics regardless of success, failure, or unexpected exception.
+        actCounter.add(1, { success: String(success) });
+        actDuration.record(Date.now() - t0);
       }
-
-      const stateAfter = await this.stateParser.parse();
-      const verification = await this.verifier.verifyAction(instruction, stateBefore, stateAfter);
-
-      if (verification.success && verification.confidence > 0.7) {
-        this.log(1, `✅ "${instruction}" verified (confidence: ${(verification.confidence * 100).toFixed(0)}%)`);
-        const actionResult = { success: true, message: verification.message, ...(result.action ? { action: result.action } : {}) };
-        this.recorder.record({ type: 'act', instruction, pageUrl: this.driver.getPage().url(), pageTitle: '' });
-        this.emit('action', { instruction, result: actionResult });
-        return actionResult;
-      } else {
-        this.log(1,
-          `⚠️  Verification weak (${(verification.confidence * 100).toFixed(0)}%): ${verification.message}. ` +
-          `Retrying... (${currentAttempt + 1}/${retries + 1})`
-        );
-        currentAttempt++;
-      }
-    }
-
-    return { success: false, message: `Failed to execute "${instruction}" after ${retries + 1} attempts.` };
+    });
   }
 
   /**
@@ -310,7 +572,9 @@ export class Sentinel extends EventEmitter {
     if (!this.extractionEngine) throw new Error('Sentinel not initialized. Call init() first.');
     if (!this.enableCaching) this.stateParser?.invalidateCache();
     this.log(2, `🔍 Extracting: "${instruction}"`);
-    return await this.extractionEngine.extract<T>(instruction, schema);
+    return withSpan('sentinel.extract', { 'sentinel.instruction': instruction }, () =>
+      this.extractionEngine!.extract<T>(instruction, schema)
+    );
   }
 
   /**
@@ -325,7 +589,11 @@ export class Sentinel extends EventEmitter {
     if (!this.observationEngine) throw new Error('Sentinel not initialized. Call init() first.');
     if (!this.enableCaching) this.stateParser?.invalidateCache();
     this.log(2, `👁️  Observing${instruction ? `: "${instruction}"` : ''}`);
-    return await this.observationEngine.observe(instruction);
+    return withSpan(
+      'sentinel.observe',
+      instruction ? { 'sentinel.instruction': instruction } : {},
+      () => this.observationEngine!.observe(instruction)
+    );
   }
 
   /**
@@ -371,6 +639,47 @@ export class Sentinel extends EventEmitter {
   }
 
   /**
+   * Extend an existing Playwright `Page` with Sentinel AI methods
+   * (`act`, `extract`, `observe`).
+   *
+   * Creates a dedicated CDP session and engine set for the given page,
+   * sharing the same LLM provider and configuration as this Sentinel instance.
+   * Useful for integrating AI actions into an existing Playwright test or script.
+   *
+   * @example
+   * // Inside a Playwright test — page comes from the test fixture
+   * const ai = await sentinel.extend(page);
+   * await ai.act('Click the login button');
+   * const data = await ai.extract('Get all product names', z.array(z.string()));
+   */
+  async extend(page: Page): Promise<ExtendedPage> {
+    // Detach any previous CDP session for this page to prevent leaks
+    const prev = this.extendedPages.get(page);
+    if (prev) await prev.detach().catch(() => {});
+
+    const cdp = await page.context().newCDPSession(page);
+    this.extendedPages.set(page, cdp);
+    const stateParser = new StateParser(page, cdp);
+    const actionEngine = new ActionEngine(
+      page, stateParser, this.gemini,
+      this.visionGrounding ?? undefined,
+      this.domSettleTimeoutMs,
+      this.locatorCacheInstance,
+      this.maxElements,
+      this.verbose,
+      this.humanLike
+    );
+    const extractionEngine = new ExtractionEngine(page, stateParser, this.gemini);
+    const observationEngine = new ObservationEngine(page, stateParser, this.gemini);
+
+    const extended = page as ExtendedPage;
+    extended.act = (instruction, options) => actionEngine.act(instruction, options);
+    extended.extract = (instruction, schema) => extractionEngine.extract(instruction, schema);
+    extended.observe = (instruction) => observationEngine.observe(instruction);
+    return extended;
+  }
+
+  /**
    * Check if the current page has a login form.
    */
   async hasLoginForm(): Promise<boolean> {
@@ -411,14 +720,99 @@ export class Sentinel extends EventEmitter {
   async run(goal: string, options?: AgentRunOptions): Promise<AgentResult> {
     if (!this.agentLoop) throw new Error('Sentinel not initialized. Call init() first.');
     this.log(1, `🤖 Agent starting: "${goal}"`);
-    const result = await this.agentLoop.run(goal, options);
+    const result = await withSpan('sentinel.agent', {
+      'sentinel.goal':      goal,
+      'sentinel.max_steps': options?.maxSteps ?? 15,
+    }, async (span) => {
+      const r = await this.agentLoop!.run(goal, options);
+      span.setAttributes({
+        'sentinel.goal_achieved': r.goalAchieved,
+        'sentinel.total_steps':   r.totalSteps,
+      });
+      agentSteps.record(r.totalSteps, { goal_achieved: String(r.goalAchieved) });
+      return r;
+    });
     this.log(1, `🤖 Agent finished: ${result.message}`);
     return result;
   }
 
+  /**
+   * Streaming variant of `run()` — yields each agent step as it happens, then
+   * yields the final `AgentResult` when the run completes.
+   *
+   * Designed for Server-Sent Events (SSE) in Next.js API routes or any
+   * async-iterable consumer.
+   *
+   * @example
+   * // Next.js API route (App Router)
+   * export async function GET() {
+   *   const sentinel = new Sentinel({ apiKey });
+   *   await sentinel.init();
+   *   await sentinel.goto('https://example.com');
+   *
+   *   const stream = new ReadableStream({
+   *     async start(controller) {
+   *       for await (const event of sentinel.runStream('Find the price')) {
+   *         controller.enqueue(`data: ${JSON.stringify(event)}\n\n`);
+   *       }
+   *       controller.close();
+   *       await sentinel.close();
+   *     },
+   *   });
+   *   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+   * }
+   */
+  async *runStream(
+    goal: string,
+    options?: AgentRunOptions
+  ): AsyncGenerator<AgentStepEvent | AgentResult> {
+    if (!this.agentLoop) throw new Error('Sentinel not initialized. Call init() first.');
+
+    // Internal async queue for bridging the callback-based AgentLoop with AsyncGenerator
+    const queue: Array<AgentStepEvent | AgentResult | Error | null> = [];
+    let notify: (() => void) | null = null;
+
+    const enqueue = (item: AgentStepEvent | AgentResult | Error | null) => {
+      queue.push(item);
+      notify?.();
+    };
+
+    const waitForItem = (): Promise<void> =>
+      new Promise(resolve => {
+        if (queue.length > 0) { resolve(); return; }
+        notify = () => { notify = null; resolve(); };
+      });
+
+    // Run the agent in the background, feeding steps into the queue
+    const runPromise = this.run(goal, {
+      ...options,
+      onStep: (step: AgentStepEvent) => {
+        enqueue(step);
+        options?.onStep?.(step);
+      },
+    }).then((result: AgentResult) => {
+      enqueue(result);
+      enqueue(null); // sentinel: done
+    }).catch((err: unknown) => {
+      enqueue(err instanceof Error ? err : new Error(String(err)));
+      enqueue(null);
+    });
+
+    // Drain the queue as items arrive
+    while (true) {
+      await waitForItem();
+      const item = queue.shift()!;
+      if (item === null) break;      // done
+      if (item instanceof Error) { await runPromise; throw item; }
+      yield item as AgentStepEvent | AgentResult;
+    }
+
+    await runPromise;
+  }
+
   // ─── Internal helpers ─────────────────────────────────────────────────────
 
-  private log(level: 0 | 1 | 2, message: string) {
+  private log(level: 0 | 1 | 2 | 3, message: string) {
     if (this.verbose >= level) {
       console.log(`[Sentinel] ${message}`);
     }

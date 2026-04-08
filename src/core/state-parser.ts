@@ -162,6 +162,19 @@ export class StateParser {
       }
     }
 
+    // ─── iframe Support ───────────────────────────────────────────────────────
+    // Collect elements from same-origin iframes, offset to main-page coords.
+    const frameElements = await this.parseFrameElements(counter);
+    if (frameElements.length > 0) {
+      const existingNames = new Set(uiElements.map(e => e.name));
+      for (const el of frameElements) {
+        if (!existingNames.has(el.name)) {
+          uiElements.push(el);
+          existingNames.add(el.name); // prevent cross-frame duplicates
+        }
+      }
+    }
+
     const state: SimplifiedState = {
       url: this.page.url(),
       title: await this.page.title(),
@@ -210,9 +223,19 @@ export class StateParser {
       const results: any[] = [];
       const seen = new Set<string>();
 
-      const candidates = Array.from(document.querySelectorAll(
-        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick]'
-      ));
+      // Shadow DOM: pierce all shadow roots recursively
+      function queryShadowAll(selector: string, root: any): any[] {
+        const found: any[] = Array.from(root.querySelectorAll(selector));
+        for (const el of Array.from(root.querySelectorAll('*')) as any[]) {
+          if (el.shadowRoot) found.push(...queryShadowAll(selector, el.shadowRoot));
+        }
+        return found;
+      }
+
+      const candidates = queryShadowAll(
+        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick]',
+        document
+      );
 
       const MAX_ELEMENTS = 200;
       const viewportWidth = window.innerWidth;
@@ -278,10 +301,20 @@ export class StateParser {
       const results: any[] = [];
       const seen = new Set<string>();
 
-      const candidates = Array.from(document.querySelectorAll(
+      // Shadow DOM: pierce all shadow roots recursively
+      function queryShadowAll(selector: string, root: any): any[] {
+        const found: any[] = Array.from(root.querySelectorAll(selector));
+        for (const el of Array.from(root.querySelectorAll('*')) as any[]) {
+          if (el.shadowRoot) found.push(...queryShadowAll(selector, el.shadowRoot));
+        }
+        return found;
+      }
+
+      const candidates = queryShadowAll(
         'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
-        'select, textarea, [role="radio"], [role="checkbox"], [role="option"]'
-      ));
+        'select, textarea, [role="radio"], [role="checkbox"], [role="option"]',
+        document
+      );
 
       for (const el of candidates) {
         const htmlEl = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
@@ -334,6 +367,87 @@ export class StateParser {
       name: el.name,
       boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
     }));
+  }
+
+  // ─── Private: iframe element collection ──────────────────────────────────
+
+  /**
+   * Enumerates all non-main, same-origin frames and collects their interactive
+   * elements. Coordinates are offset by the iframe's bounding rect so they map
+   * to the main-page coordinate space. Cross-origin frames are skipped silently.
+   */
+  private async parseFrameElements(counter: { n: number }): Promise<UIElement[]> {
+    const mainFrame = this.page.mainFrame();
+    const result: UIElement[] = [];
+
+    for (const frame of this.page.frames()) {
+      if (frame === mainFrame) continue;
+
+      try {
+        const iframeEl = await frame.frameElement();
+        if (!iframeEl) continue;
+        const iframeRect = await iframeEl.boundingBox();
+        if (!iframeRect || iframeRect.width < 1 || iframeRect.height < 1) continue;
+
+        const rawElements = await frame.evaluate(() => {
+          const results: any[] = [];
+          const seen = new Set<string>();
+          const candidates = Array.from(document.querySelectorAll(
+            'a, button, input:not([type="hidden"]), select, textarea, [role], [aria-label], [data-testid]'
+          ));
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
+
+          for (const el of candidates) {
+            const htmlEl = el as HTMLElement;
+            const rect = htmlEl.getBoundingClientRect();
+            if (rect.width < 5 || rect.height < 5) continue;
+            if (rect.left >= vw || rect.top >= vh) continue;
+
+            const name =
+              htmlEl.getAttribute('aria-label') ||
+              htmlEl.getAttribute('title') ||
+              htmlEl.getAttribute('data-testid') ||
+              htmlEl.getAttribute('placeholder') ||
+              (htmlEl.textContent?.trim().slice(0, 80) ?? '') ||
+              '';
+
+            if (!name) continue;
+            const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            results.push({
+              role: htmlEl.getAttribute('role') || htmlEl.tagName.toLowerCase(),
+              name,
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            });
+          }
+          return results;
+        });
+
+        for (const el of rawElements) {
+          result.push({
+            id: counter.n++,
+            role: el.role,
+            name: `[frame] ${el.name}`,
+            boundingClientRect: {
+              x: el.x + iframeRect.x,
+              y: el.y + iframeRect.y,
+              width: el.width,
+              height: el.height,
+            },
+          });
+        }
+      } catch {
+        // Cross-origin iframe or detached frame — skip silently
+      }
+    }
+
+    return result;
   }
 
   // ─── Private: DOM context enrichment for generic AOM names ───────────────

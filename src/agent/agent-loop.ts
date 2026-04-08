@@ -2,8 +2,18 @@ import type { ActionEngine } from '../api/act.js';
 import type { ExtractionEngine } from '../api/extract.js';
 import type { StateParser } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
+import { slugifyInstruction } from '../core/selector-generator.js';
 import { AgentMemory } from './memory.js';
 import { Planner } from './planner.js';
+import { withSpan } from '../utils/telemetry.js';
+
+/** Returns a key derived from `slug` that does not yet exist in `map`. */
+function uniqueKey(slug: string, map: Record<string, unknown>): string {
+  if (!(slug in map)) return slug;
+  let n = 2;
+  while (`${slug}${n}` in map) n++;
+  return `${slug}${n}`;
+}
 
 export interface AgentRunOptions {
   maxSteps?: number;
@@ -28,6 +38,15 @@ export interface AgentResult {
   message: string;
   history: AgentStepEvent[];
   data?: any;
+  /**
+   * Stable CSS selectors for each element the agent interacted with,
+   * keyed by a camelCase slug of the instruction.
+   * Only populated for successful `act` steps where a selector could be derived.
+   *
+   * @example
+   * { clickLoginButton: 'button[data-testid="login"]', fillEmailField: '#email' }
+   */
+  selectors?: Record<string, string>;
 }
 
 /**
@@ -51,6 +70,7 @@ export class AgentLoop {
   async run(goal: string, options: AgentRunOptions = {}): Promise<AgentResult> {
     const maxSteps = options.maxSteps ?? 15;
     const stepEvents: AgentStepEvent[] = [];
+    const collectedSelectors: Record<string, string> = {};
     this.memory.clear();
 
     console.log(`[Agent] 🎯 Goal: "${goal}" (max ${maxSteps} steps)`);
@@ -99,30 +119,58 @@ export class AgentLoop {
           message: `Goal achieved in ${stepNumber} step(s).`,
           history: stepEvents,
           ...(extractedData !== undefined ? { data: extractedData } : {}),
+          ...(Object.keys(collectedSelectors).length > 0 ? { selectors: collectedSelectors } : {}),
         };
       }
 
       // 4. Execute the planned step
       const stepType = planned.type ?? 'act';
-      let result;
+      let result: { success: boolean; message: string; action?: string; selector?: string };
       let stepData: any = undefined;
 
       if (stepType === 'extract') {
-        try {
-          const schema = planned.extractionSchema ?? { type: 'object' };
-          const extracted = await this.extractionEngine.extract(planned.instruction, schema);
-          extractedData = extracted;
-          stepData = extracted;
-          result = { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
-        } catch (err: any) {
-          result = { success: false, message: err.message, action: `extract: ${planned.instruction}` };
-        }
+        result = await withSpan('sentinel.agent.step', {
+          'sentinel.step':        stepNumber,
+          'sentinel.type':        'extract',
+          'sentinel.instruction': planned.instruction,
+          'sentinel.url':         state.url,
+        }, async (span) => {
+          try {
+            const schema = planned.extractionSchema ?? { type: 'object' };
+            const extracted = await this.extractionEngine.extract(planned.instruction, schema);
+            extractedData = extracted;
+            stepData = extracted;
+            span.setAttributes({ 'sentinel.success': true });
+            return { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
+          } catch (err: any) {
+            span.setAttributes({ 'sentinel.success': false });
+            return { success: false, message: err.message, action: `extract: ${planned.instruction}` };
+          }
+        });
       } else {
-        try {
-          result = await this.actionEngine.act(planned.instruction);
-        } catch (err: any) {
-          result = { success: false, message: err.message, action: planned.instruction };
-        }
+        result = await withSpan('sentinel.agent.step', {
+          'sentinel.step':        stepNumber,
+          'sentinel.type':        'act',
+          'sentinel.instruction': planned.instruction,
+          'sentinel.url':         state.url,
+        }, async (span) => {
+          try {
+            const r = await this.actionEngine.act(planned.instruction);
+            // Collect selector from successful act steps
+            if (r.success && r.selector) {
+              const slug = slugifyInstruction(planned.instruction);
+              collectedSelectors[uniqueKey(slug, collectedSelectors)] = r.selector;
+            }
+            span.setAttributes({
+              'sentinel.success': r.success,
+              ...(r.selector ? { 'sentinel.selector': r.selector } : {}),
+            });
+            return r;
+          } catch (err: any) {
+            span.setAttributes({ 'sentinel.success': false });
+            return { success: false, message: err.message, action: planned.instruction };
+          }
+        });
       }
 
       const event: AgentStepEvent = {
@@ -198,6 +246,7 @@ export class AgentLoop {
       message,
       history: stepEvents,
       ...(extractedData !== undefined ? { data: extractedData } : {}),
+      ...(Object.keys(collectedSelectors).length > 0 ? { selectors: collectedSelectors } : {}),
     };
   }
 }

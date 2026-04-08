@@ -6,6 +6,237 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [3.10.0] - 2026-04-08
+
+### Added
+
+- **`IProxyProvider` interface + `WebshareProxyProvider` + `RoundRobinProxyProvider`** — dynamic proxy rotation without managing your own network.
+
+  ```typescript
+  // Round-robin through a static list
+  const proxy = new RoundRobinProxyProvider([
+    { server: 'http://p1:8080', username: 'u', password: 'pw' },
+    { server: 'http://p2:8080', username: 'u', password: 'pw' },
+  ]);
+
+  // Fetch & rotate via Webshare API (lazy, cached on first call)
+  const proxy = new WebshareProxyProvider({ apiKey: process.env.WEBSHARE_KEY! });
+
+  const sentinel = new Sentinel({ apiKey, proxy }); // accepts ProxyOptions OR IProxyProvider
+  ```
+
+  - `IProxyProvider.releaseProxy()` lifecycle hook — called automatically on `sentinel.close()` so providers can track usage or return proxies to a pool.
+  - Thread-safe deduplication: concurrent `getProxy()` calls during initial fetch wait on the same `Promise` instead of issuing parallel API requests.
+  - `isProxyProvider(value)` type guard exported for custom integrations.
+
+- **Bézier mouse movement (`humanLike: true`)** — when `humanLike` is enabled, every click, double-click, right-click, hover, fill, and append action now moves the mouse along a randomised cubic Bézier curve instead of jumping directly to the target.
+
+  Implementation details:
+  - Control points are randomly displaced perpendicular to the straight-line path, producing a natural arc.
+  - Step count scales with distance (8–40 steps); timing is non-uniform — slower at start/end, faster in the middle (sine-shaped).
+  - Pre-click pause: 80–200 ms (random).
+  - Keystroke delay for `fill`/`append`: 30–80 ms per character.
+
+- **`sentinel.runStream(goal, options?)`** — `AsyncGenerator<AgentStepEvent | AgentResult>` that streams agent steps in real time, followed by the final result.
+
+  Designed for **Server-Sent Events** in Next.js App Router API routes or any `for await` consumer. Zero polling — uses an internal notify queue that wakes the generator exactly when new data arrives.
+
+  ```typescript
+  // Next.js API route
+  export async function GET() {
+    const sentinel = new Sentinel({ apiKey });
+    await sentinel.init();
+    await sentinel.goto('https://example.com');
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        for await (const event of sentinel.runStream('Find the checkout button')) {
+          controller.enqueue(`data: ${JSON.stringify(event)}\n\n`);
+        }
+        controller.close();
+        await sentinel.close();
+      },
+    });
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+  }
+  ```
+
+---
+
+## [3.9.0] - 2026-04-08
+
+### Added
+
+- **OpenTelemetry / Observability** — Sentinel now emits traces and metrics via the `@opentelemetry/api` standard. Zero-overhead when no OTel SDK is configured (no-op API). Drop-in with any OTel-compatible backend (Datadog, Grafana, Jaeger, etc.).
+
+  **Traces (spans):**
+  | Span name | Emitted by | Key attributes |
+  |---|---|---|
+  | `sentinel.act` | `sentinel.act()` | `sentinel.instruction`, `sentinel.success`, `sentinel.action`, `sentinel.selector` |
+  | `sentinel.extract` | `sentinel.extract()` | `sentinel.instruction` |
+  | `sentinel.observe` | `sentinel.observe()` | `sentinel.instruction` |
+  | `sentinel.agent` | `sentinel.run()` | `sentinel.goal`, `sentinel.max_steps`, `sentinel.goal_achieved`, `sentinel.total_steps` |
+  | `sentinel.agent.step` | agent loop (per step) | `sentinel.step`, `sentinel.type`, `sentinel.instruction`, `sentinel.url`, `sentinel.success` |
+  | `sentinel.llm` | every LLM API call | `llm.system`, `gen_ai.operation.name`, `llm.tokens.input/output/total`, `llm.cost_usd` |
+
+  Spans are automatically nested: `sentinel.agent` → `sentinel.agent.step` → `sentinel.act` → `sentinel.llm`.
+
+  **Metrics:**
+  | Metric | Type | Labels |
+  |---|---|---|
+  | `sentinel.act.requests` | counter | `success` |
+  | `sentinel.act.duration_ms` | histogram | — |
+  | `sentinel.llm.requests` | counter | `llm.model`, `success` |
+  | `sentinel.llm.tokens` | counter | `llm.model`, `direction` (input\|output) |
+  | `sentinel.llm.duration_ms` | histogram | `llm.model` |
+  | `sentinel.agent.steps` | histogram | `goal_achieved` |
+
+  **Setup example (Jaeger):**
+  ```typescript
+  import { NodeSDK } from '@opentelemetry/sdk-node';
+  import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+
+  const sdk = new NodeSDK({ traceExporter: new OTLPTraceExporter() });
+  sdk.start(); // must be called before new Sentinel(...)
+
+  const sentinel = new Sentinel({ apiKey: '...' });
+  // All sentinel.act() / sentinel.run() calls now emit spans automatically
+  ```
+
+- **`selector` now propagated from `ActionEngine` through `Sentinel.act()`** — previously the outer `Sentinel.act()` (which includes verification + retries) discarded the selector returned by the engine. It is now correctly forwarded in `ActionResult.selector`.
+
+---
+
+## [3.8.0] - 2026-04-08
+
+### Added
+
+- **Stable Playwright selector export** — `AgentResult.selectors` is now populated after every `run()` call. Each successful `act` step contributes one entry: a camelCase slug of the instruction maps to the most stable CSS selector for that element.
+  ```typescript
+  const result = await sentinel.run('Login with test@example.com');
+  console.log(result.selectors);
+  // { clickLoginButton: '[data-testid="login-btn"]', fillEmailField: '#email' }
+  ```
+  Copy the selectors directly into Playwright tests — no DevTools digging required.
+- **`ActionResult.selector`** — individual `act()` calls now also expose the selector for the element that was acted on, for use cases outside the agent loop.
+- **Selector priority** (most → least stable): `data-testid` / `data-cy` / `data-test` / `data-qa` → `#id` (non-generated) → `[name]` on form controls → `input[type][placeholder]` → `[aria-label]` → `[role]:has-text(...)` → `tag:has-text(...)`.
+- **`slugifyInstruction()`** exported from `@isoldex/sentinel` — converts a natural-language instruction to a camelCase key. Duplicate slugs within one run get a numeric suffix.
+
+---
+
+## [3.7.0] - 2026-04-08
+
+### Added
+
+- **Prompt Caching** — `promptCache` option (`false` | `true` | `string`) caches LLM responses keyed by a hash of the prompt and schema. A cache hit costs zero tokens and skips the model entirely. Because the prompt includes the current URL, page title, and element list, the cache naturally misses when the DOM changes — no manual invalidation needed. Covers `act()`, `extract()`, `observe()`, and the agent loop.
+  - `promptCache: true` — in-memory cache (default max 200 entries, LRU eviction)
+  - `promptCache: 'sentinel-cache.json'` — file-persisted cache, survives process restarts
+- **`sentinel.clearPromptCache()`** — programmatically flush the prompt cache (e.g. between test runs or after a major page transition).
+- **`IPromptCache` interface** exported — implement it to plug in your own cache backend (Redis, SQLite, etc.).
+- **Bug fix: `Sentinel.parallel()` factory errors are now isolated per task** — previously, if `factory()` threw (e.g. browser launch failure) the error propagated to `Promise.all` and could abort remaining tasks. Factory is now inside the try/catch so failures are recorded as `{ success: false, error: '...' }` like any other task error.
+- **Bug fix: `extend()` CDP session leak** — calling `extend()` on the same page multiple times now detaches the previous CDP session before creating a new one.
+
+### Changed
+
+- `Sentinel.log()` level type widened from `0|1|2` to `0|1|2|3` (was silently truncating `verbose: 3` log messages).
+
+---
+
+## [3.6.0] - 2026-04-08
+
+### Added
+
+- **`Sentinel.parallel(tasks, options)`** — runs multiple independent agent tasks in parallel, each in its own browser session. A worker-pool limits simultaneous sessions to `concurrency` (default: `3`). Results are returned in input order regardless of completion order. Error in one task never affects others.
+- **`onProgress` callback** — `parallel({ ..., onProgress: (completed, total, result) => ... })` fires after each task finishes. Enables progress bars, streaming dashboards, and early cancellation patterns.
+- **`ParallelTask`**, **`ParallelResult`**, **`ParallelOptions`** types exported from the main package.
+- **Monetisation hook** — the concurrency clamp point is explicitly annotated in `Sentinel.parallel()` so per-tier limits can be injected without touching call sites.
+
+---
+
+## [3.5.0] - 2026-04-07
+
+### Added
+
+- **Playwright-Page-Extension** — `sentinel.extend(page)` attaches `act()`, `extract()`, and `observe()` directly to any existing Playwright `Page` object. A dedicated CDP session and engine set are created for that page, sharing the LLM provider and configuration of the Sentinel instance. Drop-in integration for existing Playwright tests and scripts without changing the page fixture.
+- **`verbose: 3` debug level** — New level exposes chunk-processing statistics (`X → Y elements sent to LLM`) and the full LLM decision JSON (`elementId`, `action`, `value`, `reasoning`) per `act()` call.
+
+### Changed
+
+- `verbose` option extended from `0 | 1 | 2` to `0 | 1 | 2 | 3`.
+- `verbose: 1` now logs action summaries only (no reasoning). Reasoning moved to `verbose: 2` (previously all levels received reasoning unconditionally). This is a minor **breaking change** for anyone who relied on reasoning output at `verbose: 1`.
+- `ActionEngine` accepts an optional `verbose` parameter; all internal log/warn calls respect the level — `verbose: 0` fully suppresses output.
+
+---
+
+## [3.4.0] - 2026-04-07
+
+### Added
+
+- **Chunk-Processing** — `filterRelevantElements()` scores page elements by keyword overlap with the instruction (tokenised, lowercase). On pages with more than `maxElements` interactive elements only the top-N are sent to the LLM — significantly reducing token usage and latency on content-heavy pages.
+- **`maxElements` option** (default `50`) — configure the element budget per `act()` call via `SentinelOptions`.
+- **Shadow DOM support** — `parseDOMSnapshot()` and `parseFormElements()` now pierce all shadow roots recursively via `queryShadowAll()`. Components built with Lit, Polymer, Stencil (Salesforce Lightning, ServiceNow, etc.) are now fully supported.
+- **iframe support** — `parseFrameElements()` enumerates all same-origin frames, collects their interactive elements, and offsets coordinates into the main-page coordinate space. Cross-origin frames are skipped silently.
+
+---
+
+## [3.3.0] - 2026-04-07
+
+### Added
+
+#### Intelligent Error Messages (`ActionResult.attempts`)
+When all action paths fail, `act()` now returns a structured diagnostic instead of the opaque `"Action failed: ..."` string. The `message` field includes:
+- Which element was targeted and what instruction was given
+- Every attempted path (`coordinate-click`, `vision-grounding`, `locator-fallback`) with its specific error
+- An actionable tip based on the detected root cause (outside viewport → scroll suggestion, timeout → overlay hint, all paths exhausted → rephrase or enable vision fallback)
+
+The new `attempts?: ActionAttempt[]` field on `ActionResult` gives programmatic access to the same data:
+
+```typescript
+const result = await sentinel.act('Click the checkout button');
+if (!result.success) {
+  console.log(result.message);  // full diagnostic with tip
+  console.log(result.attempts); // [{ path, error }, ...]
+}
+```
+
+`ActionAttempt` is exported from the package root.
+
+#### README: Stagehand comparison table and benchmark
+Added a "Why Sentinel over Stagehand?" section at the top of the README with a feature comparison table and cost/speed benchmark (~40× cheaper, ~33% faster per run using Gemini Flash vs. GPT-4o).
+
+#### npm keywords updated for discoverability
+Added `stagehand-alternative`, `browseruse-alternative`, `playwright-ai`, `selenium-alternative`, `mcp`, `self-healing` to package keywords.
+
+---
+
+## [3.2.0] - 2026-04-07
+
+### Added
+
+#### Self-Healing Locators (`locatorCache` option)
+Sentinel can now cache successful locator lookups and skip the LLM entirely on repeated calls with the same URL and instruction. The first successful `act()` stores `{ action, role, name, value }` for the resolved element. Subsequent calls with the same URL + instruction find the element directly in the current DOM state — no LLM call, no token cost.
+
+If the cached element is no longer in the DOM, or the action fails, the entry is automatically invalidated and the normal LLM path takes over.
+
+Three modes:
+
+```typescript
+// In-memory: cached for the lifetime of this Sentinel instance
+const sentinel = new Sentinel({ apiKey, locatorCache: true });
+
+// File-persisted: survives process restarts, ideal for test suites
+const sentinel = new Sentinel({ apiKey, locatorCache: '.sentinel-cache.json' });
+
+// Disabled (default)
+const sentinel = new Sentinel({ apiKey }); // or locatorCache: false
+```
+
+For test suites that hit the same pages repeatedly, this effectively makes most `act()` calls free after the first run. Stagehand has no equivalent.
+
+The `ILocatorCache` interface is exported for consumers who want to provide a custom cache implementation (e.g. Redis-backed for distributed test runs).
+
+---
+
 ## [3.1.1] - 2026-04-07
 
 ### Fixed

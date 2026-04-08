@@ -6,14 +6,24 @@ export interface TokenUsageEntry {
 }
 
 // Approximate cost per 1M tokens (USD) – update as pricing changes
+// Sources: ai.google.dev/pricing, openai.com/pricing, anthropic.com/pricing
 const COST_PER_1M: Record<string, { input: number; output: number }> = {
-  'gemini-2.0-flash': { input: 0.075, output: 0.30 },
-  'gemini-1.5-flash': { input: 0.075, output: 0.30 },
-  'gemini-1.5-pro': { input: 3.50, output: 10.50 },
-  'gpt-4o': { input: 2.50, output: 10.00 },
-  'gpt-4o-mini': { input: 0.15, output: 0.60 },
-  'claude-3-5-sonnet': { input: 3.00, output: 15.00 },
-  'claude-3-haiku': { input: 0.25, output: 1.25 },
+  // Gemini — Flash models (budget tier)
+  'gemini-2.5-flash-preview': { input: 0.075, output: 0.30 },
+  'gemini-3-flash-preview':   { input: 0.075, output: 0.30 }, // estimate, update when GA
+  'gemini-2.0-flash':         { input: 0.075, output: 0.30 },
+  'gemini-1.5-flash':         { input: 0.075, output: 0.30 },
+  // Gemini — Pro models
+  'gemini-2.5-pro-preview':   { input: 1.25,  output: 5.00 },
+  'gemini-1.5-pro':           { input: 3.50,  output: 10.50 },
+  // OpenAI
+  'gpt-4o':                   { input: 2.50,  output: 10.00 },
+  'gpt-4o-mini':              { input: 0.15,  output: 0.60 },
+  'o3-mini':                  { input: 1.10,  output: 4.40 },
+  // Anthropic
+  'claude-3-5-sonnet':        { input: 3.00,  output: 15.00 },
+  'claude-3-5-haiku':         { input: 0.80,  output: 4.00 },
+  'claude-3-haiku':           { input: 0.25,  output: 1.25 },
 };
 
 /**

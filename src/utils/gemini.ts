@@ -18,6 +18,8 @@ export class GeminiService {
   private syncTokenUsage(): void {
     if (this.onTokenUsage) {
       this.provider.onTokenUsage = this.onTokenUsage;
+    } else {
+      delete (this.provider as any).onTokenUsage;
     }
   }
 

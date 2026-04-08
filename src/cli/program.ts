@@ -58,7 +58,7 @@ export function buildProgram(factory: SentinelFactory = defaultFactory): Command
   program
     .name('sentinel')
     .description('AI-powered browser automation — Sentinel CLI')
-    .version('3.1.1')
+    .version('3.8.0')
     .exitOverride(); // throw instead of process.exit so tests can catch errors
 
   // ── run ────────────────────────────────────────────────────────────────────

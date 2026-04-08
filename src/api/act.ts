@@ -3,6 +3,8 @@ import { StateParser } from '../core/state-parser.js';
 import type { UIElement } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { VisionGrounding } from '../core/vision-grounding.js';
+import type { ILocatorCache } from '../core/locator-cache.js';
+import { generateSelector } from '../core/selector-generator.js';
 import { withTimeout } from '../utils/with-timeout.js';
 import { ActionError } from '../types/errors.js';
 
@@ -11,13 +13,26 @@ export interface ActOptions {
   retries?: number;
 }
 
+export interface ActionAttempt {
+  path: 'coordinate-click' | 'vision-grounding' | 'locator-fallback';
+  error: string;
+}
+
 export interface ActionResult {
   success: boolean;
   message: string;
   action?: string;
+  /**
+   * Stable CSS selector for the element that was interacted with.
+   * Omitted for scroll actions, failed actions, or when no stable selector
+   * could be derived. Useful for exporting selectors into Playwright tests.
+   */
+  selector?: string;
+  /** Present on failure — describes each attempted path and its error. */
+  attempts?: ActionAttempt[];
 }
 
-type ActionType =
+export type ActionType =
   | 'click'
   | 'fill'
   | 'append'
@@ -83,18 +98,199 @@ async function waitForPageSettle(page: Page, timeout = 3000): Promise<void> {
   await Promise.race([domSettle, navigationSettle]);
 }
 
+// ─── Bézier mouse movement ────────────────────────────────────────────────────
+
+/**
+ * Moves the mouse from (x0,y0) to (x1,y1) along a cubic Bézier curve
+ * with two random control points — produces a natural, human-like arc.
+ *
+ * Steps are scaled to the distance: short movements use fewer points,
+ * long diagonal swipes use up to 40. Typical duration: ~120–180 ms.
+ */
+async function moveMouse(
+  page: Page,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): Promise<void> {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const steps = Math.max(8, Math.min(40, Math.round(dist / 15)));
+
+  // Random control points displaced perpendicular to the straight line
+  const perp = { x: -dy / dist || 0, y: dx / dist || 0 };
+  const c1Offset = (0.2 + Math.random() * 0.3) * dist;
+  const c2Offset = (0.2 + Math.random() * 0.3) * dist;
+  const cx1 = x0 + dx * 0.25 + perp.x * c1Offset * (Math.random() > 0.5 ? 1 : -1);
+  const cy1 = y0 + dy * 0.25 + perp.y * c1Offset * (Math.random() > 0.5 ? 1 : -1);
+  const cx2 = x0 + dx * 0.75 + perp.x * c2Offset * (Math.random() > 0.5 ? 1 : -1);
+  const cy2 = y0 + dy * 0.75 + perp.y * c2Offset * (Math.random() > 0.5 ? 1 : -1);
+
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    const bx = u * u * u * x0 + 3 * u * u * t * cx1 + 3 * u * t * t * cx2 + t * t * t * x1;
+    const by = u * u * u * y0 + 3 * u * u * t * cy1 + 3 * u * t * t * cy2 + t * t * t * y1;
+    await page.mouse.move(bx, by);
+    // Non-uniform timing — faster in the middle, slower at start/end
+    const delay = 4 + Math.round(8 * Math.sin(Math.PI * t));
+    await page.waitForTimeout(delay);
+  }
+}
+
+// ─── Failure diagnostics ──────────────────────────────────────────────────────
+
+function buildFailureMessage(
+  instruction: string,
+  target: UIElement | null,
+  attempts: ActionAttempt[]
+): string {
+  const elementName = target ? `"${target.name}"` : 'the target element';
+  const errors = attempts.map(a => `  • ${a.path}: ${a.error}`).join('\n');
+
+  // Detect root cause and suggest a fix
+  const allErrors = attempts.map(a => a.error.toLowerCase()).join(' ');
+
+  let tip = '';
+  if (allErrors.includes('outside viewport') || allErrors.includes('scroll')) {
+    tip = `Tipp: Element könnte außerhalb des sichtbaren Bereichs sein. Versuche zuerst:\n  sentinel.act('scroll to ${elementName}')`;
+  } else if (allErrors.includes('timeout') || allErrors.includes('detached') || allErrors.includes('hidden')) {
+    tip = `Tipp: Element könnte von einem Modal, Overlay oder Popover verdeckt sein. Schließe überlagernde Elemente zuerst.`;
+  } else if (allErrors.includes('no target') || allErrors.includes('not found') || allErrors.includes('could not find')) {
+    tip = `Tipp: Element "${instruction}" wurde im DOM nicht gefunden. Möglicherweise in Shadow DOM, iframe oder noch nicht gerendert.`;
+  } else if (attempts.length >= 2) {
+    tip = `Tipp: Alle Fallback-Pfade erschöpft. Versuche die Instruktion präziser zu formulieren oder aktiviere Vision-Grounding: { visionFallback: true }.`;
+  }
+
+  const attemptSummary = attempts.length === 1
+    ? `Pfad versucht: ${attempts[0]!.path}`
+    : `${attempts.length} Pfade versucht`;
+
+  return [
+    `Action fehlgeschlagen: "${instruction}" auf ${elementName}`,
+    `${attemptSummary}:\n${errors}`,
+    tip,
+  ].filter(Boolean).join('\n');
+}
+
+// ─── Chunk-Processing ────────────────────────────────────────────────────────
+
+/**
+ * Tokenises a string into lowercase words (≥ 2 chars) for relevance scoring.
+ */
+function tokenize(text: string): string[] {
+  return [...new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9äöüß\s]/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length >= 2)
+  )];
+}
+
+/**
+ * Filters `elements` down to at most `maxCount` entries, keeping those whose
+ * role+name overlap most with the instruction. When the page has ≤ maxCount
+ * elements the list is returned unchanged. Elements with a relevance score of 0
+ * fill remaining slots in their original order (stable sort).
+ */
+export function filterRelevantElements(
+  elements: UIElement[],
+  instruction: string,
+  maxCount: number
+): UIElement[] {
+  if (elements.length <= maxCount) return elements;
+
+  const tokens = tokenize(instruction);
+  if (tokens.length === 0) return elements.slice(0, maxCount);
+
+  const scored = elements.map(el => {
+    const text = `${el.role} ${el.name}`
+      .toLowerCase()
+      .replace(/[^a-z0-9äöüß\s]/g, ' ');
+    let score = 0;
+    for (const token of tokens) {
+      if (text.includes(token)) score++;
+    }
+    return { el, score };
+  });
+
+  // Stable sort: higher score first, original order preserved for ties
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, maxCount).map(s => s.el);
+}
+
 export class ActionEngine {
   constructor(
     private page: Page,
     private stateParser: StateParser,
     private gemini: LLMProvider,
     private visionGrounding?: VisionGrounding,
-    private domSettleTimeoutMs = 3000
+    private domSettleTimeoutMs = 3000,
+    private locatorCache: ILocatorCache | null = null,
+    /** Maximum elements sent to the LLM. Pages with more are pre-filtered by relevance. */
+    private maxElements = 50,
+    /**
+     * Verbosity level inherited from SentinelOptions:
+     *  0 = silent
+     *  1 = action summary only (default)
+     *  2 = + reasoning + fallback warnings
+     *  3 = + chunk-processing stats + full LLM decision
+     */
+    private verbose: 0 | 1 | 2 | 3 = 0,
+    /** When true, mouse moves along a Bézier curve and per-action delays are added. */
+    private humanLike = false
   ) {}
+
+  private log(level: 1 | 2 | 3, message: string): void {
+    if (this.verbose >= level) console.log(message);
+  }
+
+  private warn(level: 1 | 2 | 3, message: string): void {
+    if (this.verbose >= level) console.warn(message);
+  }
 
   async act(instruction: string, options?: ActOptions): Promise<ActionResult> {
     const resolvedInstruction = interpolateVariables(instruction, options?.variables);
     const state = await this.stateParser.parse();
+
+    // ── Self-Healing Locator: cache lookup ────────────────────────────────────
+    if (this.locatorCache) {
+      const cached = this.locatorCache.get(state.url, resolvedInstruction);
+      if (cached) {
+        const target = state.elements.find(
+          e => e.role === cached.role && e.name === cached.name
+        ) ?? null;
+        if (target) {
+          const actionLabel = `${cached.action} on "${target.name}" (${target.role}) [cached]`;
+          this.log(1, `[Act] ⚡ ${actionLabel}`);
+          this.stateParser.invalidateCache();
+          try {
+            await this.performAction(cached.action, target, cached.value);
+            await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+            return {
+              success: true,
+              message: `Successfully performed ${cached.action} on "${target.name}" (cached)`,
+              action: actionLabel,
+            };
+          } catch {
+            // Cached action failed — invalidate and fall through to LLM
+            this.locatorCache.invalidate(state.url, resolvedInstruction);
+          }
+        } else {
+          // Element no longer in DOM — invalidate stale entry
+          this.locatorCache.invalidate(state.url, resolvedInstruction);
+        }
+      }
+    }
+
+    const visibleElements = filterRelevantElements(state.elements, resolvedInstruction, this.maxElements);
+
+    if (state.elements.length > visibleElements.length) {
+      this.log(3, `[Act] chunk-processing: ${state.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
+    }
 
     const prompt = `
       Current Page URL: ${state.url}
@@ -102,7 +298,7 @@ export class ActionEngine {
       Instruction: "${resolvedInstruction}"
 
       Elements on page:
-      ${JSON.stringify(state.elements.map(e => ({ id: e.id, role: e.role, name: e.name })), null, 2)}
+      ${JSON.stringify(visibleElements.map(e => ({ id: e.id, role: e.role, name: e.name })), null, 2)}
 
       Select the ID of the element to interact with and the action to perform.
       Available actions:
@@ -165,7 +361,12 @@ export class ActionEngine {
       ? `${decision.action} on "${target.name}" (${target.role})`
       : `${decision.action} (page)`;
 
-    console.log(`[Act] ${actionLabel} → ${decision.reasoning}`);
+    this.log(1, `[Act] ${actionLabel}`);
+    this.log(2, `[Act] reasoning: ${decision.reasoning}`);
+    this.log(3, `[Act] decision: ${JSON.stringify({ elementId: decision.elementId, action: decision.action, value: decision.value, reasoning: decision.reasoning })}`);
+
+    // Generate stable selector before action — DOM is still in pre-action state
+    const selector = target ? (await generateSelector(this.page, target) ?? undefined) : undefined;
 
     // Invalidate cache after action – state will change
     this.stateParser.invalidateCache();
@@ -173,12 +374,26 @@ export class ActionEngine {
     try {
       await this.performAction(decision.action, target, decision.value);
       await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+      // ── Self-Healing Locator: populate cache on success ────────────────────
+      if (this.locatorCache && target && !isScrollWithoutTarget) {
+        this.locatorCache.set(state.url, resolvedInstruction, {
+          action: decision.action,
+          role: target.role,
+          name: target.name,
+          ...(decision.value !== undefined ? { value: decision.value } : {}),
+        });
+      }
       return {
         success: true,
         message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''}`,
         action: actionLabel,
+        ...(selector !== undefined ? { selector } : {}),
       };
     } catch (primaryError: any) {
+      const attempts: ActionAttempt[] = [
+        { path: 'coordinate-click', error: primaryError.message },
+      ];
+
       // Vision-Grounding als zweite Stufe (nur wenn aktiviert)
       if (this.visionGrounding && target) {
         try {
@@ -199,14 +414,17 @@ export class ActionEngine {
               success: true,
               message: `Successfully performed ${decision.action} on "${target.name}" (via Vision Grounding)`,
               action: actionLabel,
+              ...(selector !== undefined ? { selector } : {}),
             };
           }
+          attempts.push({ path: 'vision-grounding', error: 'Element nicht im Screenshot gefunden' });
         } catch (visionError: any) {
-          console.warn(`[Act] Vision fallback failed: ${visionError.message}`);
+          attempts.push({ path: 'vision-grounding', error: visionError.message });
+          this.warn(2, `[Act] Vision fallback failed: ${visionError.message}`);
         }
       }
 
-      console.warn(`[Act] Primary action failed, trying semantic fallback... (${primaryError.message})`);
+      this.warn(2, `[Act] Primary action failed, trying semantic fallback... (${primaryError.message})`);
       try {
         await this.performSemanticFallback(decision.action, target, decision.value);
         await waitForPageSettle(this.page, this.domSettleTimeoutMs);
@@ -214,9 +432,13 @@ export class ActionEngine {
           success: true,
           message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''} (via fallback)`,
           action: actionLabel,
+          ...(selector !== undefined ? { selector } : {}),
         };
       } catch (fallbackError: any) {
-        return { success: false, message: `Action failed: ${fallbackError.message}`, action: actionLabel };
+        attempts.push({ path: 'locator-fallback', error: fallbackError.message });
+        const message = buildFailureMessage(resolvedInstruction, target, attempts);
+        this.warn(2, `[Act] All paths failed:\n${message}`);
+        return { success: false, message, action: actionLabel, attempts };
       }
     }
   }
@@ -255,6 +477,27 @@ export class ActionEngine {
         `Element "${target.name}" is outside viewport at (${cx.toFixed(0)}, ${cy.toFixed(0)}) — triggering scroll fallback`,
         { element: target.name, x: cx, y: cy }
       );
+    }
+
+    // Human-like: move mouse along a Bézier curve to the target, then pause briefly
+    if (this.humanLike && (
+      action === 'click' || action === 'double-click' || action === 'right-click' ||
+      action === 'hover' || action === 'fill' || action === 'append'
+    )) {
+      const pos = await this.page.mouse.move(0, 0).then(() => ({ x: 0, y: 0 })).catch(() => ({ x: 0, y: 0 }));
+      // Get current mouse position via evaluate (Playwright doesn't expose it directly)
+      const cur = await this.page.evaluate(() => ({
+        x: (window as any).__sentinelMouseX ?? 0,
+        y: (window as any).__sentinelMouseY ?? 0,
+      })).catch(() => ({ x: 0, y: 0 }));
+      await moveMouse(this.page, cur.x, cur.y, cx, cy);
+      // Track mouse position for next call
+      await this.page.evaluate(
+        ({ x, y }) => { (window as any).__sentinelMouseX = x; (window as any).__sentinelMouseY = y; },
+        { x: cx, y: cy }
+      ).catch(() => {});
+      // Pre-click pause: 80–200 ms
+      await this.page.waitForTimeout(80 + Math.round(Math.random() * 120));
     }
 
     switch (action) {
@@ -299,13 +542,21 @@ export class ActionEngine {
 
       case 'fill':
         await withTimeout(this.page.mouse.click(cx, cy, { clickCount: 3 }), 10_000, `focus "${target.name}"`);
-        await withTimeout(this.page.keyboard.type(value || ''), 10_000, `type into "${target.name}"`);
+        if (this.humanLike) {
+          await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
+        } else {
+          await withTimeout(this.page.keyboard.type(value || ''), 10_000, `type into "${target.name}"`);
+        }
         break;
 
       case 'append':
         await withTimeout(this.page.mouse.click(cx, cy), 10_000, `focus "${target.name}"`);
         await withTimeout(this.page.keyboard.press('End'), 10_000, `move to end "${target.name}"`);
-        await withTimeout(this.page.keyboard.type(value || ''), 10_000, `append to "${target.name}"`);
+        if (this.humanLike) {
+          await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
+        } else {
+          await withTimeout(this.page.keyboard.type(value || ''), 10_000, `append to "${target.name}"`);
+        }
         break;
 
       case 'hover':

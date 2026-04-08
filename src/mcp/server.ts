@@ -239,7 +239,7 @@ export function registerTools(
 // ─── MCP Server entry ──────────────────────────────────────────────────────
 
 export async function startServer() {
-  const server = new McpServer({ name: 'sentinel', version: '3.1.1' });
+  const server = new McpServer({ name: 'sentinel', version: '3.8.0' });
   registerTools(server, getOrInit, cleanup);
   const transport = new StdioServerTransport();
   await server.connect(transport);

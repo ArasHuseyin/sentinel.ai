@@ -2,6 +2,8 @@ import { chromium, firefox, webkit } from 'playwright';
 import type { Browser, BrowserContext, Page, CDPSession } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isProxyProvider } from '../utils/proxy-provider.js';
+import type { IProxyProvider } from '../utils/proxy-provider.js';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
@@ -17,7 +19,7 @@ export interface DriverOptions {
   browser?: BrowserType;
   sessionPath?: string;
   userDataDir?: string;
-  proxy?: ProxyOptions;
+  proxy?: ProxyOptions | IProxyProvider;
   stealth?: boolean;
   humanLike?: boolean;
 }
@@ -28,6 +30,8 @@ export class SentinelDriver {
   private pages: Page[] = [];
   private activePageIndex = 0;
   private cdpSession: CDPSession | null = null;
+  private _activeProxy: ProxyOptions | undefined;
+  private _proxyProvider: IProxyProvider | undefined;
 
   constructor(private options: DriverOptions = { headless: false }) {}
 
@@ -39,12 +43,24 @@ export class SentinelDriver {
       ? ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage']
       : [];
 
+    // Resolve proxy: plain ProxyOptions or IProxyProvider (fetches dynamically)
+    let resolvedProxy: ProxyOptions | undefined;
+    if (this.options.proxy) {
+      if (isProxyProvider(this.options.proxy)) {
+        resolvedProxy = await this.options.proxy.getProxy();
+        this._activeProxy = resolvedProxy;
+        this._proxyProvider = this.options.proxy;
+      } else {
+        resolvedProxy = this.options.proxy;
+      }
+    }
+
     const contextOptions = {
       viewport: this.options.viewport || { width: 1280, height: 720 },
       userAgent: this.getRandomUserAgent(),
       locale: 'de-AT',
       timezoneId: 'Europe/Vienna',
-      ...(this.options.proxy ? { proxy: this.options.proxy } : {}),
+      ...(resolvedProxy ? { proxy: resolvedProxy } : {}),
     };
 
     if (this.options.userDataDir) {
@@ -182,6 +198,10 @@ export class SentinelDriver {
       await this.context?.close();
     } else if (this.browser) {
       await this.browser.close();
+    }
+    // Notify provider that the proxy session is done (e.g. for usage tracking)
+    if (this._proxyProvider?.releaseProxy && this._activeProxy) {
+      await this._proxyProvider.releaseProxy(this._activeProxy).catch(() => {});
     }
   }
 
