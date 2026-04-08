@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [3.10.1] - 2026-04-08
+
+### Fixed
+
+- **Scroll verification false-negative** — `Verifier` now short-circuits scroll actions with `success: true` (confidence 0.95) instead of comparing AOM snapshots, which are identical before/after a scroll and always produced a failed verification.
+- **`AIFixture.extract` type inference** — signature changed from `schema: unknown` to `schema: SchemaInput<T>`, so Zod schemas passed to `ai.extract()` now correctly infer the return type without requiring an explicit type parameter.
+- **`SentinelOptions` re-exported from `@isoldex/sentinel/test`** — the type was imported internally but not exported, causing a TypeScript error when consumers imported it from the test subpath.
+- **`@playwright/test` import path** — corrected from `playwright/test` to `@playwright/test` in the test fixture module.
+
+---
+
 ## [3.10.0] - 2026-04-08
 
 ### Added

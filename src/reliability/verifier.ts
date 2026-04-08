@@ -67,7 +67,21 @@ export class Verifier {
       };
     }
 
-    // ── Fast path 3: Radio/checkbox selection changed ─────────────────────────
+    // ── Fast path 3: Scroll actions — AOM doesn't change on scroll ───────────
+    // Scroll actions move the viewport but don't add/remove elements from the
+    // accessibility tree, so the before/after state looks identical. The action
+    // itself never throws, so treat scroll as always successful.
+    const isScroll = /scroll/i.test(action);
+    if (isScroll) {
+      return {
+        done: true,
+        success: true,
+        message: 'Scroll action executed',
+        confidence: 0.95,
+      };
+    }
+
+    // ── Fast path 4: Radio/checkbox selection changed ─────────────────────────
     // Clicking a radio button or checkbox doesn't change the element list,
     // but it does change the `checked` state — detect that explicitly.
     const beforeChecked = stateBefore.elements

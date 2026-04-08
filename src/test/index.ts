@@ -1,9 +1,10 @@
-import { test as base, expect } from 'playwright/test';
+import { test as base, expect } from '@playwright/test';
 import { Sentinel } from '../index.js';
 import type { AgentRunOptions, AgentResult, ActOptions, ActionResult, ObserveResult, SentinelOptions } from '../index.js';
+import type { SchemaInput } from '../utils/llm-provider.js';
 import type { Page } from 'playwright';
 
-export type { AgentRunOptions, AgentResult, ActOptions, ActionResult, ObserveResult };
+export type { AgentRunOptions, AgentResult, ActOptions, ActionResult, ObserveResult, SentinelOptions };
 
 // ─── AI fixture type ──────────────────────────────────────────────────────────
 
@@ -13,7 +14,7 @@ export interface AIFixture {
   /** Perform a natural language action */
   act(instruction: string, options?: ActOptions): Promise<ActionResult>;
   /** Extract structured data from the current page */
-  extract<T = unknown>(instruction: string, schema: unknown): Promise<T>;
+  extract<T>(instruction: string, schema: SchemaInput<T>): Promise<T>;
   /** Observe interactive elements on the current page */
   observe(instruction?: string): Promise<ObserveResult[]>;
   /** Run an autonomous multi-step agent */

@@ -1,6 +1,6 @@
 {
   "name": "@isoldex/sentinel",
-  "version": "3.10.0",
+  "version": "3.10.1",
   "description": "AI-powered browser automation with Gemini – fast, cheap Stagehand alternative",
   "type": "module",
   "main": "dist/index.js",
@@ -82,6 +82,7 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/dotenv": "^6.1.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.2",
