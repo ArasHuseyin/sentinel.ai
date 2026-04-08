@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 import type { AgentStepEvent, AgentResult } from '../agent/agent-loop.js';
 
 // ─── Minimal stub for runStream logic ─────────────────────────────────────────

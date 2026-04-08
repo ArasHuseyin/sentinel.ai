@@ -267,7 +267,7 @@ describe('createCachingProvider()', () => {
     cached.onTokenUsage = cb;
     expect(p.onTokenUsage).toBe(cb);
 
-    p.onTokenUsage = undefined;
+    (p as any).onTokenUsage = undefined;
     expect(cached.onTokenUsage).toBeUndefined();
   });
 
@@ -321,7 +321,7 @@ describe('Sentinel promptCache integration', () => {
     return {
       apiKey: 'test',
       verbose: 0,
-      promptCache,
+      ...(promptCache !== undefined ? { promptCache } : {}),
       provider: {
         generateStructuredData: jest.fn(async () => ({ action: 'click', elementId: 0, reasoning: 'ok' })) as any,
         generateText: jest.fn(async () => '') as any,

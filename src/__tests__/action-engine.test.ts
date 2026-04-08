@@ -921,7 +921,7 @@ describe('ActionEngine verbose logging', () => {
 describe('ActionResult.selector', () => {
   it('includes selector when page.evaluate returns a CSS selector string', async () => {
     const page = makeMockPage();
-    (page.evaluate as jest.Mock).mockResolvedValueOnce('[data-testid="submit"]');
+    (page.evaluate as any).mockResolvedValueOnce('[data-testid="submit"]');
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -932,7 +932,7 @@ describe('ActionResult.selector', () => {
 
   it('omits selector when page.evaluate returns null (no stable selector found)', async () => {
     const page = makeMockPage();
-    (page.evaluate as jest.Mock).mockResolvedValueOnce(null);
+    (page.evaluate as any).mockResolvedValueOnce(null);
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -953,7 +953,7 @@ describe('ActionResult.selector', () => {
 
   it('omits selector when page.evaluate throws', async () => {
     const page = makeMockPage();
-    (page.evaluate as jest.Mock).mockRejectedValueOnce(new Error('context lost'));
+    (page.evaluate as any).mockRejectedValueOnce(new Error('context lost'));
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
     const engine = new ActionEngine(page as any, stateParser as any, llm);

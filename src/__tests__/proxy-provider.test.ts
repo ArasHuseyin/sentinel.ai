@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 import { RoundRobinProxyProvider, WebshareProxyProvider, isProxyProvider } from '../utils/proxy-provider.js';
 import type { IProxyProvider } from '../utils/proxy-provider.js';
 
@@ -44,10 +44,10 @@ describe('WebshareProxyProvider', () => {
   ];
 
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    (global as any).fetch = (jest.fn() as any).mockResolvedValue({
       ok: true,
       json: async () => ({ results: mockProxies, count: mockProxies.length }),
-    }));
+    });
   });
 
   it('fetches proxies from Webshare API on first call', async () => {
@@ -81,16 +81,16 @@ describe('WebshareProxyProvider', () => {
   });
 
   it('throws when API returns an error', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' }));
+    (global as any).fetch = (jest.fn() as any).mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
     const provider = new WebshareProxyProvider({ apiKey: 'bad-key' });
     await expect(provider.getProxy()).rejects.toThrow('401');
   });
 
   it('throws when API returns empty proxy list', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    (global as any).fetch = (jest.fn() as any).mockResolvedValue({
       ok: true,
       json: async () => ({ results: [], count: 0 }),
-    }));
+    });
     const provider = new WebshareProxyProvider({ apiKey: 'test-key' });
     await expect(provider.getProxy()).rejects.toThrow('no proxies');
   });
