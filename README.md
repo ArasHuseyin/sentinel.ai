@@ -37,6 +37,8 @@ Describe what you want to do. Sentinel figures out how.
 - [Error Handling](#error-handling)
 - [Self-Healing Locators](#self-healing-locators)
 - [Intelligent Error Messages](#intelligent-error-messages)
+- [Prompt Cache](#prompt-cache)
+- [Proxy Providers](#proxy-providers)
 - [Examples](#examples)
 
 ---
@@ -147,15 +149,18 @@ GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-3-flash-p
 | `headless` | `boolean` | `false` | Run browser in headless mode |
 | `browser` | `'chromium' \| 'firefox' \| 'webkit'` | `'chromium'` | Browser engine. Note: CDP/AOM is Chromium-only; Firefox and WebKit fall back to DOM parsing. |
 | `viewport` | `{ width: number; height: number }` | `1280x720` | Viewport dimensions |
-| `verbose` | `0 \| 1 \| 2` | `1` | Log verbosity: 0 = silent, 1 = key actions, 2 = full debug |
+| `verbose` | `0 \| 1 \| 2 \| 3` | `1` | Log verbosity: 0 = silent, 1 = key actions, 2 = full debug, 3 = LLM decision JSON + chunk stats |
 | `enableCaching` | `boolean` | `true` | Cache AOM state between calls (500ms TTL). Set to `false` for always-fresh state. |
 | `visionFallback` | `boolean` | `false` | Enable Vision fallback when AOM cannot locate an element. Uses the configured provider's `analyzeImage` — works with Gemini, OpenAI, Claude, and Ollama vision models. |
 | `provider` | `LLMProvider` | GeminiService | Custom LLM provider (see [LLM Providers](#llm-providers)) |
 | `sessionPath` | `string` | — | Path to a session file. If the file exists, it is loaded on `init()`. Saves cookies and localStorage only. |
 | `userDataDir` | `string` | — | Path to a persistent browser profile directory. Persists cookies, localStorage, **IndexedDB**, and ServiceWorkers. Required for services that use IndexedDB for auth (e.g. WhatsApp Web). Takes precedence over `sessionPath`. |
-| `proxy` | `ProxyOptions` | — | Proxy server configuration |
-| `humanLike` | `boolean` | `false` | Add random human-like delays between actions |
+| `proxy` | `ProxyOptions \| IProxyProvider` | — | Static proxy config or a dynamic proxy provider (see [Proxy Providers](#proxy-providers)) |
+| `humanLike` | `boolean` | `false` | Human-like mouse movement via cubic Bézier curves, pre-click pauses (80–200ms), and per-keystroke delays (30–80ms) |
 | `domSettleTimeoutMs` | `number` | `3000` | Maximum time (ms) to wait for the DOM to settle after an action |
+| `locatorCache` | `boolean \| string` | `false` | Cache successful element lookups. `true` = in-memory, `'file.json'` = file-persisted. Skips LLM on repeated calls. |
+| `promptCache` | `boolean \| string` | `false` | Cache LLM responses by prompt hash. `true` = in-memory (200 entries, LRU), `'file.json'` = file-persisted |
+| `maxElements` | `number` | `50` | Max interactive elements sent to the LLM per `act()` call. Filters by keyword relevance when the page has more. |
 
 #### `ProxyOptions`
 
@@ -322,6 +327,61 @@ console.log(result.data);          // structured data extracted during the run (
 | `data` | `any` (optional) | Structured data extracted by an `extract` step during the run |
 
 The agent automatically aborts if the same instruction repeats three times without progress (loop detection) or if three consecutive steps fail.
+
+`AgentResult.selectors` is also populated after each run — a camelCase map of instruction slugs to the most stable CSS selector found for that element. Copy them directly into Playwright tests.
+
+#### `sentinel.runStream(goal, options?): AsyncGenerator<AgentStepEvent | AgentResult>`
+
+Streams agent steps in real time. Yields one `AgentStepEvent` per step, then the final `AgentResult`. Designed for Server-Sent Events in Next.js App Router routes or any `for await` consumer.
+
+```typescript
+// Next.js API Route (App Router)
+export async function GET() {
+  const sentinel = new Sentinel({ apiKey: process.env.GEMINI_API_KEY! });
+  await sentinel.init();
+  await sentinel.goto('https://example.com');
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      for await (const event of sentinel.runStream('Find the checkout button')) {
+        controller.enqueue(`data: ${JSON.stringify(event)}\n\n`);
+      }
+      controller.close();
+      await sentinel.close();
+    },
+  });
+  return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+```
+
+#### `Sentinel.parallel(tasks, options?): Promise<ParallelResult[]>`
+
+Run multiple independent agent tasks in parallel, each in its own browser session. A worker pool limits simultaneous sessions to `concurrency` (default: `3`). Results are returned in input order. One task failing never affects others.
+
+```typescript
+const results = await Sentinel.parallel(
+  [
+    { goal: 'Extract top 5 products from amazon.de/s?k=laptop', url: 'https://amazon.de/s?k=laptop' },
+    { goal: 'Extract top 5 products from amazon.de/s?k=phone', url: 'https://amazon.de/s?k=phone' },
+    { goal: 'Get homepage headline', url: 'https://news.ycombinator.com' },
+  ],
+  {
+    concurrency: 3,
+    sentinelOptions: { apiKey: process.env.GEMINI_API_KEY!, headless: true },
+    onProgress: (completed, total, result) => {
+      console.log(`${completed}/${total} done — ${result.success ? 'ok' : 'failed'}`);
+    },
+  }
+);
+```
+
+**`ParallelOptions`**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `concurrency` | `number` | `3` | Max simultaneous browser sessions |
+| `sentinelOptions` | `SentinelOptions` | — | Options applied to every session |
+| `onProgress` | `(completed, total, result) => void` | — | Fires after each task completes |
 
 ---
 
@@ -732,6 +792,80 @@ if (!result.success) {
 ```
 
 `result.attempts` is only present on failure and lists each attempted path with its specific error.
+
+---
+
+## Prompt Cache
+
+Cache LLM responses by a hash of the prompt + DOM state. A cache hit costs zero tokens and skips the model entirely. The cache naturally misses when the URL, page title, or element list changes — no manual invalidation needed.
+
+```typescript
+// In-memory (LRU, 200 entries)
+const sentinel = new Sentinel({ apiKey, promptCache: true });
+
+// File-persisted — survives process restarts
+const sentinel = new Sentinel({ apiKey, promptCache: 'sentinel-prompt-cache.json' });
+
+// Flush the cache programmatically (e.g. between test runs)
+sentinel.clearPromptCache();
+```
+
+Plug in your own backend by implementing `IPromptCache`:
+
+```typescript
+import type { IPromptCache } from '@isoldex/sentinel';
+
+class RedisPromptCache implements IPromptCache {
+  async get(key: string): Promise<string | undefined> { /* ... */ }
+  async set(key: string, value: string): Promise<void> { /* ... */ }
+}
+```
+
+---
+
+## Proxy Providers
+
+The `proxy` option accepts either a static `ProxyOptions` object or a dynamic `IProxyProvider` that rotates proxies on every request.
+
+### Round-Robin (static list)
+
+```typescript
+import { RoundRobinProxyProvider } from '@isoldex/sentinel';
+
+const proxy = new RoundRobinProxyProvider([
+  { server: 'http://p1:8080', username: 'u', password: 'pw' },
+  { server: 'http://p2:8080', username: 'u', password: 'pw' },
+]);
+
+const sentinel = new Sentinel({ apiKey, proxy });
+```
+
+### Webshare (API-backed, lazy-fetch)
+
+```typescript
+import { WebshareProxyProvider } from '@isoldex/sentinel';
+
+const proxy = new WebshareProxyProvider({
+  apiKey: process.env.WEBSHARE_KEY!,
+  protocol: 'http',  // or 'socks5'
+  country: 'DE',     // optional geo-filter
+});
+
+const sentinel = new Sentinel({ apiKey, proxy });
+```
+
+Proxies are fetched once on the first `getProxy()` call and cached. Concurrent calls during the initial fetch wait on the same `Promise` — no duplicate API requests. `releaseProxy()` is called automatically on `sentinel.close()`.
+
+### Custom Provider
+
+```typescript
+import type { IProxyProvider, ProxyOptions } from '@isoldex/sentinel';
+
+class MyProxyPool implements IProxyProvider {
+  getProxy(): ProxyOptions { return { server: 'http://...' }; }
+  releaseProxy?(): void { /* return proxy to pool */ }
+}
+```
 
 ---
 
