@@ -47,7 +47,6 @@ examples/       # Runnable example scripts
 5. Open a PR with a clear description of what and why
 
 ### Good first issues
-Look for issues tagged [`good first issue`](https://github.com/ArasHuseyin/sentinel.ai/issues?q=label%3A%22good+first+issue%22) — these are scoped and beginner-friendly.
 
 ## Development
 
@@ -85,4 +84,3 @@ test: add runStream generator tests
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/ArasHuseyin/sentinel.ai/discussions) — we're happy to help.
