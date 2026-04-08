@@ -68,7 +68,7 @@
     "self-healing"
   ],
   "author": "Huseyin Aras <hueseyin.aras1@gmail.com>",
-  "license": "ISC",
+  "license": "MIT",
   "peerDependencies": {
     "playwright": ">=1.40.0"
   },

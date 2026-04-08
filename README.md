@@ -56,7 +56,7 @@ Describe what you want to do. Sentinel figures out how.
 | **Playwright Test fixture** | ✅ (`@isoldex/sentinel/test`) | ❌ |
 | **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | OpenAI only |
 | **Intelligent error messages** | ✅ (context + actionable tips) | ❌ |
-| **Open source** | ✅ ISC | ✅ MIT |
+| **Open source** | ✅ MIT | ✅ MIT |
 
 > Benchmark: "Search Amazon for laptop, extract the top 3 results" — 5 runs averaged, Gemini 3 Flash vs. GPT-4o, April 2026.
 
@@ -879,4 +879,4 @@ See the [`examples/`](./examples) directory for ready-to-run scripts:
 
 ---
 
-Licensed under [ISC](LICENSE). Author: Huseyin Aras — [hueseyin.aras1@gmail.com](mailto:hueseyin.aras1@gmail.com)
+Licensed under [MIT](LICENSE). Author: Huseyin Aras — [hueseyin.aras1@gmail.com](mailto:hueseyin.aras1@gmail.com)

@@ -5,7 +5,7 @@ Thanks for your interest in contributing! Sentinel is MIT-licensed and welcomes 
 ## Quick start
 
 ```bash
-git clone https://github.com/arashuseyin/sentinel
+git clone https://github.com/ArasHuseyin/sentinel.ai
 cd sentinel
 npm install
 npm run build
@@ -47,7 +47,7 @@ examples/       # Runnable example scripts
 5. Open a PR with a clear description of what and why
 
 ### Good first issues
-Look for issues tagged [`good first issue`](https://github.com/arashuseyin/sentinel/issues?q=label%3A%22good+first+issue%22) — these are scoped and beginner-friendly.
+Look for issues tagged [`good first issue`](https://github.com/ArasHuseyin/sentinel.ai/issues?q=label%3A%22good+first+issue%22) — these are scoped and beginner-friendly.
 
 ## Development
 
@@ -85,4 +85,4 @@ test: add runStream generator tests
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/arashuseyin/sentinel/discussions) — we're happy to help.
+Open a [GitHub Discussion](https://github.com/ArasHuseyin/sentinel.ai/discussions) — we're happy to help.
