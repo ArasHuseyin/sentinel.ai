@@ -45,6 +45,7 @@ import { z } from 'zod';
 // Re-export z and types so users can do: import { Sentinel, z } from './index.js'
 export { z };
 export type { ActOptions, ActionResult, ActionAttempt, ObserveResult, AgentRunOptions, AgentResult, AgentStepEvent, BoundingBox };
+export type { AIFixture } from './test/index.js';
 
 /**
  * A Playwright `Page` extended with Sentinel AI methods.

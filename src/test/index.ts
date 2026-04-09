@@ -1,10 +1,10 @@
 import { test as base, expect } from '@playwright/test';
 import { Sentinel } from '../index.js';
-import type { AgentRunOptions, AgentResult, ActOptions, ActionResult, ObserveResult, SentinelOptions } from '../index.js';
+import type { AgentRunOptions, AgentResult, AgentStepEvent, ActOptions, ActionResult, ObserveResult, SentinelOptions } from '../index.js';
 import type { SchemaInput } from '../utils/llm-provider.js';
 import type { Page } from 'playwright';
 
-export type { AgentRunOptions, AgentResult, ActOptions, ActionResult, ObserveResult, SentinelOptions };
+export type { AgentRunOptions, AgentResult, AgentStepEvent, ActOptions, ActionResult, ObserveResult, SentinelOptions };
 
 // ─── AI fixture type ──────────────────────────────────────────────────────────
 
@@ -19,6 +19,8 @@ export interface AIFixture {
   observe(instruction?: string): Promise<ObserveResult[]>;
   /** Run an autonomous multi-step agent */
   run(goal: string, options?: AgentRunOptions): Promise<AgentResult>;
+  /** Stream agent steps in real time */
+  runStream(goal: string, options?: AgentRunOptions): AsyncGenerator<AgentStepEvent | AgentResult>;
   /** Take a screenshot */
   screenshot(): Promise<Buffer>;
   /** Describe the current page visually (requires visionFallback: true in sentinelOptions) */
@@ -81,6 +83,7 @@ export async function runAiFixture(
     extract: <T>(instruction: string, schema: unknown) => sentinel.extract<T>(instruction, schema as any),
     observe: (instruction) => sentinel.observe(instruction),
     run: (goal, options) => sentinel.run(goal, options),
+    runStream: (goal, options) => sentinel.runStream(goal, options),
     screenshot: () => sentinel.screenshot(),
     describeScreen: () => sentinel.describeScreen(),
     get page() { return sentinel.page; },

@@ -146,5 +146,51 @@ export function buildProgram(factory: SentinelFactory = defaultFactory): Command
     }
   });
 
+  // ── init ───────────────────────────────────────────────────────────────────
+
+  program
+    .command('init')
+    .description('Scaffold a fixtures.ts file for Playwright IDE integration (green run buttons)')
+    .option('--dir <dir>', 'Directory to write fixtures.ts into', 'tests')
+    .action((opts: { dir: string }) => {
+      const targetDir = path.resolve(opts.dir);
+      const targetFile = path.join(targetDir, 'fixtures.ts');
+
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+
+      if (fs.existsSync(targetFile)) {
+        console.log(`${targetFile} already exists — skipping.`);
+        return;
+      }
+
+      const content = [
+        `import { test as base, expect } from '@playwright/test';`,
+        `import { runAiFixture } from '@isoldex/sentinel/test';`,
+        `import type { AIFixture, SentinelOptions } from '@isoldex/sentinel/test';`,
+        ``,
+        `export { expect };`,
+        ``,
+        `export const test = base.extend<{`,
+        `  ai: AIFixture;`,
+        `  sentinelOptions: Partial<SentinelOptions>;`,
+        `}>({`,
+        `  sentinelOptions: [{}, { option: true }] as any,`,
+        `  ai: async ({ sentinelOptions }, use) => {`,
+        `    await runAiFixture(sentinelOptions, use);`,
+        `  },`,
+        `});`,
+        ``,
+      ].join('\n');
+
+      fs.writeFileSync(targetFile, content, 'utf-8');
+      console.log(`Created ${targetFile}`);
+      console.log(`\nIn your test files, import from this fixture:`);
+      console.log(`  import { test, expect } from './fixtures.js';`);
+      console.log(`\nConfigure Sentinel per file with test.use():`);
+      console.log(`  test.use({ sentinelOptions: { apiKey: process.env.GEMINI_API_KEY! } });`);
+    });
+
   return program;
 }
