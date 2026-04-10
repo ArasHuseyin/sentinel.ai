@@ -66,14 +66,15 @@ function makeEnrichmentPage(
     url: () => url,
     title: jest.fn(async () => title),
     evaluate: jest.fn(async (_fn: any, params?: any) => {
-      if (params?.items) {
-        // enrichWithDOMContext: return controlled context per element id
+      // enrichAndDetectRegions: return context + region per element id
+      if (params?.items && params?.genericNames) {
         return (params.items as { id: number; x: number; y: number }[]).map(item => ({
           id: item.id,
           context: contextMap[item.id] ?? '',
+          region: 'main',
         }));
       }
-      return []; // parseDOMSnapshot / parseFormElements
+      return []; // parseDOMSnapshot / parseFormElements / contenteditable
     }),
   };
   self.mainFrame = () => self;
@@ -242,7 +243,7 @@ describe('StateParser', () => {
     });
 
     it('does not enrich a non-generic button name', async () => {
-      // "Login" is not in GENERIC_NAMES → enrichWithDOMContext not called
+      // "Login" is not in GENERIC_NAMES → needsContext=false → no context prefix
       const nodes = [makeNode('button', 'Login', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeEnrichmentPage({});
@@ -251,11 +252,6 @@ describe('StateParser', () => {
       const state = await parser.parse();
 
       expect(state.elements[0]!.name).toBe('Login');
-      // evaluate should never have been called with items (enrichment params)
-      const enrichCalls = (page.evaluate as jest.Mock).mock.calls.filter(
-        (c: any[]) => c[1]?.items !== undefined
-      );
-      expect(enrichCalls).toHaveLength(0);
     });
 
     it('leaves generic name unchanged when DOM returns no context', async () => {
@@ -500,6 +496,164 @@ describe('StateParser', () => {
     });
   });
 
+  // ─── contenteditable detection ────────────────────────────────────────────
+
+  describe('contenteditable detection', () => {
+    it('contenteditable elements use fallback name "editor" when no attributes exist', async () => {
+      // AOM has enough elements so parseDOMSnapshot is skipped; no form inputs so parseFormElements runs.
+      // parseContentEditableElements always runs — mock returns an element with name "editor" (fallback).
+      const nodes = [
+        makeNode('button', 'Send', 1),
+        makeNode('button', 'Attach', 2),
+        makeNode('link', 'Settings', 3),
+        makeNode('link', 'Profile', 4),
+        makeNode('textbox', 'Search', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items) {
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
+        }
+        // parseContentEditableElements returns element with "editor" fallback name
+        return [{ role: 'textbox', name: 'editor', x: 10, y: 400, width: 300, height: 40 }];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const editorEl = state.elements.find(e => e.name === 'editor');
+      expect(editorEl).toBeDefined();
+      expect(editorEl!.role).toBe('textbox');
+    });
+
+    it('contenteditable elements with data-placeholder are detected', async () => {
+      const nodes = [
+        makeNode('button', 'Bold', 1),
+        makeNode('button', 'Italic', 2),
+        makeNode('link', 'Format', 3),
+        makeNode('link', 'Insert', 4),
+        makeNode('textbox', 'Title', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items) {
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
+        }
+        // Mock returns element derived from data-placeholder
+        return [{ role: 'textbox', name: 'Write something...', x: 10, y: 300, width: 500, height: 60 }];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const el = state.elements.find(e => e.name === 'Write something...');
+      expect(el).toBeDefined();
+      expect(el!.role).toBe('textbox');
+    });
+
+    it('contenteditable elements with zero size are skipped', async () => {
+      const nodes = [
+        makeNode('button', 'Send', 1),
+        makeNode('button', 'Attach', 2),
+        makeNode('link', 'Settings', 3),
+        makeNode('link', 'Profile', 4),
+        makeNode('textbox', 'Search', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items) {
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
+        }
+        // The browser-side code skips zero-size elements via `if (rect.width === 0 && rect.height === 0) continue`
+        // Our mock simulates this by returning an empty array (zero-size elements already filtered)
+        return [];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      // No contenteditable element should appear
+      const editableEls = state.elements.filter(e => e.name === 'editor');
+      expect(editableEls).toHaveLength(0);
+    });
+
+    it('detects contenteditable elements even when AOM has enough elements', async () => {
+      // 5+ AOM elements → parseDOMSnapshot skipped; has textbox → parseFormElements skipped
+      // Only parseContentEditableElements runs (plus enrichWithDOMContext if generics exist)
+      const nodes = [
+        makeNode('button', 'Send', 1),
+        makeNode('button', 'Attach', 2),
+        makeNode('link', 'Settings', 3),
+        makeNode('link', 'Profile', 4),
+        makeNode('textbox', 'Search', 5), // form input exists → parseFormElements skipped
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items) {
+          // enrichWithDOMContext
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
+        }
+        // parseContentEditableElements
+        return [{
+          role: 'textbox',
+          name: 'Type a message',
+          x: 10,
+          y: 500,
+          width: 400,
+          height: 40,
+        }];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const editable = state.elements.find(e => e.name === 'Type a message');
+      expect(editable).toBeDefined();
+      expect(editable!.role).toBe('textbox');
+    });
+
+    it('deduplicates contenteditable against existing AOM textbox with same name', async () => {
+      const nodes = [
+        makeNode('button', 'A', 1),
+        makeNode('button', 'B', 2),
+        makeNode('button', 'C', 3),
+        makeNode('button', 'D', 4),
+        makeNode('textbox', 'Message input', 5), // same name as contenteditable below
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items) {
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
+        }
+        // parseContentEditableElements — same name as AOM textbox
+        return [{
+          role: 'textbox',
+          name: 'Message input',
+          x: 10,
+          y: 500,
+          width: 400,
+          height: 40,
+        }];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const messageInputs = state.elements.filter(e => e.name === 'Message input');
+      expect(messageInputs).toHaveLength(1); // deduplicated — AOM version kept, contenteditable skipped
+    });
+  });
+
   it('skips elements where box model is rejected', async () => {
     const nodes = [makeNode('button', 'Broken', 1), makeNode('link', 'Good', 2)];
     const cdp = {
@@ -519,5 +673,100 @@ describe('StateParser', () => {
 
     expect(state.elements).toHaveLength(1);
     expect(state.elements[0]!.name).toBe('Good');
+  });
+
+  // ─── assignRegions ──────────────────────────────────────────────────────────
+
+  describe('assignRegions', () => {
+    it('assigns region tags from enrichAndDetectRegions results', async () => {
+      const nodes = [
+        makeNode('button', 'Send', 1),
+        makeNode('link', 'Home', 2),
+        makeNode('textbox', 'Search', 3),
+        makeNode('button', 'Save', 4),
+        makeNode('button', 'Close', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        // enrichAndDetectRegions: params has { items, genericNames }
+        if (params?.items && params?.genericNames) {
+          return (params.items as any[]).map((item: any) => ({
+            id: item.id,
+            context: '',
+            region: item.id === 0 ? 'header' : item.id === 1 ? 'nav' : 'main',
+          }));
+        }
+        return []; // contenteditable / other
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements[0]!.region).toBe('header');
+      expect(state.elements[1]!.region).toBe('nav');
+      expect(state.elements[2]!.region).toBe('main');
+    });
+
+    it('leaves region undefined when evaluate returns empty', async () => {
+      const nodes = [makeNode('button', 'OK', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeMockPage();
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      // Default mock returns [] for evaluate → no regions assigned
+      expect(state.elements[0]!.region).toBeUndefined();
+    });
+
+    it('assigns modal region for dialog elements', async () => {
+      const nodes = [
+        makeNode('button', 'Confirm', 1),
+        makeNode('button', 'Cancel', 2),
+        makeNode('link', 'Help', 3),
+        makeNode('link', 'Back', 4),
+        makeNode('button', 'Close', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items && params?.genericNames) {
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '', region: 'modal' }));
+        }
+        return [];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements.every(e => e.region === 'modal')).toBe(true);
+    });
+
+    it('assigns popup region for menu/dropdown elements', async () => {
+      const nodes = [
+        makeNode('menuitem', 'Copy', 1),
+        makeNode('menuitem', 'Paste', 2),
+        makeNode('menuitem', 'Cut', 3),
+        makeNode('link', 'Home', 4),
+        makeNode('button', 'Close', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
+        if (params?.items && params?.genericNames) {
+          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '', region: 'popup' }));
+        }
+        return [];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements.every(e => e.region === 'popup')).toBe(true);
+    });
   });
 });

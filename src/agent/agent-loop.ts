@@ -1,7 +1,9 @@
+import type { Page } from 'playwright';
 import type { ActionEngine } from '../api/act.js';
 import type { ExtractionEngine } from '../api/extract.js';
 import type { StateParser } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
+import type { VisionGrounding } from '../core/vision-grounding.js';
 import { slugifyInstruction } from '../core/selector-generator.js';
 import { AgentMemory } from './memory.js';
 import { Planner } from './planner.js';
@@ -53,6 +55,9 @@ export interface AgentResult {
  * Autonomous multi-step agent loop.
  * Implements a Plan → Execute → Verify → Reflect cycle.
  */
+/** Threshold above which the planner gets a visual page description. */
+const VISION_ELEMENT_THRESHOLD = 100;
+
 export class AgentLoop {
   private planner: Planner;
   private memory: AgentMemory;
@@ -61,7 +66,9 @@ export class AgentLoop {
     private actionEngine: ActionEngine,
     private extractionEngine: ExtractionEngine,
     private stateParser: StateParser,
-    private gemini: LLMProvider
+    private gemini: LLMProvider,
+    private page?: Page,
+    private visionGrounding?: VisionGrounding
   ) {
     this.planner = new Planner(gemini);
     this.memory = new AgentMemory(20);
@@ -87,10 +94,20 @@ export class AgentLoop {
       this.stateParser.invalidateCache();
       const state = await this.stateParser.parse();
 
-      // 2. Plan next step
+      // 2. Plan next step — add visual context for complex pages
+      let pageDescription: string | undefined;
+      if (this.visionGrounding && this.page && state.elements.length > VISION_ELEMENT_THRESHOLD) {
+        try {
+          const screenshot = await this.visionGrounding.takeScreenshot(this.page);
+          pageDescription = await this.visionGrounding.describeScreen(screenshot);
+        } catch {
+          // Vision failed — proceed without visual context
+        }
+      }
+
       let planned;
       try {
-        planned = await this.planner.planNextStep(goal, state, this.memory);
+        planned = await this.planner.planNextStep(goal, state, this.memory, pageDescription);
       } catch (err: any) {
         console.error(`[Agent] Planner error: ${err.message}`);
         break;
@@ -156,6 +173,26 @@ export class AgentLoop {
         }, async (span) => {
           try {
             const r = await this.actionEngine.act(planned.instruction);
+
+            // Post-action verification: if act() reports success, check that
+            // the page actually changed. Catches false-positives from semantic
+            // fallback where the locator "clicks" but nothing happens.
+            if (r.success && !/scroll|fill|append|press|type|select/i.test(r.action ?? '')) {
+              this.stateParser.invalidateCache();
+              const stateAfter = await this.stateParser.parse();
+              const unchanged =
+                state.url === stateAfter.url &&
+                state.title === stateAfter.title &&
+                state.elements.length === stateAfter.elements.length &&
+                state.elements.every((e, i) => e.name === stateAfter.elements[i]?.name);
+
+              if (unchanged) {
+                console.warn(`[Agent] ⚠️  Action reported success but page state unchanged — treating as failed`);
+                span.setAttributes({ 'sentinel.success': false });
+                return { success: false, message: `${r.message} (but page state unchanged)`, action: r.action ?? planned.instruction };
+              }
+            }
+
             // Collect selector from successful act steps
             if (r.success && r.selector) {
               const slug = slugifyInstruction(planned.instruction);
@@ -208,18 +245,32 @@ export class AgentLoop {
         consecutiveFailures = 0;
       }
 
-      // Instruction-loop detection: same instruction attempted 3 times in a row
-      // (regardless of success/failure) indicates the planner is stuck.
+      // Instruction-loop detection: same or semantically similar instruction
+      // attempted 3 times in a row indicates the planner is stuck.
       const recentHistory = this.memory.getHistory().slice(-3);
-      if (
-        recentHistory.length === 3 &&
-        new Set(recentHistory.map(s => s.instruction)).size === 1
-      ) {
-        console.error(
-          `[Agent] ❌ Aborting: instruction loop detected — ` +
-          `"${recentHistory[0]?.instruction}" repeated 3 times without progress.`
-        );
-        break;
+      if (recentHistory.length === 3) {
+        // Exact match
+        const exactLoop = new Set(recentHistory.map(s => s.instruction)).size === 1;
+        // Semantic match: normalize to lowercase core words, ignore phrasing differences
+        const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9äöüß\s]/g, '').replace(/\s+/g, ' ').trim();
+        const normalized = recentHistory.map(s => normalize(s.instruction));
+        const semanticLoop = !exactLoop && new Set(normalized).size === 1;
+        // Target match: same element targeted 3 times (extract element name from action string)
+        const extractTarget = (s: string) => {
+          const match = s.match(/on\s+"([^"]+)"/i) ?? s.match(/"([^"]+)"/);
+          return match?.[1]?.toLowerCase() ?? '';
+        };
+        const targets = recentHistory.map(s => extractTarget(s.action));
+        const targetLoop = !exactLoop && !semanticLoop
+          && targets[0] !== '' && new Set(targets).size === 1;
+
+        if (exactLoop || semanticLoop || targetLoop) {
+          console.error(
+            `[Agent] ❌ Aborting: instruction loop detected — ` +
+            `"${recentHistory[0]?.instruction}" repeated 3 times without progress.`
+          );
+          break;
+        }
       }
     }
 

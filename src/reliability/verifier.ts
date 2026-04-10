@@ -25,7 +25,7 @@ function summarizeState(state: SimplifiedState): object {
     title: state.title,
     elementCount: state.elements.length,
     // Top-25 element names for semantic diff
-    elementNames: state.elements.slice(0, 25).map(e => `${e.role}: ${e.name}`),
+    elementNames: state.elements.slice(0, 25).map(e => `${e.role}: ${e.name}${e.region ? ` [${e.region}]` : ''}`),
     // State snapshots — detects radio/checkbox selection and focus changes
     checkedElements,
     focusedElement,
@@ -102,6 +102,34 @@ export class Verifier {
         success: true,
         message: 'Checkbox/radio selection changed',
         confidence: 0.92,
+      };
+    }
+
+    // ── Fast path 5: Significant element count change ─────────────────────────
+    // If the number of interactive elements changed by ±5 or more, something
+    // clearly happened (modal opened/closed, list loaded, etc.) — no need for LLM.
+    const elementDelta = Math.abs(stateAfter.elements.length - stateBefore.elements.length);
+    if (elementDelta >= 5) {
+      console.log(`[Verifier] Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
+      return {
+        done: true,
+        success: true,
+        message: `DOM changed significantly (${elementDelta} elements ${stateAfter.elements.length > stateBefore.elements.length ? 'added' : 'removed'})`,
+        confidence: 0.85,
+      };
+    }
+
+    // ── Fast path 6: Focused element changed ─────────────────────────────────
+    // A focus change is strong evidence that a click/tab/fill action succeeded.
+    const focusedBefore = stateBefore.elements.find(e => e.state?.focused)?.name ?? null;
+    const focusedAfter  = stateAfter.elements.find(e => e.state?.focused)?.name ?? null;
+    if (focusedBefore !== focusedAfter) {
+      console.log(`[Verifier] Focused element changed: "${focusedBefore}" → "${focusedAfter}". Auto-success.`);
+      return {
+        done: true,
+        success: true,
+        message: `Focus moved to "${focusedAfter ?? 'none'}"`,
+        confidence: 0.85,
       };
     }
 

@@ -1,10 +1,13 @@
 import type { CDPSession, Page } from 'playwright';
 
+export type PageRegion = 'header' | 'nav' | 'sidebar' | 'main' | 'footer' | 'modal' | 'popup';
+
 export interface UIElement {
   id: number;
   role: string;
   name: string;
   description?: string;
+  region?: PageRegion;
   boundingClientRect: {
     x: number;
     y: number;
@@ -26,7 +29,7 @@ export interface SimplifiedState {
   elements: UIElement[];
 }
 
-const STATE_CACHE_TTL_MS = 500;
+const STATE_CACHE_TTL_MS = 2000;
 
 /**
  * Names that are too generic to uniquely identify an element.
@@ -126,9 +129,19 @@ export class StateParser {
       uiElements.push(element);
     }
 
-    // ─── DOM Fallback 1: sparse AOM (< 5 elements) ───────────────────────────
-    // Full DOM snapshot when AOM yields too few elements (SPAs, shadow DOM, etc.)
-    if (uiElements.length < 5) {
+    // ─── DOM Fallback 1: sparse or off-screen AOM ─────────────────────────
+    // Full DOM snapshot when AOM yields too few elements OR when all AOM
+    // elements are outside the visible viewport (React SPAs with custom
+    // components that use tabindex="-1" or CSS-hidden form controls).
+    const viewport = this.page.viewportSize?.() ?? { width: 1280, height: 720 };
+    const visibleAOM = uiElements.filter(e => {
+      const ex = e.boundingClientRect.x + e.boundingClientRect.width / 2;
+      const ey = e.boundingClientRect.y + e.boundingClientRect.height / 2;
+      return ex >= 0 && ey >= 0 && ex <= viewport.width && ey <= viewport.height;
+    });
+    const needsDOMFallback = uiElements.length < 5 || visibleAOM.length === 0;
+
+    if (needsDOMFallback) {
       const domElements = await this.parseDOMSnapshot(counter);
       const existingNames = new Set(uiElements.map(e => e.name));
       for (const el of domElements) {
@@ -138,42 +151,40 @@ export class StateParser {
       }
     }
 
-    // ─── DOM Enrichment: context for still-generic AOM element names ─────────
-    // AOM ancestor-walking misses sibling-branch headings (e.g. a provider name
-    // in an h4 that is a sibling of the button's ancestor, not a direct ancestor).
-    // For every element still carrying a generic name, look up the real DOM node
-    // via elementFromPoint and walk up to find a meaningful heading/label.
-    const genericElements = uiElements.filter(e => isGenericName(e.name));
-    if (genericElements.length > 0) {
-      await this.enrichWithDOMContext(genericElements);
-    }
-
-    // ─── DOM Fallback 2: always-on form input check ───────────────────────────
-    // Even when AOM returns many elements it can miss hidden/custom form fields.
-    // If no textbox / combobox / spinbutton is present, query the DOM directly.
+    // ─── Parallel element discovery ────────────────────────────────────────
+    // Form inputs, contenteditable divs, and iframe elements are all
+    // independent queries — run them concurrently to cut parse latency.
     const hasFormInputs = uiElements.some(e => FORM_INPUT_ROLES.has(e.role));
-    if (!hasFormInputs) {
-      const formElements = await this.parseFormElements(counter);
-      const existingNames = new Set(uiElements.map(e => e.name));
-      for (const el of formElements) {
-        if (!existingNames.has(el.name) && el.name) {
-          uiElements.push(el);
-        }
+    const [formElements, editableElements, frameElements] = await Promise.all([
+      hasFormInputs ? Promise.resolve([]) : this.parseFormElements(counter),
+      this.parseContentEditableElements(counter),
+      this.parseFrameElements(counter),
+    ]);
+
+    // Merge discovered elements, deduplicating by name
+    const existingNames = new Set(uiElements.map(e => e.name));
+    for (const el of formElements) {
+      if (el.name && !existingNames.has(el.name)) {
+        uiElements.push(el);
+        existingNames.add(el.name);
+      }
+    }
+    for (const el of editableElements) {
+      if (el.name && !existingNames.has(el.name)) {
+        uiElements.push(el);
+        existingNames.add(el.name);
+      }
+    }
+    for (const el of frameElements) {
+      if (!existingNames.has(el.name)) {
+        uiElements.push(el);
+        existingNames.add(el.name);
       }
     }
 
-    // ─── iframe Support ───────────────────────────────────────────────────────
-    // Collect elements from same-origin iframes, offset to main-page coords.
-    const frameElements = await this.parseFrameElements(counter);
-    if (frameElements.length > 0) {
-      const existingNames = new Set(uiElements.map(e => e.name));
-      for (const el of frameElements) {
-        if (!existingNames.has(el.name)) {
-          uiElements.push(el);
-          existingNames.add(el.name); // prevent cross-frame duplicates
-        }
-      }
-    }
+    // ─── DOM Enrichment + Spatial regions (single evaluate) ────────────────
+    // Enrich generic names AND assign regions in one browser round-trip.
+    await this.enrichAndDetectRegions(uiElements);
 
     const state: SimplifiedState = {
       url: this.page.url(),
@@ -233,7 +244,7 @@ export class StateParser {
       }
 
       const candidates = queryShadowAll(
-        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick]',
+        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick], [contenteditable="true"], [contenteditable=""], [tabindex]:not([tabindex="-1"])',
         document
       );
 
@@ -255,6 +266,8 @@ export class StateParser {
           htmlEl.getAttribute('title') ||
           htmlEl.getAttribute('data-testid') ||
           htmlEl.getAttribute('placeholder') ||
+          htmlEl.getAttribute('data-placeholder') ||
+          htmlEl.getAttribute('aria-placeholder') ||
           htmlEl.textContent?.trim().slice(0, 80) ||
           '';
 
@@ -312,7 +325,8 @@ export class StateParser {
 
       const candidates = queryShadowAll(
         'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
-        'select, textarea, [role="radio"], [role="checkbox"], [role="option"]',
+        'select, textarea, [role="radio"], [role="checkbox"], [role="option"],' +
+        '[contenteditable="true"], [contenteditable=""]',
         document
       );
 
@@ -325,6 +339,7 @@ export class StateParser {
         const name =
           htmlEl.getAttribute('aria-label') ||
           htmlEl.getAttribute('placeholder') ||
+          htmlEl.getAttribute('data-placeholder') ||
           htmlEl.getAttribute('name') ||
           htmlEl.getAttribute('id') ||
           (htmlEl.labels && htmlEl.labels[0]?.textContent?.trim()) ||
@@ -351,6 +366,69 @@ export class StateParser {
 
         results.push({
           role,
+          name,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+      return results;
+    });
+
+    return rawElements.map((el: any) => ({
+      id: counter.n++,
+      role: el.role,
+      name: el.name,
+      boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
+    }));
+  }
+
+  // ─── Private: contenteditable element detection ──────────────────────────
+
+  /**
+   * Queries for contenteditable elements that the AOM may have missed.
+   * Runs unconditionally — modern web apps almost always use contenteditable
+   * for rich text input (chat messages, email compose, document editing).
+   */
+  private async parseContentEditableElements(counter: { n: number }): Promise<UIElement[]> {
+    const rawElements = await this.page.evaluate(() => {
+      const results: any[] = [];
+      const seen = new Set<string>();
+
+      function queryShadowAll(selector: string, root: any): any[] {
+        const found: any[] = Array.from(root.querySelectorAll(selector));
+        for (const el of Array.from(root.querySelectorAll('*')) as any[]) {
+          if (el.shadowRoot) found.push(...queryShadowAll(selector, el.shadowRoot));
+        }
+        return found;
+      }
+
+      const candidates = queryShadowAll(
+        '[contenteditable="true"], [contenteditable=""]',
+        document
+      );
+
+      for (const el of candidates) {
+        const htmlEl = el as HTMLElement;
+        const rect = htmlEl.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) continue;
+
+        const name =
+          htmlEl.getAttribute('aria-label') ||
+          htmlEl.getAttribute('aria-placeholder') ||
+          htmlEl.getAttribute('data-placeholder') ||
+          htmlEl.getAttribute('placeholder') ||
+          htmlEl.getAttribute('title') ||
+          htmlEl.getAttribute('id') ||
+          'editor';
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          role: 'textbox',
           name,
           x: rect.x,
           y: rect.y,
@@ -450,29 +528,33 @@ export class StateParser {
     return result;
   }
 
-  // ─── Private: DOM context enrichment for generic AOM names ───────────────
+  // ─── Private: combined enrichment + region detection ─────────────────────
 
   /**
-   * For elements whose AOM name is still generic (e.g. "Tarif auswählen"),
-   * use elementFromPoint to locate the real DOM node and walk up the tree
-   * looking for a meaningful sibling-branch heading (e.g. the provider name
-   * in a card h4 that is not a direct ancestor of the button).
+   * Single browser round-trip that both:
+   *  1. Enriches generic element names with DOM context (headings, data-attrs)
+   *  2. Assigns spatial region tags (header/nav/sidebar/main/footer/modal/popup)
    *
-   * This runs as a targeted pass — only for elements that need it — so the
-   * performance impact is minimal.
+   * Merging these saves one full page.evaluate() call per parse (~100–200ms).
    */
-  private async enrichWithDOMContext(elements: UIElement[]): Promise<void> {
+  private async enrichAndDetectRegions(elements: UIElement[]): Promise<void> {
+    if (elements.length === 0) return;
+
     const genericNamesArray = [...GENERIC_NAMES];
+    const genericIds = new Set(
+      elements.filter(e => isGenericName(e.name)).map(e => e.id)
+    );
 
     const items = elements.map(e => ({
       id: e.id,
       x: e.boundingClientRect.x + e.boundingClientRect.width / 2,
       y: e.boundingClientRect.y + e.boundingClientRect.height / 2,
+      needsContext: genericIds.has(e.id),
     }));
 
-    const results: { id: number; context: string }[] = await this.page.evaluate(
+    const results: { id: number; context: string; region: string }[] = await this.page.evaluate(
       ({ items, genericNames }: {
-        items: { id: number; x: number; y: number }[];
+        items: { id: number; x: number; y: number; needsContext: boolean }[];
         genericNames: string[];
       }) => {
         const genericSet = new Set(genericNames);
@@ -480,15 +562,39 @@ export class StateParser {
           return name.length < 3 || genericSet.has(name.toLowerCase().trim());
         }
 
-        return items.map(({ id, x, y }) => {
-          // CDP box-model coordinates are in layout (document) space;
-          // elementFromPoint expects viewport-relative coords.
-          const el = document.elementFromPoint(x - window.scrollX, y - window.scrollY);
-          if (!el) return { id, context: '' };
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
 
+        function detectRegion(el: Element | null, x: number, y: number): string {
+          if (!el) return positionalFallback(x, y);
+          let node: Element | null = el;
+          for (let depth = 0; depth < 15 && node; depth++) {
+            const tag = node.tagName?.toLowerCase();
+            const role = node.getAttribute('role');
+            if (role === 'dialog' || role === 'alertdialog' || tag === 'dialog') return 'modal';
+            if (role === 'menu' || role === 'listbox' || role === 'tooltip' ||
+                role === 'popup' || node.classList?.contains('popup') ||
+                node.classList?.contains('dropdown') || node.classList?.contains('popover')) return 'popup';
+            if (tag === 'header' || role === 'banner') return 'header';
+            if (tag === 'footer' || role === 'contentinfo') return 'footer';
+            if (tag === 'nav' || role === 'navigation') return 'nav';
+            if (tag === 'aside' || role === 'complementary') return 'sidebar';
+            if (tag === 'main' || role === 'main') return 'main';
+            node = node.parentElement;
+          }
+          return positionalFallback(x, y);
+        }
+
+        function positionalFallback(x: number, y: number): string {
+          if (y < 60) return 'header';
+          if (y > vh - 60) return 'footer';
+          if (x < vw * 0.25 && vw > 600) return 'sidebar';
+          return 'main';
+        }
+
+        function findContext(el: Element): string {
           let container: Element | null = el.parentElement;
           for (let depth = 0; depth < 8 && container; depth++) {
-            // Data attributes are the most explicit signal — use as-is
             const dataContext =
               container.getAttribute('data-name') ??
               container.getAttribute('data-provider') ??
@@ -496,16 +602,14 @@ export class StateParser {
               container.getAttribute('aria-label') ??
               '';
             if (dataContext.length > 2 && dataContext.length < 80 && !isGeneric(dataContext)) {
-              return { id, context: dataContext };
+              return dataContext;
             }
 
-            // img[alt] is often the brand/provider name in card UIs (logos).
-            // Skip hidden images and alts that look like file descriptions.
             const imgAlt = (() => {
-              for (const img of Array.from(container.querySelectorAll('img[alt]'))) {
-                const el = img as HTMLImageElement;
-                if (el.offsetParent === null) continue;
-                const alt = el.alt.replace(/\s+/g, ' ').trim();
+              for (const img of Array.from(container!.querySelectorAll('img[alt]'))) {
+                const imgEl = img as HTMLImageElement;
+                if (imgEl.offsetParent === null) continue;
+                const alt = imgEl.alt.replace(/\s+/g, ' ').trim();
                 if (
                   alt.length > 1 && alt.length < 60 &&
                   !isGeneric(alt) &&
@@ -515,44 +619,29 @@ export class StateParser {
               return '';
             })();
 
-            // Only consider visible headings — querySelector also matches elements
-            // inside hidden popovers/modals (display:none) which would produce
-            // wrong context. offsetParent === null for any display:none element.
             const heading = Array.from(
               container.querySelectorAll('h1, h2, h3, h4, strong, b')
             ).find(h => (h as HTMLElement).offsetParent !== null) ?? null;
             const headingText = heading?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 
-            // Collect up to 2 short, non-generic p texts that add new information.
-            // Skip hidden elements (inside popovers, modals, tooltips).
             const extraParts: string[] = [];
             for (const p of Array.from(container.querySelectorAll('p'))) {
               if ((p as HTMLElement).offsetParent === null) continue;
               const t = p.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-              if (
-                t.length > 2 && t.length < 60 &&
-                !isGeneric(t) &&
-                t !== headingText &&
-                !headingText.includes(t)
-              ) {
+              if (t.length > 2 && t.length < 60 && !isGeneric(t) &&
+                  t !== headingText && !headingText.includes(t)) {
                 extraParts.push(t);
                 if (extraParts.length >= 2) break;
               }
             }
 
-            // Collect short leaf-span/leaf-div texts (badges, labels, tags).
-            // Only visible leaf elements (no child elements).
             for (const node of Array.from(container.querySelectorAll('span, div'))) {
               if (node.children.length > 0) continue;
               if ((node as HTMLElement).offsetParent === null) continue;
               const t = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-              if (
-                t.length > 2 && t.length < 35 &&
-                !isGeneric(t) &&
-                t !== headingText &&
-                !headingText.includes(t) &&
-                !extraParts.includes(t)
-              ) {
+              if (t.length > 2 && t.length < 35 && !isGeneric(t) &&
+                  t !== headingText && !headingText.includes(t) &&
+                  !extraParts.includes(t)) {
                 extraParts.push(t);
                 if (extraParts.length >= 3) break;
               }
@@ -566,21 +655,34 @@ export class StateParser {
             const contextText = parts.join(' | ');
 
             if (contextText.length > 2 && contextText.length < 120 && !isGeneric(contextText)) {
-              return { id, context: contextText };
+              return contextText;
             }
 
             container = container.parentElement;
           }
-          return { id, context: '' };
+          return '';
+        }
+
+        return items.map(({ id, x, y, needsContext }) => {
+          const vpX = x - window.scrollX;
+          const vpY = y - window.scrollY;
+          const el = document.elementFromPoint(vpX, vpY);
+          return {
+            id,
+            context: needsContext && el ? findContext(el) : '',
+            region: detectRegion(el, x, y),
+          };
         });
       },
       { items, genericNames: genericNamesArray }
-    );
+    ).catch(() => [] as { id: number; context: string; region: string }[]);
 
-    const contextMap = new Map(results.map(r => [r.id, r.context]));
+    const resultMap = new Map(results.map(r => [r.id, r]));
     for (const el of elements) {
-      const context = contextMap.get(el.id);
-      if (context) el.name = `${context}: ${el.name}`;
+      const data = resultMap.get(el.id);
+      if (!data) continue;
+      if (data.context) el.name = `${data.context}: ${el.name}`;
+      if (data.region) el.region = data.region as PageRegion;
     }
   }
 

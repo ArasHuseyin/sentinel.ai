@@ -30,8 +30,8 @@ export class ObservationEngine {
       URL: ${fullState.url}
       Title: ${fullState.title}
 
-      Interactive Elements (AOM):
-      ${JSON.stringify(fullState.elements.map(e => ({ id: e.id, role: e.role, name: e.name })), null, 2)}
+      Interactive Elements (AOM, id | role | name | region):
+      ${fullState.elements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
 
       Return a list of possible actions. For each action provide:
       - description: what the action does (human-readable)

@@ -45,18 +45,22 @@ Describe what you want to do. Sentinel figures out how.
 
 ## Why Sentinel over Stagehand?
 
-| | Sentinel | Stagehand |
-|---|---|---|
-| **Default model** | Gemini 3 Flash | GPT-4o |
-| **Cost per run** (Amazon search + extract top 3) | ~$0.002 | ~$0.08 |
-| **Speed** | ~2.8 s | ~4.2 s |
-| **Self-healing locators** | ✅ (caches successful selectors) | ❌ |
-| **MCP server** | ✅ (`npx @isoldex/sentinel/mcp`) | ❌ |
-| **CLI** | ✅ (`npx @isoldex/sentinel run ...`) | ❌ |
-| **Playwright Test fixture** | ✅ (`@isoldex/sentinel/test`) | ❌ |
-| **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | OpenAI only |
-| **Intelligent error messages** | ✅ (context + actionable tips) | ❌ |
-| **Open source** | ✅ MIT | ✅ MIT |
+| | Sentinel | Stagehand | BrowserUse |
+|---|---|---|---|
+| **Default model** | Gemini 3 Flash | GPT-4o | GPT-4o / Claude |
+| **Cost per run** | ~$0.002 | ~$0.08 | ~$0.05 |
+| **Speed per action** | ~0.5–1s | ~1.5–4s | ~1.2–3s |
+| **Top-3 candidate fallback** | ✅ (no extra LLM call) | ❌ | ❌ |
+| **Cookie/overlay auto-recovery** | ✅ | ❌ | ❌ |
+| **Pre-action validation** | ✅ | ❌ | ❌ |
+| **Spatial region tags** | ✅ | ❌ | ❌ |
+| **Self-healing locators** | ✅ | ❌ | ❌ |
+| **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | OpenAI only | OpenAI, Claude |
+| **CLI** | ✅ | ❌ | ❌ |
+| **MCP server** | ✅ | ❌ | ❌ |
+| **Playwright Test fixture** | ✅ | ❌ | ❌ |
+| **Language** | TypeScript | TypeScript | Python |
+| **Open source** | ✅ MIT | ✅ MIT | ✅ MIT |
 
 > Benchmark: "Search Amazon for laptop, extract the top 3 results" — 5 runs averaged, Gemini 3 Flash vs. GPT-4o, April 2026.
 
@@ -69,15 +73,18 @@ Describe what you want to do. Sentinel figures out how.
 | Natural Language Actions | `act('Click the login button')` — no selectors needed |
 | Structured Extraction | Zod-typed `extract()` with full TypeScript inference |
 | Autonomous Agent Loop | `run(goal)` — Plan, Execute, Verify, Reflect cycle |
+| Top-3 Candidate Ranking | LLM returns 3 candidates per action — instant fallback without extra LLM call |
+| Pre-Action Validation | Detects disabled, hidden, or overlay-blocked elements before clicking |
+| Cookie/Overlay Auto-Recovery | Automatically dismisses cookie banners and closes modals |
+| Spatial Region Tags | Every element tagged with `header`/`nav`/`sidebar`/`main`/`modal` for disambiguation |
+| contenteditable Support | Rich-text editors (WhatsApp, Slack, Gmail, Notion) detected and interacted with correctly |
+| Scroll Discovery | Finds elements in virtual-scrolling containers by batch-scrolling and re-parsing |
 | Vision Grounding | Vision-model fallback for canvas, shadow DOM, and custom components |
 | Multi-LLM Support | OpenAI, Claude, Gemini, Ollama — swap providers with one line |
 | Multi-Tab and Multi-Browser | Chromium, Firefox, WebKit + full tab management |
 | Record and Replay | Capture workflows, export as TypeScript or JSON, replay on demand |
 | Session Persistence | Save and restore cookies and localStorage for authenticated flows |
 | Stealth and Proxy | Human-like delays, User-Agent rotation, proxy configuration |
-| Event System | `sentinel.on('action', ...)` for full observability |
-| Token Tracking | Monitor LLM usage and estimated cost per session |
-| Self-Healing | Semantic verification with automatic retry and multi-layer fallback |
 | Self-Healing Locators | Cache successful element lookups — skip the LLM on repeated calls |
 | Intelligent Errors | Failure messages include which paths were tried and an actionable fix tip |
 | CLI | `npx @isoldex/sentinel run/act/extract/screenshot` — no code required |

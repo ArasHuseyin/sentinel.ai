@@ -25,6 +25,26 @@ function makeMockStateParser(state: SimplifiedState) {
   };
 }
 
+/**
+ * Creates a state parser that returns `state` for the first three calls and a
+ * slightly modified state (different URL) on all subsequent calls.  This is
+ * necessary for tests that exercise the semantic fallback path: act.ts now
+ * compares the state before and after the fallback action and returns
+ * `success: false` when nothing changed.  The mock must therefore report a
+ * different state on the post-fallback parse (the 4th call).
+ */
+function makeSemanticFallbackStateParser(state: SimplifiedState) {
+  const changedState: SimplifiedState = { ...state, url: state.url + '/result' };
+  return {
+    parse: jest.fn<() => Promise<SimplifiedState>>()
+      .mockResolvedValueOnce(state)          // call 1: initial parse
+      .mockResolvedValueOnce(state)          // call 2: auto-recovery parse
+      .mockResolvedValueOnce(state)          // call 3: state before fallback
+      .mockResolvedValue(changedState),      // call 4+: state after fallback (changed)
+    invalidateCache: jest.fn(),
+  };
+}
+
 function makeMockLocator() {
   const locator: any = {
     click: jest.fn(async () => {}),
@@ -60,7 +80,14 @@ function makeMockPage(viewportOverride?: { width: number; height: number }) {
       press: jest.fn(async () => {}),
       type: jest.fn(async () => {}),
     },
-    evaluate: jest.fn(async () => {}),
+    evaluate: jest.fn(async (_fn: any, args?: any) => {
+      // Scroll offset query has no second argument; return {x:0,y:0} so
+      // the viewport-relative coordinate calculation does not throw.
+      if (args === undefined) return { x: 0, y: 0 };
+      // validateTarget / generateSelector both pass {x, y} args — return null
+      // (falsy = element valid / no selector found).
+      return null;
+    }),
     waitForNavigation: jest.fn(async () => {}),
     waitForTimeout: jest.fn(async () => {}),
     locator: jest.fn(() => locatorInstance),
@@ -75,8 +102,15 @@ function makeMockLLM(decision: {
   value?: string;
   reasoning: string;
 }): LLMProvider {
+  // Convert old single-elementId format to new candidates format
+  const normalized = {
+    candidates: [{ elementId: decision.elementId, confidence: 1.0 }],
+    action: decision.action,
+    value: decision.value,
+    reasoning: decision.reasoning,
+  };
   return {
-    generateStructuredData: jest.fn(async () => decision) as any,
+    generateStructuredData: jest.fn(async () => normalized) as any,
     generateText: jest.fn(async () => ''),
   };
 }
@@ -194,7 +228,7 @@ describe('ActionEngine', () => {
         { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } },
       ],
     });
-    const stateParser = makeMockStateParser(outOfViewportState);
+    const stateParser = makeSemanticFallbackStateParser(outOfViewportState);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -221,7 +255,24 @@ describe('ActionEngine', () => {
     expect(result.action).toContain('append');
   });
 
-  it('append uses keyboard.press End then keyboard.type', async () => {
+  it('fill uses Ctrl+A to select all before typing (not triple-click)', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(makeState());
+    const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'hello', reasoning: 'Fill email' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('Fill hello into email field');
+
+    // fill now clicks once + Ctrl+A, not triple-click
+    const clickCalls = (page.mouse.click as jest.Mock).mock.calls as any[][];
+    expect(clickCalls.every(args => args[2]?.clickCount !== 3)).toBe(true);
+    expect((page.keyboard.press as jest.Mock).mock.calls.some(
+      (args: any[]) => args[0] === 'Control+a'
+    )).toBe(true);
+    expect(page.keyboard.type).toHaveBeenCalled();
+  });
+
+  it('append uses keyboard.press End and Control+End then keyboard.type', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 1, action: 'append', value: ' extra text', reasoning: 'Append to email field' });
@@ -229,9 +280,9 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Append extra text to the email field');
 
-    expect((page.keyboard.press as jest.Mock).mock.calls.some(
-      (args: any[]) => args[0] === 'End'
-    )).toBe(true);
+    const pressCalls = (page.keyboard.press as jest.Mock).mock.calls as any[][];
+    expect(pressCalls.some((args: any[]) => args[0] === 'End')).toBe(true);
+    expect(pressCalls.some((args: any[]) => args[0] === 'Control+End')).toBe(true);
     expect(page.keyboard.type).toHaveBeenCalled();
   });
 
@@ -383,7 +434,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'double-click', reasoning: 'Double click' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -399,7 +450,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'button', name: 'Menu', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'right-click', reasoning: 'Context menu' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -416,7 +467,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'button', name: 'Tooltip', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'hover', reasoning: 'Hover for tooltip' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -432,7 +483,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'combobox', name: 'Country', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'select', value: 'Germany', reasoning: 'Select country' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -448,7 +499,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'button', name: 'Footer', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-to', reasoning: 'Scroll to footer' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -464,7 +515,7 @@ describe('ActionEngine', () => {
     // make primary fail by throwing from page.evaluate (simulate broken page)
     const page = makeMockPage();
     (page.evaluate as jest.Mock).mockRejectedValue(new Error('page not available') as never);
-    const emptyParser = makeMockStateParser(makeState({ elements: [] }));
+    const emptyParser = makeSemanticFallbackStateParser(makeState({ elements: [] }));
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'Scroll down' });
 
     // primary: mouse.wheel should work (it's a direct call, not evaluate)
@@ -486,7 +537,7 @@ describe('ActionEngine', () => {
       waitForLoadState: jest.fn(async () => {}),
       mouse: { click: jest.fn(async () => { throw new Error('primary failed'); }), dblclick: jest.fn(async () => {}), move: jest.fn(async () => {}) },
       keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
-      evaluate: jest.fn(async () => {}),
+      evaluate: jest.fn(async (_fn: any, args?: any) => args === undefined ? { x: 0, y: 0 } : null),
       waitForNavigation: jest.fn(async () => {}),
       waitForTimeout: jest.fn(async () => {}),
       locator: jest.fn(() => locatorInstance),
@@ -511,7 +562,7 @@ describe('ActionEngine', () => {
   it('scroll-up semantic fallback without target calls page.mouse.wheel upward', async () => {
     const page = makeMockPage();
     (page.mouse.wheel as jest.Mock).mockRejectedValueOnce(new Error('wheel failed') as never);
-    const emptyParser = makeMockStateParser(makeState({ elements: [] }));
+    const emptyParser = makeSemanticFallbackStateParser(makeState({ elements: [] }));
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-up', reasoning: 'Scroll page up' });
 
     const engine = new ActionEngine(page as any, emptyParser as any, llm);
@@ -527,7 +578,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'test@example.com', reasoning: 'Fill email' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -543,7 +594,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'append', value: ' extra', reasoning: 'Append text' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -561,7 +612,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 1, role: 'textbox', name: 'Search', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'press', value: 'Enter', reasoning: 'Submit search' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -579,7 +630,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 1, role: 'region', name: 'Feed', boundingClientRect: { x: 10, y: 500, width: 200, height: 200 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'scroll-down', reasoning: 'Scroll feed' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -595,7 +646,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 1, role: 'region', name: 'Feed', boundingClientRect: { x: 10, y: 500, width: 200, height: 200 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'scroll-up', reasoning: 'Scroll feed up' });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -611,7 +662,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'radio', name: 'Option A', boundingClientRect: { x: 10, y: 500, width: 20, height: 20 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Select radio' });
 
     const locatorInstance = makeMockLocator();
@@ -636,7 +687,7 @@ describe('ActionEngine', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
     });
-    const stateParser = makeMockStateParser(state);
+    const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
 
     // All isVisible() calls throw — findBestLocator should still return strategies[0]
@@ -655,6 +706,119 @@ describe('ActionEngine', () => {
     // Should still attempt click on fallback locator
     expect(throwingLocator.click).toHaveBeenCalled();
     expect(result.success).toBe(true);
+  });
+
+  // ─── Scroll Discovery ──────────────────────────────────────────────────────────
+
+  it('scroll discovery scrolls and re-parses when no relevant elements found', async () => {
+    const page = makeMockPage();
+    // First parse: elements don't match instruction
+    const noMatchState = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+      ],
+    });
+    // Second parse (after scroll): elements match
+    const matchState = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        { id: 1, role: 'link', name: 'John Chat', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+      ],
+    });
+    const stateParser = {
+      parse: jest.fn<() => Promise<SimplifiedState>>()
+        .mockResolvedValueOnce(noMatchState)   // initial parse
+        .mockResolvedValue(matchState),        // all subsequent parses
+      invalidateCache: jest.fn(),
+    };
+    const llm = makeMockLLM({ elementId: 1, action: 'click', reasoning: 'Click John Chat' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click on John Chat');
+
+    expect(result.success).toBe(true);
+    // mouse.wheel should have been called for scroll discovery
+    expect(page.mouse.wheel).toHaveBeenCalled();
+    // stateParser.parse should have been called at least twice (initial + after scroll)
+    expect(stateParser.parse.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('scroll discovery stops after MAX_SCROLL_DISCOVERY_BATCHES (6 scrolls: 2 batches × 3)', async () => {
+    const page = makeMockPage();
+    // Elements that do NOT match the instruction keywords.
+    // The element has role "link" and name "Sidebar Nav" — tokens: ["sidebar", "nav"].
+    // Instruction "navigate profile settings" — tokens: ["navigate", "profile", "settings"].
+    // No overlap → hasRelevantElements returns false → scroll discovery triggers.
+    const irrelevantState = makeState({
+      elements: [
+        { id: 0, role: 'link', name: 'Sidebar Nav', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+      ],
+    });
+    const stateParser = {
+      parse: jest.fn(async () => irrelevantState),
+      invalidateCache: jest.fn(),
+    };
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Clicking fallback' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('navigate profile settings');
+
+    // Should have scrolled exactly 6 times (2 batches × 3 scrolls per batch)
+    const wheelCalls = (page.mouse.wheel as jest.Mock).mock.calls;
+    expect(wheelCalls).toHaveLength(6);
+  });
+
+  it('scroll discovery does not scroll when relevant elements already exist', async () => {
+    const page = makeMockPage();
+    // State already has elements matching the instruction
+    const relevantState = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(relevantState);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Login button found' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('Click the login button');
+
+    // mouse.wheel should NOT have been called for scroll discovery
+    expect((page.mouse.wheel as jest.Mock).mock.calls).toHaveLength(0);
+  });
+
+  it('scroll discovery skips when elements list is empty', async () => {
+    const page = makeMockPage();
+    const emptyState = makeState({ elements: [] });
+    const stateParser = makeMockStateParser(emptyState);
+    const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'Nothing here' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('Click John Chat');
+
+    // mouse.wheel should NOT have been called for scroll discovery (empty page)
+    // It may be called for the scroll-down action itself
+    expect(stateParser.parse).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── Region field in LLM prompt ───────────────────────────────────────────────
+
+  it('includes region field in LLM prompt when elements have regions', async () => {
+    const page = makeMockPage();
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 }, region: 'sidebar' },
+        { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 }, region: 'main' },
+        { id: 2, role: 'link', name: 'Home', boundingClientRect: { x: 10, y: 100, width: 60, height: 20 }, region: 'header' },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('Click the submit button');
+
+    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    expect(promptArg).toContain('region');
   });
 
   // ─── Vision Grounding fallback ────────────────────────────────────────────────
@@ -705,10 +869,10 @@ describe('ActionEngine', () => {
 
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     // "Submit" should be in the prompt; less relevant elements may be excluded
-    expect(promptArg).toContain('"Submit"');
-    // Prompt should not contain all 5 elements (maxElements = 2)
-    const elementCount = (promptArg.match(/"id":/g) ?? []).length;
-    expect(elementCount).toBeLessThanOrEqual(2);
+    expect(promptArg).toContain('Submit');
+    // Compact format uses "id | role | name" lines — count occurrences of " | " pattern
+    const elementLineCount = (promptArg.match(/\d+ \| \w+ \| /g) ?? []).length;
+    expect(elementLineCount).toBeLessThanOrEqual(2);
   });
 
   it('chunk-processing: no filtering when element count ≤ maxElements', async () => {
@@ -721,8 +885,9 @@ describe('ActionEngine', () => {
     await engine.act('Click submit');
 
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
-    const elementCount = (promptArg.match(/"id":/g) ?? []).length;
-    expect(elementCount).toBe(3);
+    // Compact format: each element is one "id | role | name" line
+    const elementLineCount = (promptArg.match(/\d+ \| \w+ \| /g) ?? []).length;
+    expect(elementLineCount).toBe(3);
   });
 
   it('vision grounding: findElement returns null → continues to semantic fallback', async () => {
@@ -730,7 +895,7 @@ describe('ActionEngine', () => {
     // Primary click fails
     (page.mouse.click as jest.Mock).mockRejectedValueOnce(new Error('primary failed') as never);
 
-    const stateParser = makeMockStateParser(makeState());
+    const stateParser = makeSemanticFallbackStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
 
     const mockVisionGrounding = {
@@ -745,6 +910,113 @@ describe('ActionEngine', () => {
     // Falls through to semantic fallback which succeeds
     expect(result.success).toBe(true);
     expect(mockVisionGrounding.findElement).toHaveBeenCalled();
+  });
+
+  // ─── Pre-Action Validation ────────────────────────────────────────────────────
+
+  it('pre-action validation skips disabled elements and tries next candidate', async () => {
+    const page = makeMockPage();
+    // Two elements: id=0 (disabled), id=1 (valid target)
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Disabled Button', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        { id: 1, role: 'button', name: 'Active Button', boundingClientRect: { x: 10, y: 60, width: 80, height: 30 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+
+    // LLM returns both elements as candidates
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn(async () => ({
+        candidates: [{ elementId: 0, confidence: 0.9 }, { elementId: 1, confidence: 0.7 }],
+        action: 'click',
+        reasoning: 'Both candidates found',
+      })) as any,
+      generateText: jest.fn(async () => ''),
+    };
+
+    // page.evaluate: return 'element is disabled' for the first candidate's coords (cx=50, cy=35),
+    // return null (valid) for everything else (selector generation calls, second candidate),
+    // and return {x:0,y:0} for the scroll offset query (called with no second argument).
+    let validateCallCount = 0;
+    (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, args?: any) => {
+      // Scroll offset query has no second argument
+      if (args === undefined) return { x: 0, y: 0 };
+      // validateTarget passes { x, y } — detect by checking args shape
+      if (args && typeof args.x === 'number' && typeof args.y === 'number') {
+        validateCallCount++;
+        if (validateCallCount === 1) return 'element is disabled'; // first candidate blocked
+        return null; // second candidate is valid
+      }
+      return null; // selector generation
+    });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Click the active button');
+
+    expect(result.success).toBe(true);
+    // The first candidate was skipped, second candidate was clicked
+    const clickCalls = (page.mouse.click as jest.Mock).mock.calls as any[][];
+    // Active Button center: x=10+80/2=50, y=60+80/2=100
+    expect(clickCalls.length).toBeGreaterThan(0);
+    expect(result.message).toContain('candidate #2');
+  });
+
+  // ─── Smart Error Recovery ─────────────────────────────────────────────────────
+
+  it('auto-recovery dismisses cookie banner and retries action', async () => {
+    const cookieButton = { id: 0, role: 'button', name: 'Accept all', boundingClientRect: { x: 10, y: 20, width: 100, height: 30 } };
+    const targetButton = { id: 1, role: 'button', name: 'Sign in', boundingClientRect: { x: 10, y: 200, width: 80, height: 30 } };
+
+    // Initial state: both cookie button and actual target present
+    const initialState: SimplifiedState = {
+      url: 'https://example.com',
+      title: 'Example',
+      elements: [cookieButton, targetButton],
+    };
+    // State after recovery: only the target remains
+    const cleanState: SimplifiedState = {
+      url: 'https://example.com',
+      title: 'Example',
+      elements: [targetButton],
+    };
+
+    const stateParser = {
+      parse: jest.fn<() => Promise<SimplifiedState>>()
+        .mockResolvedValueOnce(initialState)   // initial parse
+        .mockResolvedValueOnce(initialState)   // recovery state parse
+        .mockResolvedValueOnce(cleanState),    // fresh state after recovery
+      invalidateCache: jest.fn(),
+    };
+
+    // LLM targets the Sign In button (id=1)
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn(async () => ({
+        candidates: [{ elementId: 1, confidence: 0.9 }],
+        action: 'click',
+        reasoning: 'Sign in button',
+      })) as any,
+      generateText: jest.fn(async () => ''),
+    };
+
+    const page2 = makeMockPage();
+    let clickCount = 0;
+    (page2.mouse.click as jest.Mock).mockImplementation(async () => {
+      clickCount++;
+      if (clickCount === 1) throw new Error('element blocked by overlay'); // primary click on Sign In fails
+      // recovery click (cookie banner) and retry click succeed
+    });
+    // page.evaluate: null for validateTarget and selector generation calls,
+    // {x:0,y:0} for the scroll offset query (no second argument).
+    (page2.evaluate as jest.Mock).mockImplementation(async (_fn: any, args?: any) =>
+      args === undefined ? { x: 0, y: 0 } : null
+    );
+
+    const engine = new ActionEngine(page2 as any, stateParser as any, llm);
+    const result = await engine.act('Click sign in');
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('auto-recovery');
   });
 });
 
@@ -813,7 +1085,7 @@ describe('ActionEngine verbose logging', () => {
     await engine.act('Click submit');
 
     const warnOutput = warnSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
-    expect(warnOutput).toContain('Primary action failed');
+    expect(warnOutput).toContain('All candidates failed');
   });
 
   it('verbose 0: no fallback warning even on failure', async () => {
@@ -856,8 +1128,8 @@ describe('ActionEngine verbose logging', () => {
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
     expect(allOutput).toContain('[Act] decision:');
-    expect(allOutput).toContain('"elementId"');
-    expect(allOutput).toContain('"reasoning"');
+    expect(allOutput).toContain('"candidates"');
+    expect(allOutput).toContain('"action"');
   });
 
   it('verbose 3: no chunk-processing log when element count ≤ maxElements', async () => {
@@ -898,7 +1170,7 @@ describe('ActionEngine verbose logging', () => {
       viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
       mouse: { click: jest.fn(async () => { throw new Error('primary failed'); }), dblclick: jest.fn(async () => {}), move: jest.fn(async () => {}), wheel: jest.fn(async () => {}) },
       keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
-      evaluate: jest.fn(async () => {}),
+      evaluate: jest.fn(async (_fn: any, args?: any) => args === undefined ? { x: 0, y: 0 } : null),
       waitForNavigation: jest.fn(async () => {}),
       locator: jest.fn(() => locatorInstance),
       getByRole: jest.fn(() => locatorInstance),
@@ -921,7 +1193,10 @@ describe('ActionEngine verbose logging', () => {
 describe('ActionResult.selector', () => {
   it('includes selector when page.evaluate returns a CSS selector string', async () => {
     const page = makeMockPage();
-    (page.evaluate as any).mockResolvedValueOnce('[data-testid="submit"]');
+    // validateTarget is called first (returns null = valid), then generateSelector returns the selector
+    (page.evaluate as any)
+      .mockResolvedValueOnce(null)  // validateTarget: element is valid
+      .mockResolvedValueOnce('[data-testid="submit"]'); // generateSelector
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -953,7 +1228,11 @@ describe('ActionResult.selector', () => {
 
   it('omits selector when page.evaluate throws', async () => {
     const page = makeMockPage();
-    (page.evaluate as any).mockRejectedValueOnce(new Error('context lost'));
+    // validateTarget (call 1) must succeed so the action proceeds.
+    // generateSelector (call 2) throws — generateSelector catches it and returns null → no selector.
+    (page.evaluate as any)
+      .mockResolvedValueOnce(null)                           // validateTarget: element valid
+      .mockRejectedValueOnce(new Error('context lost'));     // generateSelector: throws → no selector
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
     const engine = new ActionEngine(page as any, stateParser as any, llm);

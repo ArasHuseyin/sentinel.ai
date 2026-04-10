@@ -298,7 +298,7 @@ export class Sentinel extends EventEmitter {
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
-    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini);
+    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined);
 
     this.log(1, '🚀 Sentinel initialized');
   }
@@ -515,6 +515,29 @@ export class Sentinel extends EventEmitter {
             this.log(1, `⚠️  Action failed: ${result.message}. Attempt ${currentAttempt + 1}/${retries + 1}`);
             currentAttempt++;
             continue;
+          }
+
+          // Skip verification for scroll actions — scroll never fails and produces
+          // no meaningful state diff (the verifier already handles this as fast path 3,
+          // but skipping the extra parse saves time).
+          const isScrollAction = /scroll/i.test(result.action ?? '');
+          if (isScrollAction) {
+            this.log(1, `✅ "${instruction}" completed (scroll — skipping verification)`);
+            const actionResult: ActionResult = {
+              success: true,
+              message: result.message,
+              ...(result.action   ? { action:   result.action }   : {}),
+              ...(result.selector ? { selector: result.selector } : {}),
+            };
+            this.recorder.record({ type: 'act', instruction, pageUrl: this.driver.getPage().url(), pageTitle: '' });
+            this.emit('action', { instruction, result: actionResult });
+            span.setAttributes({
+              'sentinel.success': true,
+              ...(actionResult.action   ? { 'sentinel.action':   actionResult.action }   : {}),
+              ...(actionResult.selector ? { 'sentinel.selector': actionResult.selector } : {}),
+            });
+            success = true;
+            return actionResult;
           }
 
           const stateAfter = await stateParser.parse();

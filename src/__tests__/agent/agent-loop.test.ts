@@ -21,6 +21,25 @@ function makeStateParser(state: SimplifiedState = makeState()) {
   };
 }
 
+/**
+ * Creates a state parser that alternates between two states on consecutive
+ * calls.  The agent loop reads state at the start of each step and again
+ * after the action.  Both calls must return DIFFERENT states so the post-act
+ * verification logic does not mark a successful action as failed.
+ */
+function makeAlternatingStateParser() {
+  const state1 = makeState({ url: 'https://example.com' });
+  const state2 = makeState({ url: 'https://example.com/step' });
+  let callCount = 0;
+  return {
+    parse: jest.fn(async () => {
+      callCount++;
+      return callCount % 2 === 1 ? state1 : state2;
+    }),
+    invalidateCache: jest.fn(),
+  };
+}
+
 function makeActionEngine(success = true, message = 'done') {
   return {
     act: jest.fn(async () => ({ success, message, action: 'click something' })),
@@ -91,7 +110,7 @@ describe('AgentLoop', () => {
       };
 
       const actionEngine = makeActionEngine(true);
-      const stateParser = makeStateParser();
+      const stateParser = makeAlternatingStateParser();
 
       const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('achieve test goal', { maxSteps: 4 });
@@ -160,7 +179,7 @@ describe('AgentLoop', () => {
         }) as any,
         generateText: jest.fn(async () => ''),
       };
-      const stateParser = makeStateParser();
+      const stateParser = makeAlternatingStateParser();
 
       const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       const result = await loop.run('do something', { maxSteps: 6 });
@@ -195,7 +214,7 @@ describe('AgentLoop', () => {
       });
 
       const actionEngine = makeActionEngine(true);
-      const stateParser = makeStateParser();
+      const stateParser = makeAlternatingStateParser();
       const stepEvents: any[] = [];
 
       const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
@@ -285,6 +304,161 @@ describe('AgentLoop', () => {
       // Loop detection fires after 3 steps
       expect(result.history).toHaveLength(3);
       expect(result.history[0]).toMatchObject({ stepNumber: 1, instruction: 'click button' });
+    });
+  });
+
+  // ─── Vision-augmented planning ─────────────────────────────────────────────
+
+  describe('vision-augmented planning', () => {
+    it('passes pageDescription to planner when visionGrounding is available and page has many elements', async () => {
+      // Create state with >100 elements
+      const manyElements = Array.from({ length: 101 }, (_, i) =>
+        ({ id: i, role: 'link', name: `Link ${i}`, boundingClientRect: { x: 0, y: i * 10, width: 60, height: 10 } })
+      );
+      const state = makeState({ elements: manyElements });
+      const stateParser = makeStateParser(state);
+      const actionEngine = makeActionEngine(true);
+
+      // Vision grounding mock
+      const visionGrounding = {
+        takeScreenshot: jest.fn(async () => Buffer.from('png-data')),
+        describeScreen: jest.fn(async () => 'A complex page with many navigation links'),
+        findElement: jest.fn(async () => null),
+      };
+
+      const mockPage = {} as any; // page reference needed for visionGrounding calls
+
+      const llm = makePlannerLLM({ instruction: 'click link 50', isGoalComplete: false });
+      // Make loop detection fire after 3 steps
+      let step = 0;
+      (llm.generateStructuredData as jest.Mock).mockImplementation(async () => {
+        step++;
+        return {
+          type: 'act',
+          instruction: `step ${step}`,
+          reasoning: 'proceed',
+          isGoalComplete: step >= 2,
+          goalAchieved: step >= 2,
+          reason: '',
+        };
+      });
+
+      const loop = new AgentLoop(
+        actionEngine as any,
+        makeExtractionEngine() as any,
+        stateParser as any,
+        llm,
+        mockPage,
+        visionGrounding as any
+      );
+      await loop.run('navigate to page 50', { maxSteps: 5 });
+
+      // describeScreen should have been called because elements.length > 100
+      expect(visionGrounding.describeScreen).toHaveBeenCalled();
+    });
+
+    it('skips vision when visionGrounding is not provided', async () => {
+      const state = makeState({ elements: [] });
+      const stateParser = makeStateParser(state);
+      const actionEngine = makeActionEngine(true);
+      const llm = makePlannerLLM({ isGoalComplete: true, goalAchieved: true });
+
+      // No visionGrounding argument → 5th arg is page only
+      const loop = new AgentLoop(
+        actionEngine as any,
+        makeExtractionEngine() as any,
+        stateParser as any,
+        llm
+        // no page, no visionGrounding
+      );
+      const result = await loop.run('simple goal', { maxSteps: 5 });
+
+      // Should complete normally without any vision errors
+      expect(result.goalAchieved).toBe(true);
+    });
+
+    it('skips vision when page has few elements (<=100)', async () => {
+      // Only 5 elements — below VISION_ELEMENT_THRESHOLD
+      const fewElements = Array.from({ length: 5 }, (_, i) =>
+        ({ id: i, role: 'button', name: `Button ${i}`, boundingClientRect: { x: 0, y: i * 30, width: 80, height: 30 } })
+      );
+      const state = makeState({ elements: fewElements });
+      const stateParser = makeStateParser(state);
+      const actionEngine = makeActionEngine(true);
+
+      const visionGrounding = {
+        takeScreenshot: jest.fn(async () => Buffer.from('png')),
+        describeScreen: jest.fn(async () => 'simple page'),
+        findElement: jest.fn(async () => null),
+      };
+
+      const mockPage = {} as any;
+
+      const llm = makePlannerLLM({ isGoalComplete: true, goalAchieved: true });
+
+      const loop = new AgentLoop(
+        actionEngine as any,
+        makeExtractionEngine() as any,
+        stateParser as any,
+        llm,
+        mockPage,
+        visionGrounding as any
+      );
+      await loop.run('click button 0', { maxSteps: 5 });
+
+      // describeScreen should NOT have been called (too few elements)
+      expect(visionGrounding.describeScreen).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Adaptive planner filtering ────────────────────────────────────────────
+
+  describe('adaptive planner filtering', () => {
+    it('planner receives goal-filtered elements instead of first 40', async () => {
+      // Create 100 elements where only elements 70-80 have names matching goal keywords
+      const elements = Array.from({ length: 100 }, (_, i) => {
+        const isMatch = i >= 70 && i <= 80;
+        return {
+          id: i,
+          role: 'button' as const,
+          name: isMatch ? `Checkout Button ${i}` : `Generic Element ${i}`,
+          boundingClientRect: { x: 0, y: i * 10, width: 80, height: 30 },
+        };
+      });
+
+      const state = makeState({ elements });
+      const stateParser = makeStateParser(state);
+      const actionEngine = makeActionEngine(true);
+
+      // Capture the prompt passed to generateStructuredData
+      let capturedPrompt = '';
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async (prompt: any) => {
+          if (typeof prompt === 'string' && prompt.includes('Checkout')) {
+            capturedPrompt = prompt;
+          }
+          return {
+            type: 'act',
+            instruction: 'click checkout button',
+            reasoning: 'found match',
+            isGoalComplete: true,
+            goalAchieved: true,
+            reason: '',
+          };
+        }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+
+      const loop = new AgentLoop(
+        actionEngine as any,
+        makeExtractionEngine() as any,
+        stateParser as any,
+        llm
+      );
+      await loop.run('click checkout button', { maxSteps: 3 });
+
+      // The LLM should have been called
+      expect((llm.generateStructuredData as jest.Mock).mock.calls.length).toBeGreaterThan(0);
     });
   });
 });

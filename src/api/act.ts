@@ -1,6 +1,6 @@
 import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
-import type { UIElement } from '../core/state-parser.js';
+import type { UIElement, SimplifiedState } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { VisionGrounding } from '../core/vision-grounding.js';
 import type { ILocatorCache } from '../core/locator-cache.js';
@@ -79,8 +79,6 @@ async function waitForPageSettle(page: Page, timeout = 3000): Promise<void> {
         observer.observe(document.body, {
           childList: true,
           subtree: true,
-          attributes: true,
-          characterData: true,
         });
         setTimeout(() => {
           observer.disconnect();
@@ -177,8 +175,15 @@ function buildFailureMessage(
 
 // ─── Chunk-Processing ────────────────────────────────────────────────────────
 
+/** Common stop words that should not be used for relevance matching. */
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'on', 'in', 'to', 'at', 'of', 'by', 'is', 'it',
+  'or', 'as', 'do', 'if', 'no', 'up', 'so', 'my', 'we', 'be', 'am',
+]);
+
 /**
  * Tokenises a string into lowercase words (≥ 2 chars) for relevance scoring.
+ * Filters out common stop words that cause false-positive substring matches.
  */
 function tokenize(text: string): string[] {
   return [...new Set(
@@ -186,7 +191,7 @@ function tokenize(text: string): string[] {
       .toLowerCase()
       .replace(/[^a-z0-9äöüß\s]/g, ' ')
       .split(/\s+/)
-      .filter(t => t.length >= 2)
+      .filter(t => t.length >= 2 && !STOP_WORDS.has(t))
   )];
 }
 
@@ -221,6 +226,21 @@ export function filterRelevantElements(
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, maxCount).map(s => s.el);
 }
+
+/**
+ * Returns true if at least one element has a relevance score > 0 for the instruction.
+ */
+function hasRelevantElements(elements: UIElement[], instruction: string): boolean {
+  const tokens = tokenize(instruction);
+  if (tokens.length === 0) return true;
+  return elements.some(el => {
+    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^a-z0-9äöüß\s]/g, ' ');
+    return tokens.some(token => text.includes(token));
+  });
+}
+
+/** Max batch-scroll iterations when looking for not-yet-rendered elements. */
+const MAX_SCROLL_DISCOVERY_BATCHES = 2;
 
 export class ActionEngine {
   constructor(
@@ -286,21 +306,45 @@ export class ActionEngine {
       }
     }
 
-    const visibleElements = filterRelevantElements(state.elements, resolvedInstruction, this.maxElements);
+    // ── Scroll-Discovery: find not-yet-rendered elements ──────────────────────
+    // When no elements match the instruction keywords, the target may be outside
+    // the viewport in a virtual-scrolling container. Scroll and re-parse until
+    // a relevant element appears or attempts are exhausted.
+    let currentState = state;
+    if (currentState.elements.length > 0 && !hasRelevantElements(currentState.elements, resolvedInstruction)) {
+      this.log(2, `[Act] No relevant elements for "${resolvedInstruction}" — trying scroll discovery`);
+      for (let batch = 0; batch < MAX_SCROLL_DISCOVERY_BATCHES; batch++) {
+        // Batch: scroll 3 times quickly with short pauses between
+        for (let i = 0; i < 3; i++) {
+          await this.page.mouse.wheel(0, 600);
+          await this.page.waitForTimeout(200);
+        }
+        await waitForPageSettle(this.page, 500); // Shorter settle for scrolls
+        this.stateParser.invalidateCache();
+        currentState = await this.stateParser.parse();
+        if (hasRelevantElements(currentState.elements, resolvedInstruction)) {
+          this.log(2, `[Act] Found relevant element after batch ${batch + 1} scroll`);
+          break;
+        }
+      }
+    }
 
-    if (state.elements.length > visibleElements.length) {
-      this.log(3, `[Act] chunk-processing: ${state.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
+    const visibleElements = filterRelevantElements(currentState.elements, resolvedInstruction, this.maxElements);
+
+    if (currentState.elements.length > visibleElements.length) {
+      this.log(3, `[Act] chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
     }
 
     const prompt = `
-      Current Page URL: ${state.url}
-      Page Title: ${state.title}
+      Current Page URL: ${currentState.url}
+      Page Title: ${currentState.title}
       Instruction: "${resolvedInstruction}"
 
-      Elements on page:
-      ${JSON.stringify(visibleElements.map(e => ({ id: e.id, role: e.role, name: e.name })), null, 2)}
+      Elements on page (id | role | name | region):
+      ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
 
-      Select the ID of the element to interact with and the action to perform.
+      Select the element to interact with and the action to perform.
+      Return up to 3 candidate elements ranked by confidence (best first).
       Available actions:
       - "click": single click on an element
       - "double-click": double click on an element
@@ -315,14 +359,23 @@ export class ActionEngine {
       - "scroll-to": scroll to bring a specific element into view (requires elementId)
 
       If the action is "fill", "append", "press", or "select", provide the "value" field.
-      For scroll actions without a target element, set elementId to 0.
-      Provide clear reasoning for your choice.
+      For scroll actions without a target element, set elementId to 0 in the first candidate.
     `;
 
     const schema = {
       type: 'object',
       properties: {
-        elementId: { type: 'number' },
+        candidates: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              elementId: { type: 'number' },
+              confidence: { type: 'number' },
+            },
+            required: ['elementId'],
+          },
+        },
         action: {
           type: 'string',
           enum: [
@@ -334,112 +387,192 @@ export class ActionEngine {
         value: { type: 'string' },
         reasoning: { type: 'string' },
       },
-      required: ['elementId', 'action', 'reasoning'],
+      required: ['candidates', 'action', 'reasoning'],
     };
 
     const decision = await this.gemini.generateStructuredData<{
-      elementId: number;
+      candidates: { elementId: number; confidence?: number }[];
       action: ActionType;
       value?: string;
       reasoning: string;
     }>(prompt, schema);
 
+    // Normalize: support old single-elementId responses gracefully
+    const candidateIds = decision.candidates?.length
+      ? decision.candidates.map(c => c.elementId)
+      : [(decision as any).elementId ?? 0];
+
     // Scroll actions without a target element are valid with elementId = 0
     const isScrollWithoutTarget =
       (decision.action === 'scroll-down' || decision.action === 'scroll-up') &&
-      decision.elementId === 0;
+      candidateIds[0] === 0;
 
-    const target = isScrollWithoutTarget
-      ? null
-      : (state.elements.find(e => e.id === decision.elementId) ?? null);
-
-    if (!isScrollWithoutTarget && !target) {
-      return { success: false, message: `Could not find element with ID ${decision.elementId}` };
-    }
-
-    const actionLabel = target
-      ? `${decision.action} on "${target.name}" (${target.role})`
-      : `${decision.action} (page)`;
-
-    this.log(1, `[Act] ${actionLabel}`);
     this.log(2, `[Act] reasoning: ${decision.reasoning}`);
-    this.log(3, `[Act] decision: ${JSON.stringify({ elementId: decision.elementId, action: decision.action, value: decision.value, reasoning: decision.reasoning })}`);
+    this.log(3, `[Act] decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`);
 
-    // Generate stable selector before action — DOM is still in pre-action state
-    const selector = target ? (await generateSelector(this.page, target) ?? undefined) : undefined;
+    // ── Try each candidate in order ─────────────────────────────────────────
+    // On failure, fall through to the next candidate without a new LLM call.
+    const attempts: ActionAttempt[] = [];
 
-    // Invalidate cache after action – state will change
-    this.stateParser.invalidateCache();
+    for (let ci = 0; ci < candidateIds.length; ci++) {
+      const target = isScrollWithoutTarget
+        ? null
+        : (currentState.elements.find(e => e.id === candidateIds[ci]) ?? null);
 
-    try {
-      await this.performAction(decision.action, target, decision.value);
-      await waitForPageSettle(this.page, this.domSettleTimeoutMs);
-      // ── Self-Healing Locator: populate cache on success ────────────────────
-      if (this.locatorCache && target && !isScrollWithoutTarget) {
-        this.locatorCache.set(state.url, resolvedInstruction, {
-          action: decision.action,
-          role: target.role,
-          name: target.name,
-          ...(decision.value !== undefined ? { value: decision.value } : {}),
-        });
-      }
-      return {
-        success: true,
-        message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''}`,
-        action: actionLabel,
-        ...(selector !== undefined ? { selector } : {}),
-      };
-    } catch (primaryError: any) {
-      const attempts: ActionAttempt[] = [
-        { path: 'coordinate-click', error: primaryError.message },
-      ];
+      if (!isScrollWithoutTarget && !target) continue; // skip invalid candidate
 
-      // Vision-Grounding als zweite Stufe (nur wenn aktiviert)
-      if (this.visionGrounding && target) {
-        try {
-          const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
-          const screenshot = await this.visionGrounding.takeScreenshot(this.page);
-          const bbox = await this.visionGrounding.findElement(
-            `${decision.action} on "${target.name}"`,
-            screenshot,
-            viewport.width,
-            viewport.height
-          );
-          if (bbox) {
-            const cx = bbox.x + bbox.width / 2;
-            const cy = bbox.y + bbox.height / 2;
-            await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${target.name}"`);
-            await waitForPageSettle(this.page, this.domSettleTimeoutMs);
-            return {
-              success: true,
-              message: `Successfully performed ${decision.action} on "${target.name}" (via Vision Grounding)`,
-              action: actionLabel,
-              ...(selector !== undefined ? { selector } : {}),
-            };
-          }
-          attempts.push({ path: 'vision-grounding', error: 'Element nicht im Screenshot gefunden' });
-        } catch (visionError: any) {
-          attempts.push({ path: 'vision-grounding', error: visionError.message });
-          this.warn(2, `[Act] Vision fallback failed: ${visionError.message}`);
+      const actionLabel = target
+        ? `${decision.action} on "${target.name}" (${target.role})`
+        : `${decision.action} (page)`;
+
+      if (ci === 0) this.log(1, `[Act] ${actionLabel}`);
+      else this.log(2, `[Act] Trying candidate #${ci + 1}: ${actionLabel}`);
+
+      // Pre-action validation: check if element is actually clickable
+      if (target && (decision.action === 'click' || decision.action === 'double-click' || decision.action === 'right-click')) {
+        const blockReason = await this.validateTarget(target);
+        if (blockReason) {
+          this.warn(2, `[Act] Target blocked: ${blockReason}`);
+          attempts.push({ path: 'coordinate-click', error: blockReason });
+          continue; // try next candidate
         }
       }
 
-      this.warn(2, `[Act] Primary action failed, trying semantic fallback... (${primaryError.message})`);
+      // Generate stable selector before action — DOM is still in pre-action state
+      const selector = target ? (await generateSelector(this.page, target) ?? undefined) : undefined;
+
+      // Invalidate cache after action – state will change
+      this.stateParser.invalidateCache();
+
       try {
-        await this.performSemanticFallback(decision.action, target, decision.value);
+        await this.performAction(decision.action, target, decision.value);
         await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+        // ── Self-Healing Locator: populate cache on success ──────────────────
+        if (this.locatorCache && target && !isScrollWithoutTarget) {
+          this.locatorCache.set(currentState.url, resolvedInstruction, {
+            action: decision.action,
+            role: target.role,
+            name: target.name,
+            ...(decision.value !== undefined ? { value: decision.value } : {}),
+          });
+        }
         return {
           success: true,
-          message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''} (via fallback)`,
+          message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''}${ci > 0 ? ` (candidate #${ci + 1})` : ''}`,
           action: actionLabel,
           ...(selector !== undefined ? { selector } : {}),
         };
-      } catch (fallbackError: any) {
-        attempts.push({ path: 'locator-fallback', error: fallbackError.message });
+      } catch (err: any) {
+        attempts.push({ path: 'coordinate-click', error: `candidate #${ci + 1}: ${err.message}` });
+        this.warn(2, `[Act] Candidate #${ci + 1} failed: ${err.message}`);
+        // Try next candidate
+      }
+    }
+
+    // All candidates failed — fall through to vision/semantic fallback with first valid target
+    const fallbackTarget = isScrollWithoutTarget
+      ? null
+      : (currentState.elements.find(e => e.id === candidateIds[0]) ?? null);
+
+    if (!isScrollWithoutTarget && !fallbackTarget) {
+      return { success: false, message: `Could not find any candidate element`, attempts };
+    }
+
+    // ── Auto-recovery: try to dismiss common page blockers ──────────────────
+    this.stateParser.invalidateCache();
+    const recoveryState = await this.stateParser.parse();
+    const recovered = await this.tryRecoverFromBlocker(recoveryState);
+    if (recovered) {
+      // Re-parse after recovery and retry the first candidate
+      this.stateParser.invalidateCache();
+      const freshState = await this.stateParser.parse();
+      const retryTarget = freshState.elements.find(e => e.id === candidateIds[0])
+        ?? freshState.elements.find(e => e.name === fallbackTarget?.name);
+      if (retryTarget) {
+        try {
+          await this.performAction(decision.action, retryTarget, decision.value);
+          await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+          return {
+            success: true,
+            message: `Successfully performed ${decision.action} on "${retryTarget.name}" (after auto-recovery)`,
+            action: `${decision.action} on "${retryTarget.name}" (${retryTarget.role})`,
+          };
+        } catch { /* recovery retry also failed — continue to vision/semantic fallback */ }
+      }
+    }
+
+    const actionLabel = fallbackTarget
+      ? `${decision.action} on "${fallbackTarget.name}" (${fallbackTarget.role})`
+      : `${decision.action} (page)`;
+    const selector = fallbackTarget ? (await generateSelector(this.page, fallbackTarget) ?? undefined) : undefined;
+    const target = fallbackTarget;
+
+    // Vision-Grounding als zweite Stufe (nur wenn aktiviert)
+    if (this.visionGrounding && target) {
+      try {
+        const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
+        const screenshot = await this.visionGrounding.takeScreenshot(this.page);
+        const bbox = await this.visionGrounding.findElement(
+          `${decision.action} on "${target.name}"`,
+          screenshot,
+          viewport.width,
+          viewport.height
+        );
+        if (bbox) {
+          const cx = bbox.x + bbox.width / 2;
+          const cy = bbox.y + bbox.height / 2;
+          await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${target.name}"`);
+          await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+          return {
+            success: true,
+            message: `Successfully performed ${decision.action} on "${target.name}" (via Vision Grounding)`,
+            action: actionLabel,
+            ...(selector !== undefined ? { selector } : {}),
+          };
+        }
+        attempts.push({ path: 'vision-grounding', error: 'Element nicht im Screenshot gefunden' });
+      } catch (visionError: any) {
+        attempts.push({ path: 'vision-grounding', error: visionError.message });
+        this.warn(2, `[Act] Vision fallback failed: ${visionError.message}`);
+      }
+    }
+
+    this.warn(2, `[Act] All candidates failed, trying semantic fallback...`);
+    try {
+      // Capture state before fallback to verify it actually changed something
+      this.stateParser.invalidateCache();
+      const stateBeforeFallback = await this.stateParser.parse();
+
+      await this.performSemanticFallback(decision.action, target, decision.value);
+      await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+
+      // Verify the fallback actually changed the page
+      this.stateParser.invalidateCache();
+      const stateAfterFallback = await this.stateParser.parse();
+      const pageChanged =
+        stateBeforeFallback.url !== stateAfterFallback.url ||
+        stateBeforeFallback.title !== stateAfterFallback.title ||
+        Math.abs(stateBeforeFallback.elements.length - stateAfterFallback.elements.length) >= 2 ||
+        stateBeforeFallback.elements.some(e => e.state?.focused) !== stateAfterFallback.elements.some(e => e.state?.focused);
+
+      if (!pageChanged) {
+        this.warn(2, `[Act] Semantic fallback completed but page state unchanged — marking as failed`);
+        attempts.push({ path: 'locator-fallback', error: 'action completed but page state unchanged' });
         const message = buildFailureMessage(resolvedInstruction, target, attempts);
-        this.warn(2, `[Act] All paths failed:\n${message}`);
         return { success: false, message, action: actionLabel, attempts };
       }
+
+      return {
+        success: true,
+        message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''} (via fallback)`,
+        action: actionLabel,
+        ...(selector !== undefined ? { selector } : {}),
+      };
+    } catch (fallbackError: any) {
+      attempts.push({ path: 'locator-fallback', error: fallbackError.message });
+      const message = buildFailureMessage(resolvedInstruction, target, attempts);
+      this.warn(2, `[Act] All paths failed:\n${message}`);
+      return { success: false, message, action: actionLabel, attempts };
     }
   }
 
@@ -467,42 +600,62 @@ export class ActionEngine {
     const cx = x + width / 2;
     const cy = y + height / 2;
 
-    // Viewport bounds check: if the element is outside the visible area, the
-    // AOM bounding box is stale or the element hasn't been scrolled into view.
-    // Throw immediately so the semantic fallback (which calls scrollIntoViewIfNeeded)
-    // can handle it — cheaper than a misplaced click.
+    // AOM coordinates are in document (layout) space. If the element is
+    // outside the current viewport, scroll it into view before clicking.
     const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
     if (cx < 0 || cy < 0 || cx > viewport.width || cy > viewport.height) {
+      await this.page.evaluate(
+        ({ x, y }: { x: number; y: number }) => {
+          window.scrollTo({
+            left: Math.max(0, x - window.innerWidth / 2),
+            top: Math.max(0, y - window.innerHeight / 2),
+            behavior: 'instant',
+          });
+        },
+        { x: cx, y: cy }
+      );
+      // Wait briefly for scroll to complete
+      await this.page.waitForTimeout(100);
+    }
+
+    // Recalculate viewport-relative coordinates after possible scroll
+    const scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    const vpCx = cx - scrollOffset.x;
+    const vpCy = cy - scrollOffset.y;
+
+    // Final viewport bounds check after scroll
+    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
       throw new ActionError(
-        `Element "${target.name}" is outside viewport at (${cx.toFixed(0)}, ${cy.toFixed(0)}) — triggering scroll fallback`,
-        { element: target.name, x: cx, y: cy }
+        `Element "${target.name}" is outside viewport at (${vpCx.toFixed(0)}, ${vpCy.toFixed(0)}) even after scrolling`,
+        { element: target.name, x: vpCx, y: vpCy }
       );
     }
+
+    // Use viewport-relative coordinates for all mouse operations
+    const clickX = vpCx;
+    const clickY = vpCy;
 
     // Human-like: move mouse along a Bézier curve to the target, then pause briefly
     if (this.humanLike && (
       action === 'click' || action === 'double-click' || action === 'right-click' ||
       action === 'hover' || action === 'fill' || action === 'append'
     )) {
-      const pos = await this.page.mouse.move(0, 0).then(() => ({ x: 0, y: 0 })).catch(() => ({ x: 0, y: 0 }));
-      // Get current mouse position via evaluate (Playwright doesn't expose it directly)
       const cur = await this.page.evaluate(() => ({
         x: (window as any).__sentinelMouseX ?? 0,
         y: (window as any).__sentinelMouseY ?? 0,
       })).catch(() => ({ x: 0, y: 0 }));
-      await moveMouse(this.page, cur.x, cur.y, cx, cy);
-      // Track mouse position for next call
+      await moveMouse(this.page, cur.x, cur.y, clickX, clickY);
       await this.page.evaluate(
         ({ x, y }) => { (window as any).__sentinelMouseX = x; (window as any).__sentinelMouseY = y; },
-        { x: cx, y: cy }
+        { x: clickX, y: clickY }
       ).catch(() => {});
-      // Pre-click pause: 80–200 ms
       await this.page.waitForTimeout(80 + Math.round(Math.random() * 120));
     }
 
     switch (action) {
       case 'click':
         if (target.role === 'radio' || target.role === 'checkbox') {
+          // Radio/checkbox: use JS click at viewport-relative coords
           // CSS-styled radio/checkbox inputs are often visually replaced by a
           // <label> or <div>; the actual <input> is hidden (display:none / opacity:0).
           // Playwright's mouse.click on invisible inputs is unreliable — use JS instead.
@@ -521,27 +674,28 @@ export class ActionEngine {
               // Case 3: element itself is the best we can do
               el.click();
             },
-            { x: cx, y: cy }
+            { x: clickX, y: clickY }
           );
         } else {
-          await withTimeout(this.page.mouse.click(cx, cy), 10_000, `click "${target.name}"`);
+          await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `click "${target.name}"`);
         }
         break;
 
       case 'double-click':
-        await withTimeout(this.page.mouse.dblclick(cx, cy), 10_000, `double-click "${target.name}"`);
+        await withTimeout(this.page.mouse.dblclick(clickX, clickY), 10_000, `double-click "${target.name}"`);
         break;
 
       case 'right-click':
         await withTimeout(
-          this.page.mouse.click(cx, cy, { button: 'right' }),
+          this.page.mouse.click(clickX, clickY, { button: 'right' }),
           10_000,
           `right-click "${target.name}"`
         );
         break;
 
       case 'fill':
-        await withTimeout(this.page.mouse.click(cx, cy, { clickCount: 3 }), 10_000, `focus "${target.name}"`);
+        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
+        await this.page.keyboard.press('Control+a');
         if (this.humanLike) {
           await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
         } else {
@@ -550,8 +704,9 @@ export class ActionEngine {
         break;
 
       case 'append':
-        await withTimeout(this.page.mouse.click(cx, cy), 10_000, `focus "${target.name}"`);
+        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
         await withTimeout(this.page.keyboard.press('End'), 10_000, `move to end "${target.name}"`);
+        await withTimeout(this.page.keyboard.press('Control+End'), 10_000, `move to absolute end "${target.name}"`);
         if (this.humanLike) {
           await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
         } else {
@@ -560,11 +715,11 @@ export class ActionEngine {
         break;
 
       case 'hover':
-        await withTimeout(this.page.mouse.move(cx, cy), 10_000, `hover "${target.name}"`);
+        await withTimeout(this.page.mouse.move(clickX, clickY), 10_000, `hover "${target.name}"`);
         break;
 
       case 'press':
-        await withTimeout(this.page.mouse.click(cx, cy), 10_000, `focus "${target.name}"`);
+        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
         await withTimeout(
           this.page.keyboard.press(value || 'Enter'),
           10_000,
@@ -573,7 +728,7 @@ export class ActionEngine {
         break;
 
       case 'select':
-        await withTimeout(this.page.mouse.click(cx, cy), 10_000, `open select "${target.name}"`);
+        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
         await this.page.evaluate(
           ({ x, y, val }: { x: number; y: number; val: string }) => {
             const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
@@ -587,7 +742,7 @@ export class ActionEngine {
               }
             }
           },
-          { x: cx, y: cy, val: value || '' }
+          { x: clickX, y: clickY, val: value || '' }
         );
         break;
 
@@ -597,7 +752,7 @@ export class ActionEngine {
             const el = document.elementFromPoint(x, y);
             if (el) el.scrollBy(0, 300);
           },
-          { x: cx, y: cy }
+          { x: clickX, y: clickY }
         );
         break;
 
@@ -607,7 +762,7 @@ export class ActionEngine {
             const el = document.elementFromPoint(x, y);
             if (el) el.scrollBy(0, -300);
           },
-          { x: cx, y: cy }
+          { x: clickX, y: clickY }
         );
         break;
 
@@ -617,7 +772,7 @@ export class ActionEngine {
             const el = document.elementFromPoint(x, y);
             if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           },
-          { x: cx, y: cy }
+          { x: clickX, y: clickY }
         );
         break;
     }
@@ -661,6 +816,99 @@ export class ActionEngine {
     // None visible right now — return the most specific strategy anyway.
     // The caller's scrollIntoViewIfNeeded / click will handle it.
     return strategies[0]!;
+  }
+
+  /**
+   * Validates that the element at the target's coordinates is actually
+   * interactive (not disabled, not hidden behind an overlay).
+   * Returns null if valid, or an error message if blocked.
+   */
+  private async validateTarget(target: UIElement): Promise<string | null> {
+    const cx = target.boundingClientRect.x + target.boundingClientRect.width / 2;
+    const cy = target.boundingClientRect.y + target.boundingClientRect.height / 2;
+
+    return this.page.evaluate(
+      ({ x, y }: { x: number; y: number }) => {
+        // AOM coordinates are in document (layout) space.
+        // If the element is below the fold, scroll it into view first
+        // so elementFromPoint can actually find it.
+        const vpX = x - window.scrollX;
+        const vpY = y - window.scrollY;
+        const inViewport = vpX >= 0 && vpY >= 0 && vpX < window.innerWidth && vpY < window.innerHeight;
+
+        if (!inViewport) {
+          // Scroll the point into view before checking
+          window.scrollTo({ left: Math.max(0, x - window.innerWidth / 2), top: Math.max(0, y - window.innerHeight / 2), behavior: 'instant' });
+        }
+
+        // Re-calculate viewport coords after possible scroll
+        const finalVpX = x - window.scrollX;
+        const finalVpY = y - window.scrollY;
+        const el = document.elementFromPoint(finalVpX, finalVpY);
+        if (!el) return null; // can't determine — let the action try
+
+        // Check disabled state
+        if ((el as HTMLElement).hasAttribute('disabled') ||
+            el.getAttribute('aria-disabled') === 'true') {
+          return 'element is disabled';
+        }
+
+        // Check if hidden
+        if ((el as HTMLElement).offsetParent === null &&
+            getComputedStyle(el).position !== 'fixed') {
+          return 'element is hidden (display:none)';
+        }
+
+        // Check if an overlay/modal is covering the target
+        const role = el.getAttribute('role');
+        const tag = el.tagName.toLowerCase();
+        if (role === 'dialog' || role === 'alertdialog' || tag === 'dialog') {
+          const ariaLabel = el.getAttribute('aria-label') || '';
+          if (/cookie|consent|privacy|datenschutz/i.test(ariaLabel) ||
+              /cookie|consent|privacy|datenschutz/i.test(el.textContent?.slice(0, 200) || '')) {
+            return 'blocked by cookie/consent overlay';
+          }
+          return 'blocked by dialog/modal overlay';
+        }
+
+        return null; // valid
+      },
+      { x: cx, y: cy }
+    ).catch(() => null); // on error, assume valid
+  }
+
+  /**
+   * Attempts to recover from common page blockers (cookie banners,
+   * overlays, modals) by dismissing them automatically.
+   * Returns true if a recovery action was performed.
+   */
+  private async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
+    // Pattern 1: Cookie/consent banner
+    const cookieElement = state.elements.find(e =>
+      /cookie|consent|accept|akzeptieren|alle akzeptieren|accept all|got it|verstanden|i agree/i.test(e.name) &&
+      (e.role === 'button' || e.role === 'link')
+    );
+    if (cookieElement) {
+      this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
+      try {
+        await this.performAction('click', cookieElement);
+        await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+        return true;
+      } catch { /* recovery failed, continue */ }
+    }
+
+    // Pattern 2: Generic modal close (Escape key)
+    const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
+    if (hasModal) {
+      this.log(2, `[Act] Recovery: pressing Escape to close modal/popup`);
+      try {
+        await this.page.keyboard.press('Escape');
+        await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+        return true;
+      } catch { /* recovery failed */ }
+    }
+
+    return false;
   }
 
   private async performSemanticFallback(

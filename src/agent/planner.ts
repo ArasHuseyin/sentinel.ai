@@ -1,6 +1,7 @@
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { SimplifiedState } from '../core/state-parser.js';
 import type { AgentMemory } from './memory.js';
+import { filterRelevantElements } from '../api/act.js';
 
 export interface PlannedStep {
   type: 'act' | 'extract';
@@ -19,26 +20,30 @@ export class Planner {
   async planNextStep(
     goal: string,
     state: SimplifiedState,
-    memory: AgentMemory
+    memory: AgentMemory,
+    pageDescription?: string
   ): Promise<PlannedStep> {
     const prompt = `
 You are an autonomous browser agent. Your goal is: "${goal}"
 
 Current page:
 - URL: ${state.url}
-- Title: ${state.title}
-- Interactive elements: ${JSON.stringify(
-      state.elements.slice(0, 40).map(e => ({ id: e.id, role: e.role, name: e.name })),
-      null,
-      2
-    )}
+- Title: ${state.title}${pageDescription ? `\n- Visual layout: ${pageDescription}` : ''}
+- Interactive elements (id | role | name | region):
+${filterRelevantElements(state.elements, goal, 50).map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
 
 Steps taken so far:
 ${memory.getSummary()}
 
-Based on the current page state and history, decide the SINGLE next step to take.
-If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.
-If you are stuck (same action repeated 3+ times without progress), try a different approach.
+Rules:
+- If the current URL already matches the goal topic (e.g. you're on an insurance page and the goal is insurance), you are already on the right page — do NOT click navigation links. Instead, interact with the form/content directly.
+- If form fields (textbox, combobox, searchbox, spinbutton) are visible, fill them BEFORE clicking other buttons. Forms should be completed top-to-bottom, then submitted.
+- Buttons that display a current value (like a brand name, category, or date) next to a label are dropdown selectors — click them to open the dropdown and change the value.
+- Only click navigation buttons/links if no relevant form fields or dropdown selectors are present.
+- If a previous step failed or had no effect, try a completely different approach — do NOT repeat the same action.
+- If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.
+
+Decide the SINGLE next step to take.
 
 Respond with:
 - type: "act" for browser actions (click, fill, scroll, etc.), "extract" for extracting structured data from the current page

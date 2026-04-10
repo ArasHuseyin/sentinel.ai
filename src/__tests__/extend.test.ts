@@ -27,7 +27,12 @@ function makePage(url = 'https://example.com') {
   const self: any = {
     url: () => url,
     title: jest.fn(async () => 'Test'),
-    evaluate: jest.fn(async () => []),
+    // Return null for validateTarget calls (args: { x, y }) so the element is
+    // not blocked, and [] for DOM-snapshot calls so StateParser doesn't fail.
+    evaluate: jest.fn(async (_fn: any, args?: any) => {
+      if (args && typeof args === 'object' && 'x' in args && 'y' in args) return null;
+      return [];
+    }),
     viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
     waitForNavigation: jest.fn(async () => {}),
     mouse: { click: jest.fn(async () => {}), wheel: jest.fn(async () => {}), move: jest.fn(async () => {}), dblclick: jest.fn(async () => {}) },

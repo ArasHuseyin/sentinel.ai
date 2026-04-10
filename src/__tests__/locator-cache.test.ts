@@ -195,12 +195,17 @@ import type { ILocatorCache } from '../core/locator-cache.js';
 
 function makeMockPage() {
   return {
-    evaluate: jest.fn<any>().mockResolvedValue(undefined),
+    // Scroll offset query is called with no second argument and needs {x:0,y:0}.
+    // validateTarget / generateSelector pass {x,y} args and expect null (falsy = ok).
+    evaluate: jest.fn<any>(async (_fn: any, args?: any) =>
+      args === undefined ? { x: 0, y: 0 } : null
+    ),
     waitForNavigation: jest.fn<any>().mockResolvedValue(undefined),
     waitForLoadState: jest.fn<any>().mockResolvedValue(undefined),
     mouse: { click: jest.fn<any>().mockResolvedValue(undefined), wheel: jest.fn<any>().mockResolvedValue(undefined) },
     keyboard: { press: jest.fn<any>().mockResolvedValue(undefined), type: jest.fn<any>().mockResolvedValue(undefined) },
     viewportSize: jest.fn<any>().mockReturnValue({ width: 1280, height: 720 }),
+    waitForTimeout: jest.fn<any>().mockResolvedValue(undefined),
     url: jest.fn<any>().mockReturnValue('https://example.com/page'),
   } as any;
 }

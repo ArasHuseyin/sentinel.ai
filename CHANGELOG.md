@@ -6,6 +6,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.0.0] - 2026-04-11
+
+### Breaking Changes
+
+- **Default viewport changed from 1280×720 to 1920×1080** — larger viewport improves element detection on modern websites. Override with `viewport: { width, height }` if needed.
+- **LLM action schema uses `candidates[]` instead of single `elementId`** — the LLM now returns up to 3 ranked candidates per action. Custom LLM providers must support the new response format; old single-`elementId` responses are auto-normalized for backward compatibility.
+- **Prompt format changed from JSON to pipe-delimited** — element lists sent to the LLM use `id | role | name | region` format instead of pretty-printed JSON. Reduces token usage by ~40%.
+
+### Added
+
+- **Complex page robustness**
+  - `contenteditable` detection — rich-text editors (WhatsApp, Slack, Gmail, Notion) are now discovered via dedicated `parseContentEditableElements()` with Shadow DOM piercing.
+  - `[tabindex]` and `[contenteditable]` in DOM snapshot selector — custom interactive elements are no longer missed.
+  - `data-placeholder` and `aria-placeholder` name fallbacks for form fields.
+  - `fill` uses `Ctrl+A` instead of triple-click — works on both standard inputs and contenteditable divs.
+  - `append` sends `Ctrl+End` after `End` to reach the absolute end of content.
+
+- **Spatial region tags** — every element gets a `region` field (`header` | `nav` | `sidebar` | `main` | `footer` | `modal` | `popup`) based on DOM landmarks and positional heuristics. Sent to the LLM for spatial disambiguation.
+
+- **Vision-augmented planning** — when a page has >100 elements and `visionFallback: true`, the planner receives a visual page description alongside the element list for better decision-making.
+
+- **Scroll discovery** — when no elements match the instruction keywords, Sentinel batch-scrolls (2 batches × 3 scrolls) and re-parses to find elements in virtual-scrolling containers.
+
+- **Top-3 candidate ranking** — the LLM returns up to 3 element candidates with confidence scores. On failure, the next candidate is tried immediately without a new LLM call (~50ms vs ~800ms retry).
+
+- **Pre-action validation** — before each click, `validateTarget()` checks via `elementFromPoint()` whether the element is disabled, hidden, or blocked by an overlay. Blocked candidates are skipped instantly.
+
+- **Smart error recovery** — `tryRecoverFromBlocker()` automatically dismisses cookie/consent banners and closes modals (via Escape) before retrying the action. No competitor has this.
+
+- **Adaptive planner filtering** — the planner uses `filterRelevantElements(elements, goal, 50)` with goal-keyword scoring instead of a hard `slice(0, 40)`.
+
+- **Form-aware planner rules** — the planner prompt now prioritizes filling visible form fields before clicking navigation buttons, recognizes dropdown selectors, and avoids repeating failed actions.
+
+- **Agent-loop state verification** — after each `act()` step, the agent compares page state before/after. Actions that report success but leave the page unchanged are re-classified as failures, preventing infinite loops.
+
+- **Semantic loop detection** — instruction-loop detection now normalizes instructions and checks element targets, catching loops where the planner rephrases the same action differently.
+
+- **DOM fallback for off-screen AOM** — when all AOM elements are outside the visible viewport (common in React SPAs), `parseDOMSnapshot` is triggered regardless of element count.
+
+### Performance
+
+- **Parallel evaluate calls** — `parseFormElements`, `parseContentEditableElements`, and `parseFrameElements` now run concurrently via `Promise.all()` (~60-70% faster parse).
+- **Merged enrichment + region detection** — `enrichAndDetectRegions()` replaces two separate `page.evaluate()` calls with one (~150ms saved per parse).
+- **Verification fast-paths** — 2 new fast-paths (element count delta ≥5, focus change) skip the LLM verification call. Scroll actions skip verification entirely.
+- **Compact prompt format** — `id | role | name | region` pipe format replaces pretty-printed JSON in all LLM prompts (~40% token reduction).
+- **Batch scroll discovery** — 2 batches × 3 quick scrolls + 500ms settle instead of 5 × (scroll + 3s settle).
+- **State cache TTL 500ms → 2000ms** — reduces redundant AOM parses in multi-action workflows.
+- **MutationObserver tuning** — only observes `childList` + `subtree` (ignores attribute/characterData noise from SPAs).
+- **Stop-word filtering** — tokenizer filters common words ("on", "the", "to") to prevent false-positive relevance matches.
+
+### Fixed
+
+- **Viewport coordinate handling** — `performAction()` now auto-scrolls elements into view and converts document-space AOM coordinates to viewport-space before clicking. Previously, all elements below the fold failed silently.
+- **User-Agent strings updated** — Chrome 123/124 → Chrome 136/137, Firefox 125 → Firefox 138. Prevents "unsupported browser" blocks on modern websites.
+- **Semantic fallback false-success** — the semantic fallback now verifies that the page state actually changed after the action. If unchanged, the action is marked as failed instead of returning a misleading `success: true`.
+- **Agent fill/append/press verification** — `fill`, `append`, `press`, `type`, and `select` actions are excluded from the agent-loop's state-change check, since they modify field values without altering the DOM structure.
+
+---
+
 ## [3.10.1] - 2026-04-08
 
 ### Fixed

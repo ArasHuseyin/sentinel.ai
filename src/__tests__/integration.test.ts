@@ -63,7 +63,12 @@ function makeMockPage() {
       press: jest.fn(async () => {}),
       type: jest.fn(async () => {}),
     },
-    evaluate: jest.fn(async () => {}),
+    evaluate: jest.fn(async (_fn: any, args?: any) => {
+      // Scroll offset query has no second argument; return {x:0,y:0} so the
+      // viewport-relative coordinate calculation does not throw.
+      if (args === undefined) return { x: 0, y: 0 };
+      return null;
+    }),
     waitForNavigation: jest.fn(async () => {}),
     waitForTimeout: jest.fn(async () => {}),
     locator: jest.fn(() => locatorInstance),
@@ -172,8 +177,15 @@ describe('Integration: ActionEngine + Verifier', () => {
 describe('Integration: AgentLoop', () => {
   it('completes a multi-step goal', async () => {
     const page = makeMockPage();
-    const state = makeState();
-    const stateParser = makeMockStateParser(state);
+    // Provide distinct states so the post-act state-change check in the agent
+    // loop does not mistakenly mark successful steps as failed.  The loop
+    // compares state[start-of-step] with state[after-act]; they must differ.
+    // Each act step consumes 3 parse calls (start / action-engine / post-act),
+    // the goal-complete step consumes 1, and reflection consumes 1 → 11 total.
+    const states = Array.from({ length: 11 }, (_, i) =>
+      makeState({ url: `https://example.com/step${i}` })
+    );
+    const stateParser = makeMockStateParser(states);
 
     // LLM mock: alternates between planner calls and action engine calls.
     // Pattern per step: planner.planNextStep → actionEngine.act
@@ -318,7 +330,7 @@ describe('Integration: ExtractionEngine', () => {
     expect(promptArg).toContain('Widget A');
     expect(promptArg).toContain('Products');
     expect(promptArg).toContain(pageTextContent);
-    expect(promptArg).toContain('INTERACTIVE ELEMENTS (AOM)');
+    expect(promptArg).toContain('INTERACTIVE ELEMENTS (AOM,');
     expect(promptArg).toContain('VISIBLE PAGE TEXT');
   });
 

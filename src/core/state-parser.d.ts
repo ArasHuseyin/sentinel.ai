@@ -1,9 +1,11 @@
 import type { CDPSession, Page } from 'playwright';
+export type PageRegion = 'header' | 'nav' | 'sidebar' | 'main' | 'footer' | 'modal' | 'popup';
 export interface UIElement {
     id: number;
     role: string;
     name: string;
     description?: string;
+    region?: PageRegion;
     boundingClientRect: {
         x: number;
         y: number;

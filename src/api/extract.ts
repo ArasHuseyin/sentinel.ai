@@ -25,8 +25,8 @@ export class ExtractionEngine {
       Page URL: ${aomState.url}
       Page Title: ${aomState.title}
       
-      --- INTERACTIVE ELEMENTS (AOM) ---
-      ${JSON.stringify(aomState.elements.map(e => ({ id: e.id, role: e.role, name: e.name })), null, 2)}
+      --- INTERACTIVE ELEMENTS (AOM, id | role | name | region) ---
+      ${aomState.elements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
       
       --- VISIBLE PAGE TEXT ---
       ${pageText}
