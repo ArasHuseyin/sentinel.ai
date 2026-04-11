@@ -1154,9 +1154,11 @@ export class ActionEngine {
     // Prioritize buttons that actually ACCEPT (not "settings", "einstellungen", "manage")
     const acceptPattern = /akzeptieren|accept|zustimmen|agree|got it|verstanden|alle /i;
     const settingsPattern = /einstell|manage|settings|preferences|verwalten|anpassen/i;
+    // Only click accept-type elements. For links: require accept keywords (links without
+    // them are usually navigation to cookie policy pages, not dismiss actions).
+    // For buttons without accept keywords: only click if they don't match settings pattern.
     const cookieElement = cookieCandidates.find(e => acceptPattern.test(e.name) && !settingsPattern.test(e.name))
-      ?? cookieCandidates.find(e => !settingsPattern.test(e.name))
-      ?? cookieCandidates[0];
+      ?? cookieCandidates.find(e => e.role === 'button' && !settingsPattern.test(e.name));
     if (cookieElement) {
       this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
       try {

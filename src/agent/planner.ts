@@ -77,6 +77,7 @@ Rules:
 - If form fields are listed in the "Form fields" section above, fill the ones relevant to the goal BEFORE clicking any buttons. Fill top-to-bottom, one at a time. Skip optional or irrelevant fields.
 - Buttons that display a current value (like a brand name, category, or date) next to a label are dropdown selectors — click them to open the dropdown and change the value.
 - Many forms are multi-step: after filling all visible fields, click the submit/next/proceed button to advance. The remaining fields will appear on the next page.
+- Never type URLs into search fields. You are already on the correct page — use the search and form fields for their intended purpose.
 - If a previous step failed or had no effect, try a completely different approach — do NOT repeat the same action.
 - If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.
 

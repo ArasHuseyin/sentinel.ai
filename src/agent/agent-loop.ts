@@ -134,7 +134,19 @@ export class AgentLoop {
 
       // 3. Check if goal is already complete
       if (planned.isGoalComplete) {
-        console.log(`[Agent] ✅ Goal marked complete by planner.`);
+        // If the planner marks goal complete AND plans an extraction,
+        // execute the extraction before stopping — the data is part of the goal.
+        if (planned.type === 'extract') {
+          console.log(`[Agent] ✅ Goal complete — executing final extraction.`);
+          try {
+            const extracted = await this.extractionEngine.extract(
+              planned.instruction, planned.extractionSchema as any
+            );
+            extractedData = extracted;
+          } catch { /* extraction failed, continue with goalAchieved */ }
+        } else {
+          console.log(`[Agent] ✅ Goal marked complete by planner.`);
+        }
         const event: AgentStepEvent = {
           stepNumber,
           type: planned.type ?? 'act',
@@ -143,6 +155,7 @@ export class AgentLoop {
           success: true,
           pageUrl: state.url,
           pageTitle: state.title,
+          ...(extractedData !== undefined ? { data: extractedData } : {}),
         };
         stepEvents.push(event);
         options.onStep?.(event);
