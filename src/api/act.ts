@@ -303,7 +303,14 @@ export class ActionEngine {
      */
     private verbose: 0 | 1 | 2 | 3 = 0,
     /** When true, mouse moves along a Bézier curve and per-action delays are added. */
-    private humanLike = false
+    private humanLike = false,
+    /**
+     * Element detection mode:
+     *  'aom' (default) — AOM coordinates, vision only as late fallback
+     *  'hybrid' — AOM primary, vision on coordinate mismatch
+     *  'vision' — Vision as primary, AOM as fallback
+     */
+    private mode: 'aom' | 'hybrid' | 'vision' = 'aom'
   ) {}
 
   private log(level: 1 | 2 | 3, message: string): void {
@@ -349,11 +356,12 @@ export class ActionEngine {
     }
 
     // ── Scroll-Discovery: find not-yet-rendered elements ──────────────────────
-    // When no elements match the instruction keywords, the target may be outside
-    // the viewport in a virtual-scrolling container. Scroll and re-parse until
-    // a relevant element appears or attempts are exhausted.
+    // Only scroll when the page has very few elements (likely a loading/empty state)
+    // AND no keyword matches exist. When the page has many elements, the LLM can
+    // pick the right one even without keyword overlap — scrolling is wasteful.
     let currentState = state;
-    if (currentState.elements.length > 0 && !hasRelevantElements(currentState.elements, resolvedInstruction)) {
+    const fewButSomeElements = currentState.elements.length > 0 && currentState.elements.length < 10;
+    if (fewButSomeElements && !hasRelevantElements(currentState.elements, resolvedInstruction)) {
       this.log(2, `[Act] No relevant elements for "${resolvedInstruction}" — trying scroll discovery`);
       for (let batch = 0; batch < MAX_SCROLL_DISCOVERY_BATCHES; batch++) {
         // Batch: scroll 3 times quickly with short pauses between
@@ -451,6 +459,46 @@ export class ActionEngine {
 
     this.log(2, `[Act] reasoning: ${decision.reasoning}`);
     this.log(3, `[Act] decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`);
+
+    // ── Vision-primary mode: use screenshot + vision LLM before AOM coordinates ──
+    if (this.mode === 'vision' && this.visionGrounding && !isScrollWithoutTarget) {
+      const firstTarget = currentState.elements.find(e => e.id === candidateIds[0]) ?? null;
+      if (firstTarget) {
+        try {
+          const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
+          const screenshot = await this.visionGrounding.takeScreenshot(this.page);
+          const bbox = await this.visionGrounding.findElement(
+            `${decision.action} on "${firstTarget.name}"`,
+            screenshot,
+            viewport.width,
+            viewport.height
+          );
+          if (bbox) {
+            const cx = bbox.x + bbox.width / 2;
+            const cy = bbox.y + bbox.height / 2;
+            if (decision.action === 'fill' || decision.action === 'append') {
+              await this.page.mouse.click(cx, cy);
+              await this.page.waitForTimeout(150);
+              await this.page.keyboard.press('Control+a');
+              await this.page.waitForTimeout(150);
+              await this.page.keyboard.type(decision.value || '', { delay: 90 });
+            } else {
+              await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${firstTarget.name}"`);
+            }
+            await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+            const selector = await generateSelector(this.page, firstTarget) ?? undefined;
+            return {
+              success: true,
+              message: `Successfully performed ${decision.action} on "${firstTarget.name}" (via Vision)`,
+              action: `${decision.action} on "${firstTarget.name}" (${firstTarget.role})`,
+              ...(selector !== undefined ? { selector } : {}),
+            };
+          }
+        } catch (visionErr: any) {
+          this.warn(2, `[Act] Vision-primary failed: ${visionErr.message} — falling back to AOM`);
+        }
+      }
+    }
 
     // ── Try each candidate in order ─────────────────────────────────────────
     // On failure, fall through to the next candidate without a new LLM call.
@@ -701,6 +749,19 @@ export class ActionEngine {
 
     const viewport = this.page.viewportSize() ?? { width: 1920, height: 1080 };
 
+    // Skip coordinate-based clicking entirely when coordinates are clearly impossible
+    // (e.g. y=-3184 on Booking.com autocomplete). Go straight to locator fallback.
+    if (cy < -500 || cx < -500) {
+      this.warn(2, `[Act] Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`);
+      const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
+      if (action === 'fill') {
+        await locator.fill(value || '', { timeout: 5000 });
+      } else {
+        await locator.click({ timeout: 5000 });
+      }
+      return;
+    }
+
     // Get scroll position to convert document coords to viewport coords
     let scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
       .catch(() => ({ x: 0, y: 0 }));
@@ -781,10 +842,25 @@ export class ActionEngine {
         const mismatch = hitName.length > 2 && targetLower.length > 2 &&
           !hitName.includes(targetLower) && !targetLower.includes(hitName);
         if (mismatch) {
-          throw new ActionError(
-            `Coordinate mismatch: target is "${target.name}" but element at (${clickX}, ${clickY}) is "${hitName}"`,
-            { element: target.name, hitElement: hitName }
-          );
+          // Coordinates point to wrong element — use Playwright locator as direct fallback.
+          // This is more reliable than coordinate-based clicking for dynamically positioned
+          // elements (dropdown options, conditional form fields, etc.).
+          this.warn(2, `[Act] Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`);
+          try {
+            const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
+            if (action === 'fill') {
+              await locator.fill(value || '', { timeout: 5000 });
+            } else {
+              await locator.click({ timeout: 5000 });
+            }
+            return; // locator click succeeded — skip coordinate-based click
+          } catch {
+            // Locator fallback also failed — throw the original mismatch error
+            throw new ActionError(
+              `Coordinate mismatch: target is "${target.name}" but element at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) is "${hitName}"`,
+              { element: target.name, hitElement: hitName }
+            );
+          }
         }
       }
     }
@@ -835,6 +911,23 @@ export class ActionEngine {
         break;
 
       case 'fill': {
+        // Range slider: set value directly via JS (can't type into sliders)
+        if (target && target.role === 'slider' && value) {
+          await this.page.evaluate(
+            ({ x, y, val }: { x: number; y: number; val: string }) => {
+              const el = document.elementFromPoint(x, y) as HTMLInputElement | null;
+              const input = el?.tagName === 'INPUT' ? el : el?.querySelector('input[type="range"]') as HTMLInputElement | null;
+              if (input) {
+                input.value = val;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            },
+            { x: clickX, y: clickY, val: value }
+          );
+          break;
+        }
+
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
 
         // For combobox/listbox: click may open a dropdown trigger.
@@ -1064,6 +1157,10 @@ export class ActionEngine {
       // 4. Plain text match as last resort
       target.name
         ? this.page.getByText(target.name, { exact: false }).first()
+        : null,
+      // 5. If name contains ':' context prefix, try without it (e.g. "Info: Weiter" → "Weiter")
+      target.name?.includes(':')
+        ? this.page.getByRole(target.role as any, { name: target.name.split(':').pop()!.trim() })
         : null,
     ].filter((l): l is NonNullable<typeof l> => l !== null);
 

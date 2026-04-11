@@ -77,6 +77,9 @@ Rules:
 - If form fields are listed in the "Form fields" section above, fill the ones relevant to the goal BEFORE clicking any buttons. Fill top-to-bottom, one at a time. Skip optional or irrelevant fields.
 - Buttons that display a current value (like a brand name, category, or date) next to a label are dropdown selectors — click them to open the dropdown and change the value.
 - Many forms are multi-step: after filling all visible fields, click the submit/next/proceed button to advance. The remaining fields will appear on the next page.
+- Date pickers: click the date input to open the calendar, then navigate months with prev/next arrows if needed, then click the target day. Do NOT try to type dates into date picker fields — always use the calendar UI.
+- Sliders (role=slider): use the fill action with a numeric value to set the slider position. Do NOT try to drag sliders.
+- If a form field is optional and not mentioned in the goal, skip it and click the submit/next button.
 - Never type URLs into search fields. You are already on the correct page — use the search and form fields for their intended purpose.
 - If a previous step failed or had no effect, try a completely different approach — do NOT repeat the same action.
 - If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.

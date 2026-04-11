@@ -8,6 +8,7 @@ import { slugifyInstruction } from '../core/selector-generator.js';
 import { AgentMemory } from './memory.js';
 import { Planner } from './planner.js';
 import { withSpan } from '../utils/telemetry.js';
+import { generateTOTP } from '../utils/totp.js';
 
 /** Returns a key derived from `slug` that does not yet exist in `map`. */
 function uniqueKey(slug: string, map: Record<string, unknown>): string {
@@ -62,6 +63,8 @@ export class AgentLoop {
   private planner: Planner;
   private memory: AgentMemory;
 
+  private mfaConfig: { type: 'totp'; secret: string; digits?: number; period?: number } | undefined;
+
   constructor(
     private actionEngine: ActionEngine,
     private extractionEngine: ExtractionEngine,
@@ -69,10 +72,12 @@ export class AgentLoop {
     private gemini: LLMProvider,
     private page?: Page,
     private visionGrounding?: VisionGrounding,
-    plannerLLM?: LLMProvider
+    plannerLLM?: LLMProvider,
+    mfaConfig?: { type: 'totp'; secret: string; digits?: number; period?: number }
   ) {
     this.planner = new Planner(plannerLLM ?? gemini);
     this.memory = new AgentMemory(20);
+    this.mfaConfig = mfaConfig;
   }
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<AgentResult> {
@@ -122,9 +127,16 @@ export class AgentLoop {
         }
       }
 
+      // Generate TOTP code if MFA is configured — inject into goal so planner can use it
+      let effectiveGoal = goal;
+      if (this.mfaConfig?.type === 'totp') {
+        const code = generateTOTP(this.mfaConfig.secret, this.mfaConfig.digits, this.mfaConfig.period);
+        effectiveGoal = `${goal}\n\nIMPORTANT: If you see a 2FA/verification code/OTP field, fill it with: ${code}`;
+      }
+
       let planned;
       try {
-        planned = await this.planner.planNextStep(goal, state, this.memory, pageDescription);
+        planned = await this.planner.planNextStep(effectiveGoal, state, this.memory, pageDescription);
       } catch (err: any) {
         console.error(`[Agent] Planner error: ${err.message}`);
         break;
@@ -137,13 +149,21 @@ export class AgentLoop {
         // If the planner marks goal complete AND plans an extraction,
         // execute the extraction before stopping — the data is part of the goal.
         if (planned.type === 'extract') {
-          console.log(`[Agent] ✅ Goal complete — executing final extraction.`);
-          try {
-            const extracted = await this.extractionEngine.extract(
-              planned.instruction, planned.extractionSchema as any
-            );
-            extractedData = extracted;
-          } catch { /* extraction failed, continue with goalAchieved */ }
+          if (extractedData !== undefined) {
+            // Already extracted in a previous step — reuse, don't call LLM again
+            console.log(`[Agent] ✅ Goal complete (extraction already done).`);
+          } else {
+            console.log(`[Agent] ✅ Goal complete — executing final extraction.`);
+            try {
+              const extracted = await this.extractionEngine.extract(
+                planned.instruction, planned.extractionSchema as any
+              );
+              extractedData = extracted;
+              console.log(`[Agent] 📊 Extracted:`, JSON.stringify(extracted).slice(0, 500));
+            } catch (err: any) {
+              console.warn(`[Agent] ⚠️  Extraction failed: ${err.message}`);
+            }
+          }
         } else {
           console.log(`[Agent] ✅ Goal marked complete by planner.`);
         }
@@ -187,6 +207,7 @@ export class AgentLoop {
             const extracted = await this.extractionEngine.extract(planned.instruction, schema);
             extractedData = extracted;
             stepData = extracted;
+            console.log(`[Agent] 📊 Extracted:`, JSON.stringify(extracted).slice(0, 500));
             span.setAttributes({ 'sentinel.success': true });
             return { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
           } catch (err: any) {

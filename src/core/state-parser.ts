@@ -449,6 +449,7 @@ export class StateParser {
           roleAttr ||
           (inputType === 'radio' ? 'radio' :
            inputType === 'checkbox' ? 'checkbox' :
+           inputType === 'range' ? 'slider' :
            inputType === 'email' || inputType === 'text' || inputType === 'password' || inputType === 'tel' ? 'textbox' :
            inputType === 'number' ? 'spinbutton' :
            inputType === 'search' ? 'searchbox' :
@@ -941,6 +942,60 @@ export class StateParser {
           x: containerRect.x + sx, y: containerRect.y + sy,
           width: containerRect.width, height: containerRect.height,
         });
+      }
+
+      // Pattern 9: Custom datepicker widgets (CSS-class based)
+      // Detects calendar/date picker widgets from popular libraries
+      try {
+        const datePickerSelector = [
+          '.ant-picker',
+          '[class*="DatePicker"]',
+          '[class*="datepicker"]',
+          '[class*="date-picker"]',
+          '[class*="MuiDatePicker"]',
+          '[class*="react-datepicker"]',
+          '[class*="flatpickr"]',
+          '[data-testid*="date"]',
+          'input[data-date]',
+        ].join(',');
+
+        const datePickers = document.querySelectorAll(datePickerSelector);
+        for (const picker of Array.from(datePickers)) {
+          const htmlEl = picker as HTMLElement;
+          const rect = htmlEl.getBoundingClientRect();
+          if (rect.width < 10 || rect.height < 10) continue;
+          if (rect.top > vh || rect.left > vw) continue;
+
+          const name = (() => {
+            const inputEl = htmlEl.querySelector('input');
+            if (inputEl?.id) {
+              const label = document.querySelector(`label[for="${inputEl.id}"]`);
+              if (label) return (label as HTMLElement).textContent?.trim();
+            }
+            return htmlEl.getAttribute('aria-label') ||
+              htmlEl.querySelector('input')?.getAttribute('placeholder') ||
+              htmlEl.querySelector('input')?.getAttribute('aria-label') ||
+              '';
+          })() || '';
+
+          if (!name) continue;
+
+          const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const value = (htmlEl.querySelector('input') as HTMLInputElement)?.value || '';
+
+          results.push({
+            role: 'datepicker',
+            name,
+            value: value || undefined,
+            x: rect.x + sx, y: rect.y + sy,
+            width: rect.width, height: rect.height,
+          });
+        }
+      } catch {
+        // datepicker selector may fail on some pages
       }
 
       return results;
