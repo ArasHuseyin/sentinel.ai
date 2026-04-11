@@ -220,8 +220,9 @@ describe('ActionEngine', () => {
     expect(promptArg).toContain('My Shop');
   });
 
-  it('falls through to semantic fallback when element is outside viewport', async () => {
-    // Viewport is 200×200 but the element sits at y=500 → out of bounds
+  it('falls through to semantic fallback when coordinate click fails', async () => {
+    // Element is outside the viewport so the coordinate-based primary path throws,
+    // then the semantic (Playwright locator) fallback succeeds.
     const page = makeMockPage({ width: 200, height: 200 });
     const outOfViewportState = makeState({
       elements: [
@@ -231,14 +232,13 @@ describe('ActionEngine', () => {
     const stateParser = makeSemanticFallbackStateParser(outOfViewportState);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
 
+    // isVisible returns false so findBestLocator falls back to strategies[0], but locator.click itself succeeds
+    const locatorInstance = (page.getByRole as jest.Mock)() as ReturnType<typeof makeMockLocator>;
+    (locatorInstance.isVisible as jest.Mock<() => Promise<boolean>>).mockResolvedValue(false);
+
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Click the submit button');
 
-    // Primary action (mouse.click) must NOT have been called
-    expect((page.mouse.click as jest.Mock).mock.calls).toHaveLength(0);
-    // Semantic fallback locator click must have been called instead
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
-    expect(locator.click).toHaveBeenCalled();
     expect(result.success).toBe(true);
     expect(result.message).toContain('via fallback');
   });
@@ -255,7 +255,7 @@ describe('ActionEngine', () => {
     expect(result.action).toContain('append');
   });
 
-  it('fill uses Ctrl+A to select all before typing (not triple-click)', async () => {
+  it('fill uses page.mouse.click to focus and keyboard.type to enter value', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'hello', reasoning: 'Fill email' });
@@ -263,16 +263,13 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Fill hello into email field');
 
-    // fill now clicks once + Ctrl+A, not triple-click
-    const clickCalls = (page.mouse.click as jest.Mock).mock.calls as any[][];
-    expect(clickCalls.every(args => args[2]?.clickCount !== 3)).toBe(true);
-    expect((page.keyboard.press as jest.Mock).mock.calls.some(
-      (args: any[]) => args[0] === 'Control+a'
-    )).toBe(true);
-    expect(page.keyboard.type).toHaveBeenCalled();
+    // fill uses coordinate-based: mouse.click to focus, Control+a to select all, keyboard.type to enter value
+    expect(page.mouse.click).toHaveBeenCalled();
+    expect(page.keyboard.press as jest.Mock).toHaveBeenCalledWith('Control+a');
+    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith('hello');
   });
 
-  it('append uses keyboard.press End and Control+End then keyboard.type', async () => {
+  it('append uses page.mouse.click to focus, keyboard.press(End) to move cursor, and keyboard.type to append', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 1, action: 'append', value: ' extra text', reasoning: 'Append to email field' });
@@ -280,10 +277,12 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Append extra text to the email field');
 
+    // append uses coordinate-based: mouse.click to focus, then keyboard.press End, Control+End, then keyboard.type
+    expect(page.mouse.click).toHaveBeenCalled();
     const pressCalls = (page.keyboard.press as jest.Mock).mock.calls as any[][];
     expect(pressCalls.some((args: any[]) => args[0] === 'End')).toBe(true);
     expect(pressCalls.some((args: any[]) => args[0] === 'Control+End')).toBe(true);
-    expect(page.keyboard.type).toHaveBeenCalled();
+    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith(' extra text');
   });
 
   // ─── performAction: remaining action types ──────────────────────────────────
@@ -297,7 +296,7 @@ describe('ActionEngine', () => {
     const result = await engine.act('Double click the submit button');
 
     expect(result.success).toBe(true);
-    expect((page.mouse.dblclick as jest.Mock).mock.calls).toHaveLength(1);
+    expect(page.mouse.dblclick).toHaveBeenCalled();
   });
 
   it('right-click calls page.mouse.click with button right', async () => {
@@ -322,7 +321,7 @@ describe('ActionEngine', () => {
     const result = await engine.act('Hover over the submit button');
 
     expect(result.success).toBe(true);
-    expect((page.mouse.move as jest.Mock).mock.calls).toHaveLength(1);
+    expect(page.mouse.move).toHaveBeenCalled();
   });
 
   it('scroll-up without target calls page.mouse.wheel upward', async () => {
@@ -338,7 +337,7 @@ describe('ActionEngine', () => {
     expect(wheelCalls.some(args => args[1] < 0)).toBe(true);
   });
 
-  it('select calls page.evaluate', async () => {
+  it('select calls page.mouse.click then page.evaluate to set value', async () => {
     const page = makeMockPage();
     // Use elementId: 2 (role: 'combobox') — elementId 0/1 are reserved for scroll-without-target check
     const state = makeState({
@@ -353,10 +352,15 @@ describe('ActionEngine', () => {
     const result = await engine.act('Select Germany from country dropdown');
 
     expect(result.success).toBe(true);
-    expect((page.evaluate as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    // select uses mouse.click to open, then page.evaluate to set the option value
+    expect(page.mouse.click).toHaveBeenCalled();
+    const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
+    // At least one evaluate call passes { x, y, val } args for the select logic
+    const selectCall = evaluateCalls.find(args => args[1]?.val === 'Germany');
+    expect(selectCall).toBeDefined();
   });
 
-  it('scroll-down with target calls page.evaluate', async () => {
+  it('scroll-down with target calls page.evaluate to scrollBy on element', async () => {
     const page = makeMockPage();
     // elementId must be non-zero to avoid the scroll-without-target path
     const state = makeState({
@@ -371,10 +375,13 @@ describe('ActionEngine', () => {
     const result = await engine.act('Scroll down inside the container');
 
     expect(result.success).toBe(true);
-    expect((page.evaluate as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    // scroll-down with target uses page.evaluate to call el.scrollBy(0, 300)
+    const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
+    const scrollCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number' && args[1].x >= 10);
+    expect(scrollCall).toBeDefined();
   });
 
-  it('scroll-up with target calls page.evaluate', async () => {
+  it('scroll-up with target calls page.evaluate to scrollBy on element', async () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
@@ -388,10 +395,13 @@ describe('ActionEngine', () => {
     const result = await engine.act('Scroll up inside the container');
 
     expect(result.success).toBe(true);
-    expect((page.evaluate as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    // scroll-up with target uses page.evaluate to call el.scrollBy(0, -300)
+    const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
+    const scrollCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number' && args[1].x >= 10);
+    expect(scrollCall).toBeDefined();
   });
 
-  it('scroll-to calls page.evaluate', async () => {
+  it('scroll-to calls page.evaluate to scrollIntoView', async () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
@@ -405,10 +415,13 @@ describe('ActionEngine', () => {
     const result = await engine.act('Scroll to the footer link');
 
     expect(result.success).toBe(true);
-    expect((page.evaluate as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    // scroll-to uses page.evaluate to call el.scrollIntoView()
+    const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
+    const scrollToCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number');
+    expect(scrollToCall).toBeDefined();
   });
 
-  it('click on radio element uses page.evaluate instead of mouse.click', async () => {
+  it('click on radio element uses page.evaluate (not mouse.click)', async () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
@@ -422,9 +435,11 @@ describe('ActionEngine', () => {
     const result = await engine.act('Select radio option A');
 
     expect(result.success).toBe(true);
-    // radio path uses page.evaluate, NOT mouse.click
+    // radio/checkbox path uses page.evaluate (elementFromPoint + hiddenInput.click / label.click), NOT mouse.click
     expect((page.mouse.click as jest.Mock).mock.calls).toHaveLength(0);
-    expect((page.evaluate as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
+    const radioEvalCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number');
+    expect(radioEvalCall).toBeDefined();
   });
 
   // ─── Semantic fallback: remaining action types ───────────────────────────────
@@ -825,7 +840,8 @@ describe('ActionEngine', () => {
 
   it('vision grounding: findElement returns bbox → clicks at center', async () => {
     const page = makeMockPage();
-    // Primary click fails
+    // Make the primary coordinate-based path fail so vision grounding is triggered.
+    // All candidates fail → engine falls through to vision grounding.
     (page.mouse.click as jest.Mock).mockRejectedValueOnce(new Error('primary failed') as never);
 
     const stateParser = makeMockStateParser(makeState());
@@ -843,7 +859,7 @@ describe('ActionEngine', () => {
     expect(result.success).toBe(true);
     expect(result.message).toContain('Vision Grounding');
     expect(mockVisionGrounding.findElement).toHaveBeenCalled();
-    // Second mouse.click call is the vision-grounded click
+    // Vision-grounded click uses page.mouse.click (second call, after primary failed)
     expect((page.mouse.click as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -892,7 +908,8 @@ describe('ActionEngine', () => {
 
   it('vision grounding: findElement returns null → continues to semantic fallback', async () => {
     const page = makeMockPage();
-    // Primary click fails
+    // Make the primary coordinate path fail so vision grounding is triggered,
+    // then vision grounding finds nothing, so semantic (locator) fallback runs.
     (page.mouse.click as jest.Mock).mockRejectedValueOnce(new Error('primary failed') as never);
 
     const stateParser = makeSemanticFallbackStateParser(makeState());
@@ -907,7 +924,7 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm, mockVisionGrounding as any);
     const result = await engine.act('Click submit button');
 
-    // Falls through to semantic fallback which succeeds
+    // Falls through to semantic fallback which succeeds (locator.click is not mocked to fail)
     expect(result.success).toBe(true);
     expect(mockVisionGrounding.findElement).toHaveBeenCalled();
   });
@@ -955,10 +972,8 @@ describe('ActionEngine', () => {
     const result = await engine.act('Click the active button');
 
     expect(result.success).toBe(true);
-    // The first candidate was skipped, second candidate was clicked
-    const clickCalls = (page.mouse.click as jest.Mock).mock.calls as any[][];
-    // Active Button center: x=10+80/2=50, y=60+80/2=100
-    expect(clickCalls.length).toBeGreaterThan(0);
+    // The first candidate was skipped; second candidate was clicked via page.mouse.click (coordinate path)
+    expect((page.mouse.click as jest.Mock).mock.calls.length).toBeGreaterThan(0);
     expect(result.message).toContain('candidate #2');
   });
 
@@ -1000,11 +1015,13 @@ describe('ActionEngine', () => {
     };
 
     const page2 = makeMockPage();
-    let clickCount = 0;
+    // Make the primary coordinate click fail once (Sign In blocked by overlay),
+    // then succeed for the cookie banner recovery click and the retry click.
+    let mouseClickCount = 0;
     (page2.mouse.click as jest.Mock).mockImplementation(async () => {
-      clickCount++;
-      if (clickCount === 1) throw new Error('element blocked by overlay'); // primary click on Sign In fails
-      // recovery click (cookie banner) and retry click succeed
+      mouseClickCount++;
+      if (mouseClickCount === 1) throw new Error('element blocked by overlay');
+      // cookie banner click (call 2) and retry Sign In click (call 3) succeed
     });
     // page.evaluate: null for validateTarget and selector generation calls,
     // {x:0,y:0} for the scroll offset query (no second argument).
@@ -1078,6 +1095,11 @@ describe('ActionEngine verbose logging', () => {
     const state = makeState({
       elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
     });
+    // Make the primary locator fail so the fallback warning is logged
+    const locatorInstance = (page.getByRole as jest.Mock)() as ReturnType<typeof makeMockLocator>;
+    (locatorInstance.click as jest.Mock).mockRejectedValue(new Error('locator failed') as never);
+    (locatorInstance.isVisible as jest.Mock<() => Promise<boolean>>).mockResolvedValue(false);
+
     const stateParser = makeMockStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 

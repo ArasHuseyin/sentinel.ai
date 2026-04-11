@@ -201,6 +201,9 @@ function tokenize(text: string): string[] {
  * elements the list is returned unchanged. Elements with a relevance score of 0
  * fill remaining slots in their original order (stable sort).
  */
+/** Keywords that identify overlay/blocker elements that should never be filtered out. */
+const BLOCKER_KEYWORDS = /cookie|consent|akzeptieren|accept all|datenschutz|privacy|zustimmen/i;
+
 export function filterRelevantElements(
   elements: UIElement[],
   instruction: string,
@@ -211,7 +214,18 @@ export function filterRelevantElements(
   const tokens = tokenize(instruction);
   if (tokens.length === 0) return elements.slice(0, maxCount);
 
-  const scored = elements.map(el => {
+  // Always-keep: cookie/consent/blocker elements must never be filtered out
+  const alwaysKeep: typeof elements = [];
+  const rest: typeof elements = [];
+  for (const el of elements) {
+    if ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name)) {
+      alwaysKeep.push(el);
+    } else {
+      rest.push(el);
+    }
+  }
+
+  const scored = rest.map(el => {
     const text = `${el.role} ${el.name}`
       .toLowerCase()
       .replace(/[^a-z0-9äöüß\s]/g, ' ');
@@ -224,7 +238,8 @@ export function filterRelevantElements(
 
   // Stable sort: higher score first, original order preserved for ties
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, maxCount).map(s => s.el);
+  const remaining = maxCount - alwaysKeep.length;
+  return [...alwaysKeep, ...scored.slice(0, Math.max(0, remaining)).map(s => s.el)];
 }
 
 /**
@@ -341,7 +356,7 @@ export class ActionEngine {
       Instruction: "${resolvedInstruction}"
 
       Elements on page (id | role | name | region):
-      ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
+      ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
 
       Select the element to interact with and the action to perform.
       Return up to 3 candidate elements ranked by confidence (best first).
@@ -463,9 +478,39 @@ export class ActionEngine {
           ...(selector !== undefined ? { selector } : {}),
         };
       } catch (err: any) {
-        attempts.push({ path: 'coordinate-click', error: `candidate #${ci + 1}: ${err.message}` });
-        this.warn(2, `[Act] Candidate #${ci + 1} failed: ${err.message}`);
-        // Try next candidate
+        const errorMsg: string = err.message ?? '';
+        attempts.push({ path: 'coordinate-click', error: `candidate #${ci + 1}: ${errorMsg}` });
+        this.warn(2, `[Act] Candidate #${ci + 1} failed: ${errorMsg}`);
+
+        // If a widget/overlay intercepts pointer events, remove it and retry THIS candidate
+        if (errorMsg.includes('intercepts pointer events') && ci === 0) {
+          this.log(2, `[Act] Pointer-intercepting element detected — removing and retrying`);
+          try {
+            await this.page.evaluate(() => {
+              document.querySelectorAll(
+                'getsitecontrol-widget, [class*="popup"], [class*="overlay"], [id*="widget"], [class*="chat-widget"], [class*="intercom"]'
+              ).forEach(el => {
+                const s = window.getComputedStyle(el);
+                if (s.position === 'fixed' || s.position === 'absolute' || s.zIndex > '999') el.remove();
+              });
+            });
+            // Retry the same candidate after removing the blocker
+            await this.performAction(decision.action, target, decision.value);
+            await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+            if (this.locatorCache && target && !isScrollWithoutTarget) {
+              this.locatorCache.set(currentState.url, resolvedInstruction, {
+                action: decision.action, role: target.role, name: target.name,
+                ...(decision.value !== undefined ? { value: decision.value } : {}),
+              });
+            }
+            return {
+              success: true,
+              message: `Successfully performed ${decision.action}${target ? ` on "${target.name}"` : ''} (after removing blocker)`,
+              action: actionLabel,
+              ...(selector !== undefined ? { selector } : {}),
+            };
+          } catch { /* retry also failed — continue to next candidate */ }
+        }
       }
     }
 
@@ -600,10 +645,16 @@ export class ActionEngine {
     const cx = x + width / 2;
     const cy = y + height / 2;
 
-    // AOM coordinates are in document (layout) space. If the element is
-    // outside the current viewport, scroll it into view before clicking.
-    const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
-    if (cx < 0 || cy < 0 || cx > viewport.width || cy > viewport.height) {
+    const viewport = this.page.viewportSize() ?? { width: 1920, height: 1080 };
+
+    // Get scroll position to convert document coords to viewport coords
+    let scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+      .catch(() => ({ x: 0, y: 0 }));
+    let vpCx = cx - (scrollOffset?.x ?? 0);
+    let vpCy = cy - (scrollOffset?.y ?? 0);
+
+    // If element is outside viewport, scroll it into view
+    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
       await this.page.evaluate(
         ({ x, y }: { x: number; y: number }) => {
           window.scrollTo({
@@ -614,16 +665,14 @@ export class ActionEngine {
         },
         { x: cx, y: cy }
       );
-      // Wait briefly for scroll to complete
       await this.page.waitForTimeout(100);
+
+      scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+        .catch(() => ({ x: 0, y: 0 }));
+      vpCx = cx - (scrollOffset?.x ?? 0);
+      vpCy = cy - (scrollOffset?.y ?? 0);
     }
 
-    // Recalculate viewport-relative coordinates after possible scroll
-    const scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
-    const vpCx = cx - scrollOffset.x;
-    const vpCy = cy - scrollOffset.y;
-
-    // Final viewport bounds check after scroll
     if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
       throw new ActionError(
         `Element "${target.name}" is outside viewport at (${vpCx.toFixed(0)}, ${vpCy.toFixed(0)}) even after scrolling`,
@@ -631,11 +680,10 @@ export class ActionEngine {
       );
     }
 
-    // Use viewport-relative coordinates for all mouse operations
     const clickX = vpCx;
     const clickY = vpCy;
 
-    // Human-like: move mouse along a Bézier curve to the target, then pause briefly
+    // Human-like: move mouse along a Bézier curve to the target
     if (this.humanLike && (
       action === 'click' || action === 'double-click' || action === 'right-click' ||
       action === 'hover' || action === 'fill' || action === 'append'
@@ -655,23 +703,14 @@ export class ActionEngine {
     switch (action) {
       case 'click':
         if (target.role === 'radio' || target.role === 'checkbox') {
-          // Radio/checkbox: use JS click at viewport-relative coords
-          // CSS-styled radio/checkbox inputs are often visually replaced by a
-          // <label> or <div>; the actual <input> is hidden (display:none / opacity:0).
-          // Playwright's mouse.click on invisible inputs is unreliable — use JS instead.
           await this.page.evaluate(
             ({ x, y }: { x: number; y: number }) => {
               const el = document.elementFromPoint(x, y) as HTMLElement | null;
               if (!el) return;
-              // Case 1: element wraps a hidden <input type="radio|checkbox">
-              const hiddenInput = el.querySelector(
-                'input[type="radio"], input[type="checkbox"]'
-              ) as HTMLInputElement | null;
+              const hiddenInput = el.querySelector('input[type="radio"], input[type="checkbox"]') as HTMLInputElement | null;
               if (hiddenInput) { hiddenInput.click(); return; }
-              // Case 2: element is inside a <label> that controls a hidden input
               const label = el.closest('label') as HTMLLabelElement | null;
               if (label) { label.click(); return; }
-              // Case 3: element itself is the best we can do
               el.click();
             },
             { x: clickX, y: clickY }
@@ -686,15 +725,43 @@ export class ActionEngine {
         break;
 
       case 'right-click':
-        await withTimeout(
-          this.page.mouse.click(clickX, clickY, { button: 'right' }),
-          10_000,
-          `right-click "${target.name}"`
-        );
+        await withTimeout(this.page.mouse.click(clickX, clickY, { button: 'right' }), 10_000, `right-click "${target.name}"`);
         break;
 
       case 'fill':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
+
+        // Combobox only (NOT listbox): click opens dropdown trigger,
+        // need to find & focus the actual search input that appears.
+        // Skipped for listbox — those are regular lists where the click
+        // itself is sufficient to start typing/filtering.
+        if (target.role === 'combobox') {
+          // Check if an input already received focus from the click
+          const needsInputSearch = await this.page.evaluate(() => {
+            const active = document.activeElement;
+            return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
+          }).catch(() => true);
+
+          if (needsInputSearch) {
+            await this.page.waitForTimeout(300);
+            await this.page.evaluate(
+              ({ x, y }: { x: number; y: number }) => {
+                const el = document.elementFromPoint(x, y) as HTMLElement | null;
+                let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
+                for (let depth = 0; depth < 5 && container; depth++) {
+                  const input = container.querySelector(
+                    'input[role="combobox"], input[type="search"], input[type="text"], ' +
+                    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
+                  ) as HTMLInputElement | null;
+                  if (input && input.offsetParent !== null) { input.focus(); return; }
+                  container = container.parentElement;
+                }
+              },
+              { x: clickX, y: clickY }
+            );
+          }
+        }
+
         await this.page.keyboard.press('Control+a');
         if (this.humanLike) {
           await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
@@ -705,8 +772,8 @@ export class ActionEngine {
 
       case 'append':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
-        await withTimeout(this.page.keyboard.press('End'), 10_000, `move to end "${target.name}"`);
-        await withTimeout(this.page.keyboard.press('Control+End'), 10_000, `move to absolute end "${target.name}"`);
+        await this.page.keyboard.press('End');
+        await this.page.keyboard.press('Control+End');
         if (this.humanLike) {
           await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
         } else {
@@ -720,60 +787,100 @@ export class ActionEngine {
 
       case 'press':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
-        await withTimeout(
-          this.page.keyboard.press(value || 'Enter'),
-          10_000,
-          `press "${value}" on "${target.name}"`
-        );
+        await this.page.keyboard.press(value || 'Enter');
         break;
 
       case 'select':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
-        await this.page.evaluate(
-          ({ x, y, val }: { x: number; y: number; val: string }) => {
-            const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
-            if (el && el.tagName === 'SELECT') {
-              const opt = Array.from(el.options).find(
-                o => o.text === val || o.value === val
+
+        if (target.role === 'combobox') {
+          // Custom combobox: click trigger → find input → type to filter → click option
+          const selectNeedsSearch = await this.page.evaluate(() => {
+            const active = document.activeElement;
+            return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
+          }).catch(() => true);
+
+          if (selectNeedsSearch) {
+            await this.page.waitForTimeout(300);
+            await this.page.evaluate(
+              ({ x, y }: { x: number; y: number }) => {
+                const el = document.elementFromPoint(x, y) as HTMLElement | null;
+                let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
+                for (let depth = 0; depth < 5 && container; depth++) {
+                  const input = container.querySelector(
+                    'input[role="combobox"], input[type="search"], input[type="text"], ' +
+                    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
+                  ) as HTMLInputElement | null;
+                  if (input && input.offsetParent !== null) { input.focus(); input.select(); return; }
+                  container = container.parentElement;
+                }
+              },
+              { x: clickX, y: clickY }
+            );
+          }
+
+          await this.page.keyboard.type(value || '');
+          await this.page.waitForTimeout(500);
+
+          // Click the matching option from the dropdown
+          const clicked = await this.page.evaluate(
+            ({ val }: { val: string }) => {
+              const options = document.querySelectorAll(
+                '[role="option"], [role="listbox"] li, [role="listbox"] div[id]'
               );
-              if (opt) {
-                el.value = opt.value;
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+              // Exact match first
+              for (const opt of Array.from(options)) {
+                const text = (opt as HTMLElement).textContent?.trim();
+                if (text === val) { (opt as HTMLElement).click(); return true; }
               }
-            }
-          },
-          { x: clickX, y: clickY, val: value || '' }
-        );
+              // Partial match (contains)
+              for (const opt of Array.from(options)) {
+                const text = (opt as HTMLElement).textContent?.trim();
+                if (text && text.includes(val)) { (opt as HTMLElement).click(); return true; }
+              }
+              return false;
+            },
+            { val: value || '' }
+          );
+
+          if (!clicked) {
+            // Fallback: press Enter to confirm current selection
+            await this.page.keyboard.press('Enter');
+          }
+        } else {
+          // Native <select> element
+          await this.page.evaluate(
+            ({ x, y, val }: { x: number; y: number; val: string }) => {
+              const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
+              if (el && el.tagName === 'SELECT') {
+                const opt = Array.from(el.options).find(o => o.text === val || o.value === val);
+                if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', { bubbles: true })); }
+              }
+            },
+            { x: clickX, y: clickY, val: value || '' }
+          );
+        }
         break;
 
       case 'scroll-down':
-        await this.page.evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y);
-            if (el) el.scrollBy(0, 300);
-          },
-          { x: clickX, y: clickY }
-        );
+        await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
+          const el = document.elementFromPoint(x, y);
+          if (el) el.scrollBy(0, 300);
+        }, { x: clickX, y: clickY });
         break;
 
       case 'scroll-up':
-        await this.page.evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y);
-            if (el) el.scrollBy(0, -300);
-          },
-          { x: clickX, y: clickY }
-        );
+        await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
+          const el = document.elementFromPoint(x, y);
+          if (el) el.scrollBy(0, -300);
+        }, { x: clickX, y: clickY });
         break;
 
       case 'scroll-to':
-        await this.page.evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          },
-          { x: clickX, y: clickY }
-        );
+        await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
+          const el = document.elementFromPoint(x, y);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, { x: clickX, y: clickY });
         break;
     }
   }
@@ -882,7 +989,7 @@ export class ActionEngine {
    * overlays, modals) by dismissing them automatically.
    * Returns true if a recovery action was performed.
    */
-  private async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
+  async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
     // Pattern 1: Cookie/consent banner
     const cookieElement = state.elements.find(e =>
       /cookie|consent|accept|akzeptieren|alle akzeptieren|accept all|got it|verstanden|i agree/i.test(e.name) &&
@@ -897,7 +1004,30 @@ export class ActionEngine {
       } catch { /* recovery failed, continue */ }
     }
 
-    // Pattern 2: Generic modal close (Escape key)
+    // Pattern 2: Remove pointer-intercepting widgets (marketing popups, chat widgets)
+    try {
+      const removed = await this.page.evaluate(() => {
+        const blockers = document.querySelectorAll(
+          'getsitecontrol-widget, [class*="popup"], [class*="overlay"], [id*="widget"], [class*="chat-widget"], [class*="intercom"]'
+        );
+        let count = 0;
+        for (const el of Array.from(blockers)) {
+          const style = window.getComputedStyle(el);
+          // Only remove elements that cover a large area or have high z-index
+          if (style.position === 'fixed' || style.position === 'absolute' || style.zIndex > '999') {
+            el.remove();
+            count++;
+          }
+        }
+        return count;
+      });
+      if (removed > 0) {
+        this.log(2, `[Act] Recovery: removed ${removed} pointer-intercepting widget(s)`);
+        return true;
+      }
+    } catch { /* evaluate failed */ }
+
+    // Pattern 3: Generic modal close (Escape key)
     const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
     if (hasModal) {
       this.log(2, `[Act] Recovery: pressing Escape to close modal/popup`);
@@ -916,8 +1046,6 @@ export class ActionEngine {
     target: UIElement | null,
     value?: string
   ): Promise<void> {
-    // Page-level scroll fallback — mouse.wheel is more reliable than PageDown
-    // because it targets whichever element is under the cursor.
     if (action === 'scroll-down' && !target) {
       await this.page.mouse.wheel(0, 600);
       return;
@@ -933,58 +1061,43 @@ export class ActionEngine {
 
     switch (action) {
       case 'click':
-        if (target?.role === 'radio' || target?.role === 'checkbox') {
-          // Playwright's check() handles hidden inputs by clicking their label —
-          // more reliable than click() for CSS-styled form controls.
-          try {
-            await locator.check({ timeout: 5000 });
-          } catch {
-            await locator.click({ timeout: 5000 });
-          }
+        if (target.role === 'radio' || target.role === 'checkbox') {
+          try { await locator.check({ timeout: 5000 }); }
+          catch { await locator.click({ timeout: 5000 }); }
         } else {
           await locator.click({ timeout: 5000 });
         }
         break;
-
       case 'double-click':
         await locator.dblclick({ timeout: 5000 });
         break;
-
       case 'right-click':
         await locator.click({ button: 'right', timeout: 5000 });
         break;
-
       case 'fill':
         await locator.fill(value || '', { timeout: 5000 });
         break;
-
       case 'append':
         await locator.focus({ timeout: 5000 });
         await locator.press('End');
         await locator.pressSequentially(value || '', { delay: 30 });
         break;
-
       case 'hover':
         await locator.hover({ timeout: 5000 });
         break;
-
       case 'press':
         await locator.focus({ timeout: 5000 });
         await locator.press(value || 'Enter');
         break;
-
       case 'select':
         await locator.selectOption(value || '', { timeout: 5000 });
         break;
-
       case 'scroll-to':
         await locator.scrollIntoViewIfNeeded({ timeout: 5000 });
         break;
-
       case 'scroll-down':
         await locator.evaluate(el => el.scrollBy(0, 300));
         break;
-
       case 'scroll-up':
         await locator.evaluate(el => el.scrollBy(0, -300));
         break;

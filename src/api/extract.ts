@@ -26,7 +26,7 @@ export class ExtractionEngine {
       Page Title: ${aomState.title}
       
       --- INTERACTIVE ELEMENTS (AOM, id | role | name | region) ---
-      ${aomState.elements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
+      ${aomState.elements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
       
       --- VISIBLE PAGE TEXT ---
       ${pageText}

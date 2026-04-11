@@ -31,7 +31,7 @@ export class ObservationEngine {
       Title: ${fullState.title}
 
       Interactive Elements (AOM, id | role | name | region):
-      ${fullState.elements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
+      ${fullState.elements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
 
       Return a list of possible actions. For each action provide:
       - description: what the action does (human-readable)

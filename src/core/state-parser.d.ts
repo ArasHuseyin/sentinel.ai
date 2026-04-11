@@ -6,6 +6,7 @@ export interface UIElement {
     name: string;
     description?: string;
     region?: PageRegion;
+    value?: string;
     boundingClientRect: {
         x: number;
         y: number;

@@ -39,3 +39,14 @@ logs/
 
 # Coverage
 coverage/
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Project notes (not shipped)
+STRATEGY.md
+improvements.md
+
+# Debug scripts
+debug-*.ts

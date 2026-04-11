@@ -2,12 +2,17 @@ import type { CDPSession, Page } from 'playwright';
 
 export type PageRegion = 'header' | 'nav' | 'sidebar' | 'main' | 'footer' | 'modal' | 'popup';
 
+/** Roles whose current input value should be tracked. */
+const VALUE_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox']);
+
 export interface UIElement {
   id: number;
   role: string;
   name: string;
   description?: string;
   region?: PageRegion;
+  /** Current value of input/select/combobox elements. Only set for form fields. */
+  value?: string;
   boundingClientRect: {
     x: number;
     y: number;
@@ -50,6 +55,13 @@ const GENERIC_NAMES = new Set([
 
 function isGenericName(name: string): boolean {
   return name.length < 3 || GENERIC_NAMES.has(name.toLowerCase().trim());
+}
+
+/** Dedup key: name + position (rounded to 50px grid to tolerate layout shifts). */
+function dedupKey(el: UIElement): string {
+  const gx = Math.round(el.boundingClientRect.x / 50) * 50;
+  const gy = Math.round(el.boundingClientRect.y / 50) * 50;
+  return `${el.name}|${gx}|${gy}`;
 }
 
 /** AOM roles that represent form inputs — used for the always-on fallback check */
@@ -133,20 +145,27 @@ export class StateParser {
     // Full DOM snapshot when AOM yields too few elements OR when all AOM
     // elements are outside the visible viewport (React SPAs with custom
     // components that use tabindex="-1" or CSS-hidden form controls).
-    const viewport = this.page.viewportSize?.() ?? { width: 1280, height: 720 };
+    const viewport = this.page.viewportSize?.() ?? { width: 1920, height: 1080 };
+    const scrollPos = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+      .catch(() => ({ x: 0, y: 0 }));
+    const sx = scrollPos?.x ?? 0;
+    const sy = scrollPos?.y ?? 0;
+
     const visibleAOM = uiElements.filter(e => {
-      const ex = e.boundingClientRect.x + e.boundingClientRect.width / 2;
-      const ey = e.boundingClientRect.y + e.boundingClientRect.height / 2;
-      return ex >= 0 && ey >= 0 && ex <= viewport.width && ey <= viewport.height;
+      const vpX = (e.boundingClientRect.x + e.boundingClientRect.width / 2) - sx;
+      const vpY = (e.boundingClientRect.y + e.boundingClientRect.height / 2) - sy;
+      return vpX >= 0 && vpY >= 0 && vpX <= viewport.width && vpY <= viewport.height;
     });
     const needsDOMFallback = uiElements.length < 5 || visibleAOM.length === 0;
 
     if (needsDOMFallback) {
       const domElements = await this.parseDOMSnapshot(counter);
-      const existingNames = new Set(uiElements.map(e => e.name));
+      const existingKeys = new Set(uiElements.map(e => dedupKey(e)));
       for (const el of domElements) {
-        if (!existingNames.has(el.name)) {
+        const key = dedupKey(el);
+        if (!existingKeys.has(key)) {
           uiElements.push(el);
+          existingKeys.add(key);
         }
       }
     }
@@ -161,24 +180,46 @@ export class StateParser {
       this.parseFrameElements(counter),
     ]);
 
-    // Merge discovered elements, deduplicating by name
-    const existingNames = new Set(uiElements.map(e => e.name));
+    // Merge discovered elements, deduplicating by name + position
+    const existingKeys = new Set(uiElements.map(e => dedupKey(e)));
     for (const el of formElements) {
-      if (el.name && !existingNames.has(el.name)) {
+      const key = dedupKey(el);
+      if (el.name && !existingKeys.has(key)) {
         uiElements.push(el);
-        existingNames.add(el.name);
+        existingKeys.add(key);
       }
     }
     for (const el of editableElements) {
-      if (el.name && !existingNames.has(el.name)) {
+      const key = dedupKey(el);
+      if (el.name && !existingKeys.has(key)) {
         uiElements.push(el);
-        existingNames.add(el.name);
+        existingKeys.add(key);
       }
     }
     for (const el of frameElements) {
-      if (!existingNames.has(el.name)) {
+      const key = dedupKey(el);
+      if (!existingKeys.has(key)) {
         uiElements.push(el);
-        existingNames.add(el.name);
+        existingKeys.add(key);
+      }
+    }
+
+    // ─── Widget pattern detection ──────────────────────────────────────────
+    // Scan the DOM for composite widgets (button+combobox, button+listbox,
+    // CSS-class library widgets) that individual element detection misses.
+    // Widgets REPLACE overlapping plain elements (better semantic info).
+    const widgetElements = await this.parseWidgetPatterns(counter);
+    if (widgetElements.length > 0) {
+      const wKeys = new Map(uiElements.map((e, i) => [dedupKey(e), i]));
+      for (const el of widgetElements) {
+        const key = dedupKey(el);
+        const existingIdx = wKeys.get(key);
+        if (existingIdx !== undefined) {
+          uiElements[existingIdx] = el;
+        } else {
+          uiElements.push(el);
+          wKeys.set(key, uiElements.length - 1);
+        }
       }
     }
 
@@ -244,7 +285,7 @@ export class StateParser {
       }
 
       const candidates = queryShadowAll(
-        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick], [contenteditable="true"], [contenteditable=""], [tabindex]:not([tabindex="-1"])',
+        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick], [contenteditable="true"], [contenteditable=""], [tabindex]',
         document
       );
 
@@ -291,6 +332,45 @@ export class StateParser {
         });
       }
 
+      // Phase 2: Heuristic detection for custom React/Vue/Angular components
+      // that have no ARIA attributes but ARE interactive (cursor: pointer)
+      if (results.length < MAX_ELEMENTS) {
+        const interactiveEls = queryShadowAll('div[class], span[class]', document);
+        for (const el of interactiveEls) {
+          if (results.length >= MAX_ELEMENTS) break;
+          const htmlEl = el as HTMLElement;
+          const rect = htmlEl.getBoundingClientRect();
+          if (rect.width < 10 || rect.height < 10) continue;
+          if (rect.top < 0 || rect.left < 0) continue;
+          if (rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
+          const style = window.getComputedStyle(htmlEl);
+          if (style.cursor !== 'pointer') continue;
+          // Skip wrappers that contain real interactive children
+          if (htmlEl.querySelector('a, button, input, select, textarea')) continue;
+
+          const rawName =
+            htmlEl.getAttribute('aria-label') ||
+            htmlEl.getAttribute('title') ||
+            htmlEl.getAttribute('data-testid') ||
+            htmlEl.textContent?.trim().slice(0, 80) ||
+            '';
+          if (!rawName) continue;
+
+          const name = getContextualName(el, rawName);
+          const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          results.push({
+            tag: htmlEl.tagName.toLowerCase(),
+            role: 'button', // interactive div with cursor:pointer behaves as button
+            name,
+            x: rect.x, y: rect.y,
+            width: rect.width, height: rect.height,
+          });
+        }
+      }
+
       return results;
     }, { genericNames: genericNamesArray });
 
@@ -298,6 +378,7 @@ export class StateParser {
       id: counter.n++,
       role: el.role,
       name: el.name,
+      ...(el.value ? { value: el.value } : {}),
       boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
     }));
   }
@@ -364,9 +445,13 @@ export class StateParser {
            htmlEl.tagName.toLowerCase() === 'textarea' ? 'textbox' :
            'textbox');
 
+        // Track current input value
+        const value = (htmlEl as HTMLInputElement).value ?? '';
+
         results.push({
           role,
           name,
+          value: value || undefined,
           x: rect.x,
           y: rect.y,
           width: rect.width,
@@ -380,6 +465,7 @@ export class StateParser {
       id: counter.n++,
       role: el.role,
       name: el.name,
+      ...(el.value ? { value: el.value } : {}),
       boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
     }));
   }
@@ -443,6 +529,7 @@ export class StateParser {
       id: counter.n++,
       role: el.role,
       name: el.name,
+      ...(el.value ? { value: el.value } : {}),
       boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
     }));
   }
@@ -454,6 +541,403 @@ export class StateParser {
    * elements. Coordinates are offset by the iframe's bounding rect so they map
    * to the main-page coordinate space. Cross-origin frames are skipped silently.
    */
+  // ─── Private: widget pattern detection ───────────────────────────────
+
+  /**
+   * Scans the visible DOM for composite widget patterns that individual
+   * element queries miss. Custom dropdown/select/autocomplete components
+   * typically consist of a trigger button + hidden combobox input + listbox.
+   * This method detects these patterns and returns one UIElement per widget.
+   *
+   * Patterns detected:
+   *  - button + input[role="combobox"]  → dropdown with search
+   *  - button + [role="listbox"]        → select dropdown
+   *  - [aria-haspopup] buttons          → menu/dropdown triggers
+   *  - label + associated hidden input  → labeled form field
+   */
+  private async parseWidgetPatterns(counter: { n: number }): Promise<UIElement[]> {
+    const rawWidgets = await this.page.evaluate(() => {
+      const results: any[] = [];
+      const seen = new Set<string>();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+
+      // Pattern 1: Container with button + combobox/listbox (custom dropdowns)
+      // Look for containers that have both a trigger button and a combobox input
+      const comboboxInputs = document.querySelectorAll('input[role="combobox"], [role="listbox"]');
+      for (const input of Array.from(comboboxInputs)) {
+        const container = input.parentElement?.closest('div') ?? input.parentElement;
+        if (!container) continue;
+
+        // Find the trigger button in the same container
+        const trigger = container.querySelector('button, [role="button"]') as HTMLElement | null;
+        if (!trigger) continue;
+
+        // Use trigger button's rect for precise click targeting
+        const triggerRect = trigger.getBoundingClientRect();
+        const rect = triggerRect.width >= 10 && triggerRect.height >= 10
+          ? triggerRect
+          : container.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) continue;
+        if (rect.top > vh || rect.left > vw) continue;
+
+        // Get the widget name from multiple sources
+        const name =
+          // 1. Label element associated via aria-labelledby
+          (() => {
+            const labelId = input.getAttribute('aria-labelledby');
+            if (labelId) {
+              const label = document.getElementById(labelId.split(' ')[0]!);
+              if (label) return label.textContent?.trim();
+            }
+            return null;
+          })() ||
+          // 2. Preceding label element
+          (() => {
+            const prev = container.previousElementSibling;
+            if (prev?.tagName === 'LABEL') return prev.textContent?.trim();
+            // Label as first child of parent
+            const parentLabel = container.parentElement?.querySelector('label');
+            if (parentLabel) return parentLabel.textContent?.trim();
+            return null;
+          })() ||
+          // 3. Button text (the current selection or placeholder)
+          trigger.textContent?.trim().slice(0, 80) ||
+          // 4. Placeholder from the input
+          input.getAttribute('placeholder') ||
+          // 5. ID-based name
+          input.getAttribute('id')?.replace(/-/g, ' ').replace(/\./g, ' ') ||
+          '';
+
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        // Current value: from input.value or the trigger's selected text
+        const currentValue = (input as HTMLInputElement).value ||
+          trigger.querySelector('.selectedText, [class*="selected"]')?.textContent?.trim() ||
+          '';
+
+        results.push({
+          role: input.getAttribute('role') === 'listbox' ? 'listbox' : 'combobox',
+          name,
+          value: currentValue || undefined,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+
+      // Pattern 2: Buttons with aria-haspopup (menu/dropdown triggers)
+      const popupTriggers = document.querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]');
+      for (const trigger of Array.from(popupTriggers)) {
+        const htmlEl = trigger as HTMLElement;
+        const rect = htmlEl.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) continue;
+        if (rect.top > vh || rect.left > vw) continue;
+
+        const name = htmlEl.getAttribute('aria-label') ||
+          htmlEl.textContent?.trim().slice(0, 80) || '';
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          role: 'button',
+          name,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+
+      // Pattern 3: Labels with associated but hidden/custom inputs
+      const labels = document.querySelectorAll('label[for]');
+      for (const label of Array.from(labels)) {
+        const forId = label.getAttribute('for');
+        if (!forId) continue;
+        const input = document.getElementById(forId);
+        if (!input) continue;
+
+        // Skip if input is already visible and would be found by normal parsing
+        const inputRect = input.getBoundingClientRect();
+        if (inputRect.width > 5 && inputRect.height > 5) continue;
+
+        // Input is hidden — look for a visible custom widget near the label
+        const labelRect = (label as HTMLElement).getBoundingClientRect();
+        if (labelRect.width < 5 || labelRect.height < 5) continue;
+        if (labelRect.top > vh || labelRect.left > vw) continue;
+
+        // Check the label's parent for a visible interactive element
+        const parent = label.parentElement;
+        if (!parent) continue;
+        const customWidget = parent.querySelector('button, [role="button"], [role="combobox"]') as HTMLElement | null;
+        if (!customWidget) continue;
+
+        const widgetRect = customWidget.getBoundingClientRect();
+        if (widgetRect.width < 5 || widgetRect.height < 5) continue;
+
+        const name = label.textContent?.trim() || '';
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(widgetRect.x)}|${Math.round(widgetRect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          role: customWidget.getAttribute('role') || 'button',
+          name,
+          x: widgetRect.x,
+          y: widgetRect.y,
+          width: widgetRect.width,
+          height: widgetRect.height,
+        });
+      }
+
+      // Pattern 4: input + datalist (native autocomplete)
+      const datalistInputs = document.querySelectorAll('input[list]');
+      for (const input of Array.from(datalistInputs)) {
+        const listId = input.getAttribute('list');
+        if (!listId) continue;
+        const datalist = document.getElementById(listId);
+        if (!datalist || datalist.tagName !== 'DATALIST') continue;
+
+        const htmlEl = input as HTMLInputElement;
+        const rect = htmlEl.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) continue;
+        if (rect.top > vh || rect.left > vw) continue;
+
+        const name =
+          htmlEl.getAttribute('aria-label') ||
+          htmlEl.getAttribute('placeholder') ||
+          (htmlEl.labels?.[0] as HTMLElement)?.textContent?.trim() ||
+          htmlEl.getAttribute('name') || '';
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          role: 'combobox',
+          name,
+          value: htmlEl.value || undefined,
+          x: rect.x, y: rect.y,
+          width: rect.width, height: rect.height,
+        });
+      }
+
+      // Pattern 5: [role="tablist"] (tab navigation as composite widget)
+      const tablists = document.querySelectorAll('[role="tablist"]');
+      for (const tablist of Array.from(tablists)) {
+        const htmlEl = tablist as HTMLElement;
+        const rect = htmlEl.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) continue;
+        if (rect.top > vh || rect.left > vw) continue;
+
+        const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+        if (tabs.length === 0) continue;
+        const activeTab = tabs.find(t => t.getAttribute('aria-selected') === 'true');
+        const tabNames = tabs.map(t => (t as HTMLElement).textContent?.trim()).filter(Boolean);
+
+        const name = htmlEl.getAttribute('aria-label') ||
+          tabNames.join(' | ').slice(0, 80) || 'tabs';
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          role: 'tablist',
+          name,
+          value: activeTab ? (activeTab as HTMLElement).textContent?.trim() : undefined,
+          x: rect.x, y: rect.y,
+          width: rect.width, height: rect.height,
+        });
+      }
+
+      // Pattern 6: Date/time picker inputs
+      const dateInputs = document.querySelectorAll(
+        'input[type="date"], input[type="time"], input[type="datetime-local"], ' +
+        'input[type="month"], input[type="week"]'
+      );
+      for (const input of Array.from(dateInputs)) {
+        const htmlEl = input as HTMLInputElement;
+        const rect = htmlEl.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) continue;
+        if (rect.top > vh || rect.left > vw) continue;
+
+        const name =
+          htmlEl.getAttribute('aria-label') ||
+          (htmlEl.labels?.[0] as HTMLElement)?.textContent?.trim() ||
+          htmlEl.getAttribute('placeholder') ||
+          htmlEl.getAttribute('name') || '';
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        results.push({
+          role: htmlEl.type === 'time' ? 'timepicker' : 'datepicker',
+          name,
+          value: htmlEl.value || undefined,
+          x: rect.x, y: rect.y,
+          width: rect.width, height: rect.height,
+        });
+      }
+
+      // Pattern 7: CSS-class based component library detection
+      // Detects custom select/dropdown widgets from popular libraries
+      // that may lack proper ARIA roles
+      try {
+        const librarySelector = [
+          '[class*="react-select"][class*="container"]',
+          '.ant-select',
+          '.ant-picker',
+          '.ant-cascader-picker',
+          '[class*="MuiSelect-root"]',
+          '[class*="MuiAutocomplete-root"]',
+          '.ng-select',
+          '.select2-container',
+          '.chosen-container',
+          '.vs__dropdown-toggle',
+        ].join(',');
+
+        const libraryWidgets = document.querySelectorAll(librarySelector);
+        for (const widget of Array.from(libraryWidgets)) {
+          const htmlEl = widget as HTMLElement;
+          const rect = htmlEl.getBoundingClientRect();
+          if (rect.width < 10 || rect.height < 10) continue;
+          if (rect.top > vh || rect.left > vw) continue;
+
+          // Skip if already has ARIA combobox/listbox (handled by Pattern 1)
+          if (htmlEl.querySelector('[role="combobox"], [role="listbox"]')) continue;
+
+          // Resolve name from multiple sources
+          const name = (() => {
+            // 1. Label via input id
+            const inputEl = htmlEl.querySelector('input');
+            if (inputEl?.id) {
+              const label = document.querySelector(`label[for="${inputEl.id}"]`);
+              if (label) return (label as HTMLElement).textContent?.trim();
+            }
+            // 2. aria-label on container or input
+            const ariaLabel = htmlEl.getAttribute('aria-label') ||
+              inputEl?.getAttribute('aria-label');
+            if (ariaLabel) return ariaLabel;
+            // 3. Preceding label element
+            const prev = htmlEl.previousElementSibling;
+            if (prev?.tagName === 'LABEL') return (prev as HTMLElement).textContent?.trim();
+            // 4. Label in parent (not inside this widget)
+            const parentLabel = htmlEl.parentElement?.querySelector('label');
+            if (parentLabel && !htmlEl.contains(parentLabel))
+              return (parentLabel as HTMLElement).textContent?.trim();
+            // 5. Placeholder text (class-based)
+            const placeholder = htmlEl.querySelector(
+              '[class*="placeholder"], [class*="Placeholder"]'
+            );
+            if (placeholder) return (placeholder as HTMLElement).textContent?.trim();
+            // 6. Input placeholder attribute
+            if (inputEl?.placeholder) return inputEl.placeholder;
+            return '';
+          })() || '';
+
+          if (!name) continue;
+
+          const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          // Current selected value
+          const value = (() => {
+            const selected = htmlEl.querySelector(
+              '[class*="single-value"], [class*="singleValue"], ' +
+              '[class*="selected-value"], [class*="selectedValue"], ' +
+              '[class*="selection-item"], [class*="selectionItem"], ' +
+              '.ant-select-selection-item, ' +
+              '.select2-selection__rendered, ' +
+              '.chosen-single span, ' +
+              '.ng-value-label'
+            );
+            if (selected) return (selected as HTMLElement).textContent?.trim();
+            const inputEl = htmlEl.querySelector('input') as HTMLInputElement | null;
+            return inputEl?.value || '';
+          })();
+
+          results.push({
+            role: 'combobox',
+            name,
+            value: value || undefined,
+            x: rect.x, y: rect.y,
+            width: rect.width, height: rect.height,
+          });
+        }
+      } catch {
+        // Complex selectors may throw in edge cases — skip gracefully
+      }
+
+      // Pattern 8: Hidden <select> with visible custom trigger
+      // Many UI frameworks hide the native <select> and render a custom widget
+      const allSelects = document.querySelectorAll('select');
+      for (const select of Array.from(allSelects)) {
+        const htmlEl = select as HTMLSelectElement;
+        const rect = htmlEl.getBoundingClientRect();
+        // Only care about HIDDEN selects (visible ones are already detected)
+        if (rect.width > 5 && rect.height > 5) continue;
+
+        const container = htmlEl.parentElement;
+        if (!container) continue;
+        const containerRect = container.getBoundingClientRect();
+        if (containerRect.width < 10 || containerRect.height < 10) continue;
+        if (containerRect.top > vh || containerRect.left > vw) continue;
+
+        // Must have a visible trigger element
+        const trigger = container.querySelector(
+          'button, [role="button"], div[tabindex], span[tabindex]'
+        ) as HTMLElement | null;
+        if (!trigger) continue;
+        const triggerRect = trigger.getBoundingClientRect();
+        if (triggerRect.width < 5 || triggerRect.height < 5) continue;
+
+        const name =
+          htmlEl.getAttribute('aria-label') ||
+          (htmlEl.labels?.[0] as HTMLElement)?.textContent?.trim() ||
+          htmlEl.getAttribute('name') || '';
+        if (!name) continue;
+
+        const key = `${name}|${Math.round(containerRect.x)}|${Math.round(containerRect.y)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const selectedOption = htmlEl.options[htmlEl.selectedIndex];
+        results.push({
+          role: 'combobox',
+          name,
+          value: selectedOption?.text || undefined,
+          x: containerRect.x, y: containerRect.y,
+          width: containerRect.width, height: containerRect.height,
+        });
+      }
+
+      return results;
+    }).catch(() => []);
+
+    return rawWidgets.map((el: any) => ({
+      id: counter.n++,
+      role: el.role,
+      name: el.name,
+      ...(el.value ? { value: el.value } : {}),
+      boundingClientRect: { x: el.x, y: el.y, width: el.width, height: el.height },
+    }));
+  }
+
   private async parseFrameElements(counter: { n: number }): Promise<UIElement[]> {
     const mainFrame = this.page.mainFrame();
     const result: UIElement[] = [];
@@ -670,7 +1154,7 @@ export class StateParser {
           return {
             id,
             context: needsContext && el ? findContext(el) : '',
-            region: detectRegion(el, x, y),
+            region: detectRegion(el, vpX, vpY),
           };
         });
       },
@@ -789,6 +1273,7 @@ export class StateParser {
     }
 
     const state: NonNullable<UIElement['state']> = {};
+    let value: string | undefined;
     if (node.properties) {
       for (const prop of node.properties) {
         if (prop.name === 'disabled') state.disabled = prop.value.value;
@@ -797,12 +1282,17 @@ export class StateParser {
         if (prop.name === 'checked')  state.checked  = prop.value.value;
       }
     }
+    // Track input values for form fields
+    if (VALUE_ROLES.has(role) && node.value?.value) {
+      value = String(node.value.value);
+    }
 
     return {
       id: counter.n++,
       role,
       name: effectiveName,
       description: description || (name ? subtextContext : ''),
+      ...(value !== undefined ? { value } : {}),
       boundingClientRect: { x: 0, y: 0, width: 0, height: 0 },
       state,
     };

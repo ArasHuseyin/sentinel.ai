@@ -193,7 +193,27 @@ describe('createLocatorCache', () => {
 import { ActionEngine } from '../api/act.js';
 import type { ILocatorCache } from '../core/locator-cache.js';
 
+function makeMockLocator() {
+  const locator: any = {
+    click: jest.fn<any>().mockResolvedValue(undefined),
+    dblclick: jest.fn<any>().mockResolvedValue(undefined),
+    hover: jest.fn<any>().mockResolvedValue(undefined),
+    fill: jest.fn<any>().mockResolvedValue(undefined),
+    focus: jest.fn<any>().mockResolvedValue(undefined),
+    press: jest.fn<any>().mockResolvedValue(undefined),
+    pressSequentially: jest.fn<any>().mockResolvedValue(undefined),
+    selectOption: jest.fn<any>().mockResolvedValue([]),
+    scrollIntoViewIfNeeded: jest.fn<any>().mockResolvedValue(undefined),
+    evaluate: jest.fn<any>().mockResolvedValue(undefined),
+    boundingBox: jest.fn<any>().mockResolvedValue({ x: 10, y: 10, width: 100, height: 40 }),
+    isVisible: jest.fn<any>().mockResolvedValue(true),
+    first: jest.fn<any>(function() { return locator; }),
+  };
+  return locator;
+}
+
 function makeMockPage() {
+  const locatorInstance = makeMockLocator();
   return {
     // Scroll offset query is called with no second argument and needs {x:0,y:0}.
     // validateTarget / generateSelector pass {x,y} args and expect null (falsy = ok).
@@ -207,6 +227,9 @@ function makeMockPage() {
     viewportSize: jest.fn<any>().mockReturnValue({ width: 1280, height: 720 }),
     waitForTimeout: jest.fn<any>().mockResolvedValue(undefined),
     url: jest.fn<any>().mockReturnValue('https://example.com/page'),
+    locator: jest.fn<any>().mockReturnValue(locatorInstance),
+    getByRole: jest.fn<any>().mockReturnValue(locatorInstance),
+    getByText: jest.fn<any>().mockReturnValue(locatorInstance),
   } as any;
 }
 
@@ -294,7 +317,9 @@ describe('ActionEngine with LocatorCache', () => {
 
   it('invalidates entry and falls back to LLM when cached action throws', async () => {
     const page = makeMockPage();
-    page.mouse.click.mockRejectedValue(new Error('element detached') as never);
+    // The cached action path calls performAction → page.mouse.click → make it throw once
+    // so the cache entry is invalidated and LLM is called for the retry.
+    page.mouse.click.mockRejectedValueOnce(new Error('element detached'));
 
     const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });

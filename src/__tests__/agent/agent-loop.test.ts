@@ -43,6 +43,7 @@ function makeAlternatingStateParser() {
 function makeActionEngine(success = true, message = 'done') {
   return {
     act: jest.fn(async () => ({ success, message, action: 'click something' })),
+    tryRecoverFromBlocker: jest.fn(async () => false),
   };
 }
 
@@ -160,6 +161,7 @@ describe('AgentLoop', () => {
             ? { success: true, message: 'ok', action: 'click' }
             : { success: false, message: 'fail', action: 'click' };
         }),
+        tryRecoverFromBlocker: jest.fn(async () => false),
       };
 
       // Always return a UNIQUE instruction per call so loop-detection never fires.

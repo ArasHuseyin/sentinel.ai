@@ -471,7 +471,8 @@ describe('StateParser', () => {
       const state = await parser.parse();
 
       const frameSubmits = state.elements.filter(e => e.name === '[frame] Submit');
-      expect(frameSubmits).toHaveLength(1); // bug-fix: only one, not two
+      // Position-aware dedup: different iframe positions = distinct elements
+      expect(frameSubmits).toHaveLength(2);
     });
 
     it('collects elements from multiple child frames', async () => {
@@ -635,14 +636,14 @@ describe('StateParser', () => {
         if (params?.items) {
           return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
         }
-        // parseContentEditableElements — same name as AOM textbox
+        // parseContentEditableElements — same name AND same position as AOM textbox
         return [{
           role: 'textbox',
           name: 'Message input',
           x: 10,
-          y: 500,
-          width: 400,
-          height: 40,
+          y: 20,
+          width: 100,
+          height: 30,
         }];
       });
 
@@ -767,6 +768,335 @@ describe('StateParser', () => {
       const state = await parser.parse();
 
       expect(state.elements.every(e => e.region === 'popup')).toBe(true);
+    });
+  });
+
+  // ─── Widget pattern detection ────────────────────────────────────────────
+
+  describe('parseWidgetPatterns', () => {
+    /**
+     * Build a page mock that returns specific data for the widget evaluate call.
+     * Call order for 5+ AOM elements WITH form inputs present:
+     *   1. scrollPos (parameterless) → { x: 0, y: 0 }
+     *   2. parseContentEditableElements (parameterless) → []
+     *   3. parseWidgetPatterns (parameterless) → widgetData
+     *   4. enrichAndDetectRegions (params.items + params.genericNames) → regions
+     */
+    function makeWidgetPage(
+      widgetData: any[],
+      url = 'https://example.com',
+      title = 'Example'
+    ) {
+      let parameterlessCallCount = 0;
+      const self: any = {
+        url: () => url,
+        title: jest.fn(async () => title),
+        evaluate: jest.fn(async (_fn: any, params?: any) => {
+          // enrichAndDetectRegions
+          if (params?.items && params?.genericNames) {
+            return (params.items as any[]).map((item: any) => ({
+              id: item.id,
+              context: '',
+              region: 'main',
+            }));
+          }
+          parameterlessCallCount++;
+          // 1 = scrollPos
+          if (parameterlessCallCount === 1) return { x: 0, y: 0 };
+          // 2 = parseContentEditableElements
+          if (parameterlessCallCount === 2) return [];
+          // 3 = parseWidgetPatterns
+          if (parameterlessCallCount === 3) return widgetData;
+          return [];
+        }),
+      };
+      self.mainFrame = () => self;
+      self.frames = () => [self];
+      return self;
+    }
+
+    /** 5 AOM elements with a form input (textbox) → skips DOM fallback + form parsing. */
+    function fiveAOMNodes() {
+      return [
+        makeNode('button', 'Send', 1),
+        makeNode('button', 'Cancel', 2),
+        makeNode('link', 'Home', 3),
+        makeNode('link', 'About', 4),
+        makeNode('textbox', 'Search', 5),
+      ];
+    }
+
+    // ── Pattern 1: button + combobox/listbox ─────────────────────────────
+
+    it('detects button + combobox dropdown widget', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Baujahr auswählen',
+        value: '2020',
+        x: 200, y: 100, width: 250, height: 40,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Baujahr auswählen');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('combobox');
+      expect(widget!.value).toBe('2020');
+    });
+
+    // ── Pattern 2: aria-haspopup buttons ──────────────────────────────────
+
+    it('detects aria-haspopup menu trigger', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'button',
+        name: 'Sort by',
+        x: 300, y: 50, width: 120, height: 35,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Sort by');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('button');
+    });
+
+    // ── Pattern 3: label + hidden input ───────────────────────────────────
+
+    it('detects label-associated hidden input widget', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'button',
+        name: 'Marke',
+        x: 100, y: 200, width: 200, height: 40,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Marke');
+      expect(widget).toBeDefined();
+    });
+
+    // ── Pattern 4: input + datalist ───────────────────────────────────────
+
+    it('detects native datalist autocomplete widget', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Browser',
+        value: 'Chrome',
+        x: 50, y: 300, width: 200, height: 30,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Browser');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('combobox');
+      expect(widget!.value).toBe('Chrome');
+    });
+
+    // ── Pattern 5: tablist ────────────────────────────────────────────────
+
+    it('detects tablist as composite widget', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'tablist',
+        name: 'Overview | Details | Reviews',
+        value: 'Details',
+        x: 0, y: 50, width: 600, height: 45,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.role === 'tablist');
+      expect(widget).toBeDefined();
+      expect(widget!.name).toBe('Overview | Details | Reviews');
+      expect(widget!.value).toBe('Details');
+    });
+
+    // ── Pattern 6: date/time picker ───────────────────────────────────────
+
+    it('detects date picker input', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'datepicker',
+        name: 'Geburtsdatum',
+        value: '1990-01-15',
+        x: 100, y: 250, width: 200, height: 35,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Geburtsdatum');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('datepicker');
+      expect(widget!.value).toBe('1990-01-15');
+    });
+
+    it('detects time picker input', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'timepicker',
+        name: 'Uhrzeit',
+        x: 100, y: 300, width: 150, height: 35,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Uhrzeit');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('timepicker');
+    });
+
+    // ── Pattern 7: CSS-class library widgets ──────────────────────────────
+
+    it('detects CSS-class based library widget (React Select, Ant Design, etc.)', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Country',
+        value: 'Germany',
+        x: 50, y: 400, width: 300, height: 38,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Country');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('combobox');
+      expect(widget!.value).toBe('Germany');
+    });
+
+    // ── Pattern 8: hidden select + custom trigger ─────────────────────────
+
+    it('detects hidden select with custom trigger widget', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Größe',
+        value: 'M',
+        x: 200, y: 350, width: 180, height: 40,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Größe');
+      expect(widget).toBeDefined();
+      expect(widget!.role).toBe('combobox');
+      expect(widget!.value).toBe('M');
+    });
+
+    // ── Dedup: widget replaces existing element ───────────────────────────
+
+    it('widget replaces existing AOM element at same position', async () => {
+      // AOM has a button "Baujahr" at position (10, 20)
+      const nodes = [
+        makeNode('button', 'Baujahr', 1),
+        makeNode('button', 'Send', 2),
+        makeNode('link', 'Home', 3),
+        makeNode('link', 'About', 4),
+        makeNode('textbox', 'Search', 5),
+      ];
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      // Widget also has "Baujahr" at same position → should REPLACE the button
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Baujahr',
+        value: '2020',
+        x: 10, y: 20, width: 100, height: 30,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const baujahr = state.elements.filter(e => e.name === 'Baujahr');
+      expect(baujahr).toHaveLength(1);
+      // Should be the widget (combobox), not the original AOM button
+      expect(baujahr[0]!.role).toBe('combobox');
+      expect(baujahr[0]!.value).toBe('2020');
+    });
+
+    it('widget at unique position is added alongside existing elements', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Color',
+        x: 500, y: 500, width: 200, height: 40,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      // Original 5 elements + 1 new widget
+      expect(state.elements.length).toBeGreaterThanOrEqual(6);
+      expect(state.elements.find(e => e.name === 'Color')).toBeDefined();
+    });
+
+    it('multiple widgets can be detected simultaneously', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([
+        { role: 'combobox', name: 'Size', x: 100, y: 400, width: 200, height: 40 },
+        { role: 'tablist', name: 'Tab A | Tab B', x: 0, y: 0, width: 400, height: 50 },
+        { role: 'datepicker', name: 'Date', x: 300, y: 400, width: 200, height: 40 },
+      ]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      expect(state.elements.find(e => e.name === 'Size')).toBeDefined();
+      expect(state.elements.find(e => e.name === 'Tab A | Tab B')).toBeDefined();
+      expect(state.elements.find(e => e.name === 'Date')).toBeDefined();
+    });
+
+    it('widgets without value omit value field', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([{
+        role: 'combobox',
+        name: 'Empty Select',
+        x: 100, y: 500, width: 200, height: 40,
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const widget = state.elements.find(e => e.name === 'Empty Select');
+      expect(widget).toBeDefined();
+      expect(widget!.value).toBeUndefined();
+    });
+
+    it('returns no widgets when evaluate returns empty', async () => {
+      const nodes = fiveAOMNodes();
+      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const page = makeWidgetPage([]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      // Only the 5 AOM elements
+      expect(state.elements).toHaveLength(5);
     });
   });
 });

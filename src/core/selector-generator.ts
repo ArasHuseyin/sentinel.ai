@@ -62,7 +62,8 @@ export async function generateSelector(
   try {
     return await page.evaluate(
       ({ x, y }: { x: number; y: number }) => {
-        const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+        // Convert document-space coords to viewport-space for elementFromPoint
+        const hit = document.elementFromPoint(x - window.scrollX, y - window.scrollY) as HTMLElement | null;
         if (!hit) return null;
 
         /** Escape double-quotes in text for safe use inside `has-text("…")`. */

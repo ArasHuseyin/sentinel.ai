@@ -92,7 +92,18 @@ export class AgentLoop {
 
       // 1. Parse current state
       this.stateParser.invalidateCache();
-      const state = await this.stateParser.parse();
+      let state = await this.stateParser.parse();
+
+      // 1b. Proactive blocker dismissal — dismiss cookie banners, overlays,
+      //     and other blockers BEFORE planning, so the planner never sees them.
+      //     Only on the first 3 steps to avoid infinite recovery loops.
+      if (stepNumber <= 3) {
+        const recovered = await this.actionEngine.tryRecoverFromBlocker(state);
+        if (recovered) {
+          this.stateParser.invalidateCache();
+          state = await this.stateParser.parse();
+        }
+      }
 
       // 2. Plan next step — add visual context for complex pages
       let pageDescription: string | undefined;
@@ -177,19 +188,61 @@ export class AgentLoop {
             // Post-action verification: if act() reports success, check that
             // the page actually changed. Catches false-positives from semantic
             // fallback where the locator "clicks" but nothing happens.
-            if (r.success && !/scroll|fill|append|press|type|select/i.test(r.action ?? '')) {
+            if (r.success && !/scroll/i.test(r.action ?? '')) {
               this.stateParser.invalidateCache();
               const stateAfter = await this.stateParser.parse();
-              const unchanged =
-                state.url === stateAfter.url &&
-                state.title === stateAfter.title &&
-                state.elements.length === stateAfter.elements.length &&
-                state.elements.every((e, i) => e.name === stateAfter.elements[i]?.name);
 
-              if (unchanged) {
-                console.warn(`[Agent] ⚠️  Action reported success but page state unchanged — treating as failed`);
-                span.setAttributes({ 'sentinel.success': false });
-                return { success: false, message: `${r.message} (but page state unchanged)`, action: r.action ?? planned.instruction };
+              const isFillLike = /fill|append|press|type|select/i.test(r.action ?? '');
+
+              if (isFillLike) {
+                // For fill/select actions: check if any element value changed
+                const valuesBefore = state.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
+                const valuesAfter = stateAfter.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
+                if (valuesBefore === valuesAfter) {
+                  console.warn(`[Agent] ⚠️  Fill/select action reported success but no input values changed — treating as failed`);
+                  span.setAttributes({ 'sentinel.success': false });
+                  return { success: false, message: `${r.message} (but no input values changed)`, action: r.action ?? planned.instruction };
+                }
+              } else {
+                // For click actions: check multiple signals for state change.
+                // The old check was too strict (exact element-name match) and
+                // missed visual-only changes like focus shifts, tab selections,
+                // and attribute changes that don't alter element names.
+                const urlChanged = state.url !== stateAfter.url;
+                const titleChanged = state.title !== stateAfter.title;
+                const countChanged = state.elements.length !== stateAfter.elements.length;
+
+                // Check if any element names changed (allow up to 10% tolerance)
+                let nameChanges = 0;
+                const maxLen = Math.max(state.elements.length, stateAfter.elements.length);
+                for (let i = 0; i < maxLen; i++) {
+                  if (state.elements[i]?.name !== stateAfter.elements[i]?.name) nameChanges++;
+                }
+
+                // Check if any element states changed (focus, checked, disabled)
+                let stateChanges = 0;
+                for (let i = 0; i < Math.min(state.elements.length, stateAfter.elements.length); i++) {
+                  const before = state.elements[i]?.state;
+                  const after = stateAfter.elements[i]?.state;
+                  if (before?.focused !== after?.focused) stateChanges++;
+                  if (before?.checked !== after?.checked) stateChanges++;
+                  if (before?.disabled !== after?.disabled) stateChanges++;
+                }
+
+                // Check if any element values changed
+                let valueChanges = 0;
+                for (let i = 0; i < Math.min(state.elements.length, stateAfter.elements.length); i++) {
+                  if (state.elements[i]?.value !== stateAfter.elements[i]?.value) valueChanges++;
+                }
+
+                const unchanged = !urlChanged && !titleChanged && !countChanged &&
+                  nameChanges === 0 && stateChanges === 0 && valueChanges === 0;
+
+                if (unchanged) {
+                  console.warn(`[Agent] ⚠️  Action reported success but page state unchanged — treating as failed`);
+                  span.setAttributes({ 'sentinel.success': false });
+                  return { success: false, message: `${r.message} (but page state unchanged)`, action: r.action ?? planned.instruction };
+                }
               }
             }
 

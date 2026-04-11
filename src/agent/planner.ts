@@ -30,7 +30,7 @@ Current page:
 - URL: ${state.url}
 - Title: ${state.title}${pageDescription ? `\n- Visual layout: ${pageDescription}` : ''}
 - Interactive elements (id | role | name | region):
-${filterRelevantElements(state.elements, goal, 50).map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}`).join('\n')}
+${filterRelevantElements(state.elements, goal, 50).map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
 
 Steps taken so far:
 ${memory.getSummary()}
