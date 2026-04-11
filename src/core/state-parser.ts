@@ -13,6 +13,8 @@ export interface UIElement {
   region?: PageRegion;
   /** Current value of input/select/combobox elements. Only set for form fields. */
   value?: string;
+  /** Validation error message from the form (aria-invalid, nearby error elements). */
+  error?: string;
   boundingClientRect: {
     x: number;
     y: number;
@@ -136,6 +138,9 @@ export class StateParser {
       const y = model.content[1]!;
       const width = model.content[2]! - model.content[0]!;
       const height = model.content[7]! - model.content[1]!;
+
+      // Skip zero/tiny AOM elements — hidden dropdown containers, collapsed panels, etc.
+      if (width < 2 || height < 2) continue;
 
       element.boundingClientRect = { x, y, width, height };
       uiElements.push(element);
@@ -292,6 +297,9 @@ export class StateParser {
       const MAX_ELEMENTS = 200;
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
+      // Convert viewport-relative getBoundingClientRect to document-space
+      const sx = window.scrollX;
+      const sy = window.scrollY;
 
       for (const el of candidates) {
         if (results.length >= MAX_ELEMENTS) break;
@@ -317,7 +325,7 @@ export class StateParser {
         // Apply contextual naming: prefix with parent context for generic names
         const name = getContextualName(el, rawName);
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -325,8 +333,8 @@ export class StateParser {
           tag: htmlEl.tagName.toLowerCase(),
           role: htmlEl.getAttribute('role') || htmlEl.tagName.toLowerCase(),
           name,
-          x: rect.x,
-          y: rect.y,
+          x: rect.x + sx,
+          y: rect.y + sy,
           width: rect.width,
           height: rect.height,
         });
@@ -357,7 +365,7 @@ export class StateParser {
           if (!rawName) continue;
 
           const name = getContextualName(el, rawName);
-          const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+          const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
           if (seen.has(key)) continue;
           seen.add(key);
 
@@ -365,7 +373,7 @@ export class StateParser {
             tag: htmlEl.tagName.toLowerCase(),
             role: 'button', // interactive div with cursor:pointer behaves as button
             name,
-            x: rect.x, y: rect.y,
+            x: rect.x + sx, y: rect.y + sy,
             width: rect.width, height: rect.height,
           });
         }
@@ -411,6 +419,9 @@ export class StateParser {
         document
       );
 
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+
       for (const el of candidates) {
         const htmlEl = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
         const rect = htmlEl.getBoundingClientRect();
@@ -427,7 +438,7 @@ export class StateParser {
           '';
 
         if (!name) continue;
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -452,8 +463,8 @@ export class StateParser {
           role,
           name,
           value: value || undefined,
-          x: rect.x,
-          y: rect.y,
+          x: rect.x + sx,
+          y: rect.y + sy,
           width: rect.width,
           height: rect.height,
         });
@@ -495,6 +506,9 @@ export class StateParser {
         document
       );
 
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+
       for (const el of candidates) {
         const htmlEl = el as HTMLElement;
         const rect = htmlEl.getBoundingClientRect();
@@ -509,15 +523,15 @@ export class StateParser {
           htmlEl.getAttribute('id') ||
           'editor';
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
         results.push({
           role: 'textbox',
           name,
-          x: rect.x,
-          y: rect.y,
+          x: rect.x + sx,
+          y: rect.y + sy,
           width: rect.width,
           height: rect.height,
         });
@@ -561,6 +575,9 @@ export class StateParser {
       const seen = new Set<string>();
       const vw = window.innerWidth;
       const vh = window.innerHeight;
+      // Convert viewport-relative coords to document-space
+      const sx = window.scrollX;
+      const sy = window.scrollY;
 
       // Pattern 1: Container with button + combobox/listbox (custom dropdowns)
       // Look for containers that have both a trigger button and a combobox input
@@ -611,7 +628,7 @@ export class StateParser {
 
         if (!name) continue;
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -643,7 +660,7 @@ export class StateParser {
           htmlEl.textContent?.trim().slice(0, 80) || '';
         if (!name) continue;
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -686,15 +703,15 @@ export class StateParser {
         const name = label.textContent?.trim() || '';
         if (!name) continue;
 
-        const key = `${name}|${Math.round(widgetRect.x)}|${Math.round(widgetRect.y)}`;
+        const key = `${name}|${Math.round(widgetRect.x + sx)}|${Math.round(widgetRect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
         results.push({
           role: customWidget.getAttribute('role') || 'button',
           name,
-          x: widgetRect.x,
-          y: widgetRect.y,
+          x: widgetRect.x + sx,
+          y: widgetRect.y + sy,
           width: widgetRect.width,
           height: widgetRect.height,
         });
@@ -720,7 +737,7 @@ export class StateParser {
           htmlEl.getAttribute('name') || '';
         if (!name) continue;
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -728,7 +745,7 @@ export class StateParser {
           role: 'combobox',
           name,
           value: htmlEl.value || undefined,
-          x: rect.x, y: rect.y,
+          x: rect.x + sx, y: rect.y + sy,
           width: rect.width, height: rect.height,
         });
       }
@@ -749,7 +766,7 @@ export class StateParser {
         const name = htmlEl.getAttribute('aria-label') ||
           tabNames.join(' | ').slice(0, 80) || 'tabs';
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -757,7 +774,7 @@ export class StateParser {
           role: 'tablist',
           name,
           value: activeTab ? (activeTab as HTMLElement).textContent?.trim() : undefined,
-          x: rect.x, y: rect.y,
+          x: rect.x + sx, y: rect.y + sy,
           width: rect.width, height: rect.height,
         });
       }
@@ -780,7 +797,7 @@ export class StateParser {
           htmlEl.getAttribute('name') || '';
         if (!name) continue;
 
-        const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -788,7 +805,7 @@ export class StateParser {
           role: htmlEl.type === 'time' ? 'timepicker' : 'datepicker',
           name,
           value: htmlEl.value || undefined,
-          x: rect.x, y: rect.y,
+          x: rect.x + sx, y: rect.y + sy,
           width: rect.width, height: rect.height,
         });
       }
@@ -851,7 +868,7 @@ export class StateParser {
 
           if (!name) continue;
 
-          const key = `${name}|${Math.round(rect.x)}|${Math.round(rect.y)}`;
+          const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
           if (seen.has(key)) continue;
           seen.add(key);
 
@@ -875,7 +892,7 @@ export class StateParser {
             role: 'combobox',
             name,
             value: value || undefined,
-            x: rect.x, y: rect.y,
+            x: rect.x + sx, y: rect.y + sy,
             width: rect.width, height: rect.height,
           });
         }
@@ -912,7 +929,7 @@ export class StateParser {
           htmlEl.getAttribute('name') || '';
         if (!name) continue;
 
-        const key = `${name}|${Math.round(containerRect.x)}|${Math.round(containerRect.y)}`;
+        const key = `${name}|${Math.round(containerRect.x + sx)}|${Math.round(containerRect.y + sy)}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -921,7 +938,7 @@ export class StateParser {
           role: 'combobox',
           name,
           value: selectedOption?.text || undefined,
-          x: containerRect.x, y: containerRect.y,
+          x: containerRect.x + sx, y: containerRect.y + sy,
           width: containerRect.width, height: containerRect.height,
         });
       }
@@ -1036,7 +1053,7 @@ export class StateParser {
       needsContext: genericIds.has(e.id),
     }));
 
-    const results: { id: number; context: string; region: string }[] = await this.page.evaluate(
+    const results: { id: number; context: string; region: string; error: string }[] = await this.page.evaluate(
       ({ items, genericNames }: {
         items: { id: number; x: number; y: number; needsContext: boolean }[];
         genericNames: string[];
@@ -1147,6 +1164,44 @@ export class StateParser {
           return '';
         }
 
+        // Find validation errors for form fields via ARIA attributes and DOM proximity.
+        // Uses W3C standards (aria-invalid, aria-errormessage, aria-describedby, role="alert")
+        // and structural patterns (nearby elements with error/invalid classes).
+        function findError(el: Element | null): string {
+          if (!el) return '';
+
+          // 1. aria-invalid on the element or its parent
+          let node: Element | null = el;
+          for (let d = 0; d < 3 && node; d++) {
+            if (node.getAttribute('aria-invalid') === 'true') {
+              // Look for the error message via aria-errormessage or aria-describedby
+              const errId = node.getAttribute('aria-errormessage') ?? node.getAttribute('aria-describedby');
+              if (errId) {
+                const errEl = document.getElementById(errId);
+                if (errEl) return errEl.textContent?.trim().slice(0, 100) || '';
+              }
+            }
+            node = node.parentElement;
+          }
+
+          // 2. Nearby sibling/parent with error class or role="alert"
+          let container: Element | null = el.closest('div') ?? el.parentElement;
+          for (let d = 0; d < 4 && container; d++) {
+            const errEl = container.querySelector(
+              '[role="alert"], [class*="error"], [class*="Error"], ' +
+              '[class*="invalid"], [class*="Invalid"], [class*="errorMessage"], ' +
+              '[class*="validation"], [class*="Validation"]'
+            );
+            if (errEl && errEl.textContent?.trim()) {
+              const text = errEl.textContent.trim().slice(0, 100);
+              if (text.length > 2) return text;
+            }
+            container = container.parentElement;
+          }
+
+          return '';
+        }
+
         return items.map(({ id, x, y, needsContext }) => {
           const vpX = x - window.scrollX;
           const vpY = y - window.scrollY;
@@ -1155,11 +1210,12 @@ export class StateParser {
             id,
             context: needsContext && el ? findContext(el) : '',
             region: detectRegion(el, vpX, vpY),
+            error: el ? findError(el) : '',
           };
         });
       },
       { items, genericNames: genericNamesArray }
-    ).catch(() => [] as { id: number; context: string; region: string }[]);
+    ).catch(() => [] as { id: number; context: string; region: string; error: string }[]);
 
     const resultMap = new Map(results.map(r => [r.id, r]));
     for (const el of elements) {
@@ -1167,6 +1223,7 @@ export class StateParser {
       if (!data) continue;
       if (data.context) el.name = `${data.context}: ${el.name}`;
       if (data.region) el.region = data.region as PageRegion;
+      if (data.error) el.error = data.error;
     }
   }
 

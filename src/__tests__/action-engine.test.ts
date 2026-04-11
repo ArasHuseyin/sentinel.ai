@@ -266,7 +266,7 @@ describe('ActionEngine', () => {
     // fill uses coordinate-based: mouse.click to focus, Control+a to select all, keyboard.type to enter value
     expect(page.mouse.click).toHaveBeenCalled();
     expect(page.keyboard.press as jest.Mock).toHaveBeenCalledWith('Control+a');
-    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith('hello');
+    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith('hello', { delay: 90 });
   });
 
   it('append uses page.mouse.click to focus, keyboard.press(End) to move cursor, and keyboard.type to append', async () => {
@@ -282,7 +282,7 @@ describe('ActionEngine', () => {
     const pressCalls = (page.keyboard.press as jest.Mock).mock.calls as any[][];
     expect(pressCalls.some((args: any[]) => args[0] === 'End')).toBe(true);
     expect(pressCalls.some((args: any[]) => args[0] === 'Control+End')).toBe(true);
-    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith(' extra text');
+    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith(' extra text', { delay: 90 });
   });
 
   // ─── performAction: remaining action types ──────────────────────────────────
@@ -886,9 +886,9 @@ describe('ActionEngine', () => {
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     // "Submit" should be in the prompt; less relevant elements may be excluded
     expect(promptArg).toContain('Submit');
-    // Compact format uses "id | role | name" lines — count occurrences of " | " pattern
-    const elementLineCount = (promptArg.match(/\d+ \| \w+ \| /g) ?? []).length;
-    expect(elementLineCount).toBeLessThanOrEqual(2);
+    // Form fields + nearby buttons are always kept regardless of maxElements.
+    // The prompt should contain Submit (keyword match) and Email (form field, always kept).
+    expect(promptArg).toContain('Email');
   });
 
   it('chunk-processing: no filtering when element count ≤ maxElements', async () => {
@@ -1277,15 +1277,16 @@ describe('filterRelevantElements', () => {
     expect(result).toBe(els); // same reference, no copy
   });
 
-  it('keeps top-N elements by keyword overlap', () => {
+  it('keeps top-N elements by keyword overlap, always preserving form fields and nearby buttons', () => {
     const els = [
       makeEl(0, 'button', 'Submit'),
       makeEl(1, 'textbox', 'Email'),
       makeEl(2, 'link', 'Home'),
     ];
     const result = filterRelevantElements(els, 'fill in the email field', 1);
-    expect(result).toHaveLength(1);
-    expect(result[0]!.name).toBe('Email');
+    // Form fields (textbox) and nearby buttons are always kept
+    expect(result.find(e => e.name === 'Email')).toBeDefined();
+    expect(result.length).toBeGreaterThanOrEqual(1);
   });
 
   it('scores by role + name so role matches count', () => {

@@ -189,7 +189,7 @@ function tokenize(text: string): string[] {
   return [...new Set(
     text
       .toLowerCase()
-      .replace(/[^a-z0-9äöüß\s]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter(t => t.length >= 2 && !STOP_WORDS.has(t))
   )];
@@ -214,21 +214,48 @@ export function filterRelevantElements(
   const tokens = tokenize(instruction);
   if (tokens.length === 0) return elements.slice(0, maxCount);
 
-  // Always-keep: cookie/consent/blocker elements must never be filtered out
+  // Always-keep: form fields, nearby buttons, and cookie/blocker elements.
+  // Form fields are the primary interaction targets — dropping them because their
+  // label doesn't keyword-match the (possibly different-language) goal is a bug.
+  // Buttons near form fields (submit/proceed) must also be kept — they're the
+  // natural next action after filling the form.
+  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker']);
   const alwaysKeep: typeof elements = [];
   const rest: typeof elements = [];
   for (const el of elements) {
-    if ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name)) {
+    if (FORM_ROLES.has(el.role) ||
+        ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name))) {
       alwaysKeep.push(el);
     } else {
       rest.push(el);
     }
   }
 
+  // Also keep buttons/links that are positionally near form fields (submit buttons).
+  // Submit buttons are almost always directly below the form — preserving them
+  // ensures the LLM can submit after filling, regardless of button label language.
+  const formEls = alwaysKeep.filter(e => FORM_ROLES.has(e.role));
+  if (formEls.length > 0) {
+    const formYs = formEls.map(e => e.boundingClientRect.y);
+    const minFormY = Math.min(...formYs);
+    const maxFormY = Math.max(...formEls.map(e => e.boundingClientRect.y + e.boundingClientRect.height));
+    const margin = Math.max(maxFormY - minFormY, 300);
+
+    for (let i = rest.length - 1; i >= 0; i--) {
+      const el = rest[i]!;
+      if ((el.role === 'button' || el.role === 'link') &&
+          el.boundingClientRect.y >= minFormY - 50 &&
+          el.boundingClientRect.y <= maxFormY + margin) {
+        alwaysKeep.push(el);
+        rest.splice(i, 1);
+      }
+    }
+  }
+
   const scored = rest.map(el => {
     const text = `${el.role} ${el.name}`
       .toLowerCase()
-      .replace(/[^a-z0-9äöüß\s]/g, ' ');
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ');
     let score = 0;
     for (const token of tokens) {
       if (text.includes(token)) score++;
@@ -249,7 +276,7 @@ function hasRelevantElements(elements: UIElement[], instruction: string): boolea
   const tokens = tokenize(instruction);
   if (tokens.length === 0) return true;
   return elements.some(el => {
-    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^a-z0-9äöüß\s]/g, ' ');
+    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
     return tokens.some(token => text.includes(token));
   });
 }
@@ -626,6 +653,33 @@ export class ActionEngine {
     target: UIElement | null,
     value?: string
   ): Promise<void> {
+    // Retry with backoff for transient failures (timeout, element detached, scroll issues).
+    // Non-transient errors (wrong element, validation) are thrown immediately so the
+    // caller can fall through to vision/semantic fallback instead of wasting retries.
+    const RETRY_DELAYS = [200, 500];
+    const isTransient = (err: any) =>
+      /timeout|detach|disposed|intercept|not found|outside viewport/i.test(err?.message ?? '');
+
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+      try {
+        await this.performActionOnce(action, target, value);
+        return;
+      } catch (err) {
+        if (attempt < RETRY_DELAYS.length && isTransient(err)) {
+          this.warn(2, `[Act] Transient failure (attempt ${attempt + 1}), retrying in ${RETRY_DELAYS[attempt]}ms...`);
+          await this.page.waitForTimeout(RETRY_DELAYS[attempt]!);
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private async performActionOnce(
+    action: ActionType,
+    target: UIElement | null,
+    value?: string
+  ): Promise<void> {
     // Scroll actions that don't need a target element.
     // mouse.wheel dispatches a native wheel event at the current cursor position so
     // the browser routes it to whichever element is actually scrollable — works for
@@ -673,6 +727,17 @@ export class ActionEngine {
       vpCy = cy - (scrollOffset?.y ?? 0);
     }
 
+    // Fallback: if scrollTo didn't work (SPAs may override scroll),
+    // try scrolling to page top first, then re-check
+    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
+      await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await this.page.waitForTimeout(100);
+      scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+        .catch(() => ({ x: 0, y: 0 }));
+      vpCx = cx - (scrollOffset?.x ?? 0);
+      vpCy = cy - (scrollOffset?.y ?? 0);
+    }
+
     if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
       throw new ActionError(
         `Element "${target.name}" is outside viewport at (${vpCx.toFixed(0)}, ${vpCy.toFixed(0)}) even after scrolling`,
@@ -682,6 +747,47 @@ export class ActionEngine {
 
     const clickX = vpCx;
     const clickY = vpCy;
+
+    // Click-target verification: confirm the element at (clickX, clickY)
+    // actually corresponds to the intended target. Catches coordinate mismatches
+    // where a dynamically-appeared element has stale AOM coordinates pointing
+    // to a different field (e.g., Motorleistung coords hit Treibstoff).
+    if (target && (action === 'fill' || action === 'click' || action === 'select')) {
+      const hitName = await this.page.evaluate(
+        ({ x, y }: { x: number; y: number }) => {
+          const el = document.elementFromPoint(x, y) as HTMLElement | null;
+          if (!el) return '';
+          // Walk up to find the nearest labeled container
+          let node: HTMLElement | null = el;
+          for (let d = 0; d < 5 && node; d++) {
+            const label = node.getAttribute('aria-label') ||
+              node.getAttribute('placeholder') ||
+              node.getAttribute('name') || '';
+            if (label) return label.toLowerCase();
+            const labelledBy = node.getAttribute('aria-labelledby');
+            if (labelledBy) {
+              const ref = document.getElementById(labelledBy);
+              if (ref) return ref.textContent?.trim().toLowerCase() || '';
+            }
+            node = node.parentElement;
+          }
+          return el.textContent?.trim().slice(0, 40).toLowerCase() || '';
+        },
+        { x: clickX, y: clickY }
+      ).catch(() => '');
+
+      if (hitName && target.name) {
+        const targetLower = target.name.toLowerCase();
+        const mismatch = hitName.length > 2 && targetLower.length > 2 &&
+          !hitName.includes(targetLower) && !targetLower.includes(hitName);
+        if (mismatch) {
+          throw new ActionError(
+            `Coordinate mismatch: target is "${target.name}" but element at (${clickX}, ${clickY}) is "${hitName}"`,
+            { element: target.name, hitElement: hitName }
+          );
+        }
+      }
+    }
 
     // Human-like: move mouse along a Bézier curve to the target
     if (this.humanLike && (
@@ -728,24 +834,45 @@ export class ActionEngine {
         await withTimeout(this.page.mouse.click(clickX, clickY, { button: 'right' }), 10_000, `right-click "${target.name}"`);
         break;
 
-      case 'fill':
+      case 'fill': {
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
 
-        // Combobox only (NOT listbox): click opens dropdown trigger,
-        // need to find & focus the actual search input that appears.
-        // Skipped for listbox — those are regular lists where the click
-        // itself is sufficient to start typing/filtering.
-        if (target.role === 'combobox') {
-          // Check if an input already received focus from the click
-          const needsInputSearch = await this.page.evaluate(() => {
-            const active = document.activeElement;
-            return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
-          }).catch(() => true);
+        // For combobox/listbox: click may open a dropdown trigger.
+        // Try to find & focus the actual search input inside the dropdown.
+        // Works for both combobox AND listbox roles — many dropdown widgets
+        // report as listbox but have a hidden search input.
+        // If no input is found, falls through to normal fill (no delay wasted).
+        let isDropdownInput = false;
+        if (target.role === 'combobox' || target.role === 'listbox') {
+          isDropdownInput = await this.page.evaluate(
+            ({ x, y }: { x: number; y: number }) => {
+              // Check if an input already has focus
+              const active = document.activeElement;
+              if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
 
-          if (needsInputSearch) {
+              // Search for a visible input in the container hierarchy
+              const el = document.elementFromPoint(x, y) as HTMLElement | null;
+              let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
+              for (let depth = 0; depth < 5 && container; depth++) {
+                const input = container.querySelector(
+                  'input[role="combobox"], input[type="search"], input[type="text"], ' +
+                  'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
+                ) as HTMLInputElement | null;
+                if (input && input.offsetParent !== null) { input.focus(); return true; }
+                container = container.parentElement;
+              }
+              return false;
+            },
+            { x: clickX, y: clickY }
+          ).catch(() => false);
+
+          // If no input found immediately, wait for dropdown animation and retry
+          if (!isDropdownInput) {
             await this.page.waitForTimeout(300);
-            await this.page.evaluate(
+            isDropdownInput = await this.page.evaluate(
               ({ x, y }: { x: number; y: number }) => {
+                const active = document.activeElement;
+                if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
                 const el = document.elementFromPoint(x, y) as HTMLElement | null;
                 let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
                 for (let depth = 0; depth < 5 && container; depth++) {
@@ -753,31 +880,60 @@ export class ActionEngine {
                     'input[role="combobox"], input[type="search"], input[type="text"], ' +
                     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
                   ) as HTMLInputElement | null;
-                  if (input && input.offsetParent !== null) { input.focus(); return; }
+                  if (input && input.offsetParent !== null) { input.focus(); return true; }
                   container = container.parentElement;
                 }
+                return false;
               },
               { x: clickX, y: clickY }
-            );
+            ).catch(() => false);
           }
         }
 
         await this.page.keyboard.press('Control+a');
+        await this.page.waitForTimeout(150);
         if (this.humanLike) {
-          await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
+          await this.page.keyboard.type(value || '', { delay: 90 + Math.round(Math.random() * 40) });
         } else {
-          await withTimeout(this.page.keyboard.type(value || ''), 10_000, `type into "${target.name}"`);
+          await this.page.keyboard.type(value || '', { delay: 90 });
+        }
+
+        // Auto-select: after typing into a dropdown search, click the first matching option.
+        // This completes the dropdown interaction in one step instead of requiring a separate click.
+        if (isDropdownInput && value) {
+          await this.page.waitForTimeout(400); // wait for filter/render
+          await this.page.evaluate(
+            ({ val }: { val: string }) => {
+              const options = document.querySelectorAll('[role="option"]');
+              const lowerVal = val.toLowerCase();
+              // Exact match
+              for (const opt of Array.from(options)) {
+                if ((opt as HTMLElement).textContent?.trim().toLowerCase() === lowerVal) {
+                  (opt as HTMLElement).click(); return;
+                }
+              }
+              // Contains match
+              for (const opt of Array.from(options)) {
+                if ((opt as HTMLElement).textContent?.trim().toLowerCase().includes(lowerVal)) {
+                  (opt as HTMLElement).click(); return;
+                }
+              }
+            },
+            { val: value }
+          ).catch(() => {});
         }
         break;
+      }
 
       case 'append':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
         await this.page.keyboard.press('End');
         await this.page.keyboard.press('Control+End');
+        await this.page.waitForTimeout(150);
         if (this.humanLike) {
-          await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
+          await this.page.keyboard.type(value || '', { delay: 90 + Math.round(Math.random() * 40) });
         } else {
-          await withTimeout(this.page.keyboard.type(value || ''), 10_000, `append to "${target.name}"`);
+          await this.page.keyboard.type(value || '', { delay: 90 });
         }
         break;
 
@@ -793,8 +949,8 @@ export class ActionEngine {
       case 'select':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
 
-        if (target.role === 'combobox') {
-          // Custom combobox: click trigger → find input → type to filter → click option
+        if (target.role === 'combobox' || target.role === 'listbox') {
+          // Custom dropdown: click trigger → find input → type to filter → click option
           const selectNeedsSearch = await this.page.evaluate(() => {
             const active = document.activeElement;
             return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
@@ -990,11 +1146,17 @@ export class ActionEngine {
    * Returns true if a recovery action was performed.
    */
   async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
-    // Pattern 1: Cookie/consent banner
-    const cookieElement = state.elements.find(e =>
-      /cookie|consent|accept|akzeptieren|alle akzeptieren|accept all|got it|verstanden|i agree/i.test(e.name) &&
-      (e.role === 'button' || e.role === 'link')
+    // Pattern 1: Cookie/consent banner — prefer accept/agree buttons over settings buttons
+    const cookieCandidates = state.elements.filter(e =>
+      (e.role === 'button' || e.role === 'link') &&
+      /cookie|consent|accept|akzeptieren|zustimmen|accept all|got it|verstanden|i agree/i.test(e.name)
     );
+    // Prioritize buttons that actually ACCEPT (not "settings", "einstellungen", "manage")
+    const acceptPattern = /akzeptieren|accept|zustimmen|agree|got it|verstanden|alle /i;
+    const settingsPattern = /einstell|manage|settings|preferences|verwalten|anpassen/i;
+    const cookieElement = cookieCandidates.find(e => acceptPattern.test(e.name) && !settingsPattern.test(e.name))
+      ?? cookieCandidates.find(e => !settingsPattern.test(e.name))
+      ?? cookieCandidates[0];
     if (cookieElement) {
       this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
       try {

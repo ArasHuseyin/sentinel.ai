@@ -38,6 +38,7 @@ describeE2E('E2E: Real Browser Tests', () => {
       verbose: 2,
       viewport: { width: 1920, height: 1080 },
       domSettleTimeoutMs: 3000,
+      plannerModel: 'gemini-3.1-pro-preview',
     });
     await sentinel.init();
   }, 30_000);

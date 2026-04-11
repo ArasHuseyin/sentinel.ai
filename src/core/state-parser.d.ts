@@ -7,6 +7,7 @@ export interface UIElement {
     description?: string;
     region?: PageRegion;
     value?: string;
+    error?: string;
     boundingClientRect: {
         x: number;
         y: number;

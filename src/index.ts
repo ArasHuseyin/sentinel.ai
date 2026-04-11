@@ -11,6 +11,7 @@ import { ExtractionEngine } from './api/extract.js';
 import { ObservationEngine } from './api/observe.js';
 import type { ObserveResult } from './api/observe.js';
 import { GeminiService } from './utils/gemini.js';
+import { GeminiProvider } from './utils/providers/gemini-provider.js';
 import type { SchemaInput } from './utils/gemini.js';
 import { Verifier } from './reliability/verifier.js';
 import { AgentLoop } from './agent/agent-loop.js';
@@ -161,6 +162,18 @@ export interface SentinelOptions {
    */
   provider?: LLMProvider;
   /**
+   * Separate LLM provider for the agent planner. Allows using a stronger model
+   * for planning decisions while keeping a faster/cheaper model for act/extract.
+   * @example new GeminiProvider({ apiKey: '...', model: 'gemini-3.1-pro-preview' })
+   */
+  plannerProvider?: LLMProvider;
+  /**
+   * Gemini model name for the planner (shorthand for plannerProvider).
+   * Creates a GeminiProvider with this model name using the same API key.
+   * @example 'gemini-3.1-pro-preview'
+   */
+  plannerModel?: string;
+  /**
    * How long (ms) to wait for the DOM to settle after navigation/actions (default: 3000).
    */
   domSettleTimeoutMs?: number;
@@ -197,6 +210,7 @@ export class Sentinel extends EventEmitter {
   private recorder: WorkflowRecorder;
   private tokenTracker: TokenTracker;
   private gemini: GeminiService | LLMProvider;
+  private plannerLLM: LLMProvider | null = null;
   private readonly visionFallback: boolean;
   private readonly apiKey: string;
   /** Tracks active CDP sessions created by extend() so they can be detached on re-extend. */
@@ -236,6 +250,13 @@ export class Sentinel extends EventEmitter {
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
     this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview');
+
+    // Separate planner LLM (optional — uses stronger model for planning decisions)
+    if (options.plannerProvider) {
+      this.plannerLLM = options.plannerProvider;
+    } else if (options.plannerModel) {
+      this.plannerLLM = new GeminiProvider({ apiKey: options.apiKey, model: options.plannerModel });
+    }
 
     // Wire token usage tracking
     const provider = this.gemini as any;
@@ -298,7 +319,7 @@ export class Sentinel extends EventEmitter {
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
-    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined);
+    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined);
 
     this.log(1, '🚀 Sentinel initialized');
   }

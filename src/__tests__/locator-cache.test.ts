@@ -319,7 +319,7 @@ describe('ActionEngine with LocatorCache', () => {
     const page = makeMockPage();
     // The cached action path calls performAction → page.mouse.click → make it throw once
     // so the cache entry is invalidated and LLM is called for the retry.
-    page.mouse.click.mockRejectedValueOnce(new Error('element detached'));
+    page.mouse.click.mockRejectedValue(new Error('element detached'));
 
     const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
