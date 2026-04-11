@@ -839,28 +839,40 @@ export class ActionEngine {
 
       if (hitName && target.name) {
         const targetLower = target.name.toLowerCase();
-        const mismatch = hitName.length > 2 && targetLower.length > 2 &&
+        // Technical IDs (contain dots, no spaces) are container/group names, not real mismatches.
+        // e.g. "auto.fahrzeug.erstbesitzv-radiogroup" is the radiogroup containing the radio button.
+        const hitIsTechnicalId = /^[\w.-]+$/.test(hitName) && hitName.includes('.');
+        const mismatch = !hitIsTechnicalId &&
+          hitName.length > 2 && targetLower.length > 2 &&
           !hitName.includes(targetLower) && !targetLower.includes(hitName);
         if (mismatch) {
           // Coordinates point to wrong element — use Playwright locator as direct fallback.
           // This is more reliable than coordinate-based clicking for dynamically positioned
           // elements (dropdown options, conditional form fields, etc.).
           this.warn(2, `[Act] Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`);
-          try {
-            const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
-            if (action === 'fill') {
-              await locator.fill(value || '', { timeout: 5000 });
-            } else {
-              await locator.click({ timeout: 5000 });
-            }
-            return; // locator click succeeded — skip coordinate-based click
-          } catch {
-            // Locator fallback also failed — throw the original mismatch error
-            throw new ActionError(
-              `Coordinate mismatch: target is "${target.name}" but element at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) is "${hitName}"`,
-              { element: target.name, hitElement: hitName }
-            );
+          // Try multiple locator strategies: full name, short name (after ':'), just last word
+          const nameVariants = [target.name];
+          if (target.name.includes(':')) {
+            nameVariants.push(target.name.split(':').pop()!.trim());
           }
+          for (const name of nameVariants) {
+            try {
+              const locator = this.page.getByRole(target.role as any, { name, exact: false });
+              if (action === 'fill') {
+                await locator.fill(value || '', { timeout: 3000 });
+              } else {
+                await locator.click({ timeout: 3000 });
+              }
+              return; // locator click succeeded
+            } catch {
+              continue; // try next name variant
+            }
+          }
+          // All variants failed
+          throw new ActionError(
+            `Coordinate mismatch: target is "${target.name}" but element at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) is "${hitName}"`,
+            { element: target.name, hitElement: hitName }
+          );
         }
       }
     }
