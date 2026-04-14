@@ -40,7 +40,7 @@ logs/
 # Coverage
 coverage/
 
-# Claude Code
+# IDE / local tooling
 .claude/
 CLAUDE.md
 
