@@ -50,3 +50,7 @@ improvements.md
 
 # Debug scripts
 debug-*.ts
+
+# Internal project notes (do not publish)
+TODO.md
+task.md
