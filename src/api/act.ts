@@ -813,7 +813,12 @@ export class ActionEngine {
     // actually corresponds to the intended target. Catches coordinate mismatches
     // where a dynamically-appeared element has stale AOM coordinates pointing
     // to a different field (e.g., Motorleistung coords hit Treibstoff).
-    if (target && (action === 'fill' || action === 'click' || action === 'select')) {
+    //
+    // Skip for slider+fill: the locator.fill() fallback fails silently on ARIA-only
+    // sliders, but the dedicated slider-fill logic in the switch below has its own
+    // locator-based element lookup with 3 fallback strategies.
+    const isSliderFill = target?.role === 'slider' && action === 'fill';
+    if (target && !isSliderFill && (action === 'fill' || action === 'click' || action === 'select')) {
       const hitName = await this.page.evaluate(
         ({ x, y }: { x: number; y: number }) => {
           const el = document.elementFromPoint(x, y) as HTMLElement | null;
@@ -923,20 +928,115 @@ export class ActionEngine {
         break;
 
       case 'fill': {
-        // Range slider: set value directly via JS (can't type into sliders)
+        // Slider: three strategies, in order:
+        //  1. Native <input type="range"> — set .value directly
+        //  2. Sibling text/number/tel input in shared container (e.g. Amazon price filter,
+        //     idealo, Zalando) — fill the spatially-closest input
+        //  3. Keyboard simulation on the slider itself (ARIA-only sliders) — uses
+        //     aria-valuemin/valuemax/valuenow + Arrow keys to reach target value
         if (target && target.role === 'slider' && value) {
-          await this.page.evaluate(
-            ({ x, y, val }: { x: number; y: number; val: string }) => {
-              const el = document.elementFromPoint(x, y) as HTMLInputElement | null;
-              const input = el?.tagName === 'INPUT' ? el : el?.querySelector('input[type="range"]') as HTMLInputElement | null;
-              if (input) {
-                input.value = val;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
+          // Get an element handle for the actual slider via Playwright locator.
+          // Coordinates from the AOM may be stale or point to a different element
+          // (Amazon's Mindestpreis slider reports coords under the header).
+          let sliderHandle: import('playwright').ElementHandle | null = null;
+          try {
+            const loc = this.page.getByRole('slider', { name: target.name, exact: false }).first();
+            sliderHandle = await loc.elementHandle({ timeout: 2000 });
+          } catch { /* fall through to coord-based lookup */ }
+
+          const handled = await this.page.evaluate(
+            ({ slider, x, y, val }: { slider: HTMLElement | null; x: number; y: number; val: string }) => {
+              const sliderEl = slider ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+              if (!sliderEl) return 'none';
+
+              // Strategy 1: native range input
+              const rangeInput = sliderEl.tagName === 'INPUT' && (sliderEl as HTMLInputElement).type === 'range'
+                ? (sliderEl as HTMLInputElement)
+                : sliderEl.querySelector('input[type="range"]') as HTMLInputElement | null;
+              if (rangeInput) {
+                rangeInput.value = val;
+                rangeInput.dispatchEvent(new Event('input', { bubbles: true }));
+                rangeInput.dispatchEvent(new Event('change', { bubbles: true }));
+                return 'range';
               }
+
+              // Strategy 2: sibling text/number/tel input in shared container
+              // Walk up until we find a container with numeric text inputs
+              let container: HTMLElement | null = sliderEl;
+              for (let depth = 0; depth < 8 && container; depth++) {
+                const inputs = Array.from(container.querySelectorAll<HTMLInputElement>(
+                  'input[type="text"], input[type="tel"], input[type="number"], input:not([type])'
+                )).filter(inp => inp.offsetParent !== null && !inp.disabled && !inp.readOnly);
+
+                if (inputs.length > 0) {
+                  // Pick the input closest to the slider's centroid
+                  const sliderRect = sliderEl.getBoundingClientRect();
+                  const sx = sliderRect.left + sliderRect.width / 2;
+                  const sy = sliderRect.top + sliderRect.height / 2;
+                  const closest = inputs
+                    .map(inp => {
+                      const r = inp.getBoundingClientRect();
+                      const cx = r.left + r.width / 2;
+                      const cy = r.top + r.height / 2;
+                      return { inp, dist: Math.hypot(cx - sx, cy - sy) };
+                    })
+                    .sort((a, b) => a.dist - b.dist)[0];
+
+                  if (closest) {
+                    const input = closest.inp;
+                    const nativeSetter = Object.getOwnPropertyDescriptor(
+                      window.HTMLInputElement.prototype, 'value'
+                    )?.set;
+                    input.focus();
+                    nativeSetter?.call(input, val);
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'sibling';
+                  }
+                }
+                container = container.parentElement;
+              }
+
+              return 'keyboard'; // signal to caller to try keyboard simulation
             },
-            { x: clickX, y: clickY, val: value }
+            { slider: sliderHandle, x: clickX, y: clickY, val: value }
           );
+
+          if (handled === 'keyboard') {
+            // Strategy 3: keyboard simulation using aria-valuemin/valuemax/valuenow
+            const sliderInfo = await this.page.evaluate(
+              ({ slider, x, y }: { slider: HTMLElement | null; x: number; y: number }) => {
+                const el = slider ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+                if (!el) return null;
+                const min = parseFloat(el.getAttribute('aria-valuemin') ?? '0');
+                const max = parseFloat(el.getAttribute('aria-valuemax') ?? '100');
+                const now = parseFloat(el.getAttribute('aria-valuenow') ?? String(min));
+                return { min, max, now };
+              },
+              { slider: sliderHandle, x: clickX, y: clickY }
+            ).catch(() => null);
+
+            if (sliderInfo && !isNaN(sliderInfo.min) && !isNaN(sliderInfo.max)) {
+              const targetValue = parseFloat(value);
+              if (!isNaN(targetValue) && targetValue >= sliderInfo.min && targetValue <= sliderInfo.max) {
+                if (sliderHandle) {
+                  await sliderHandle.focus().catch(() => {});
+                } else {
+                  await this.page.mouse.click(clickX, clickY);
+                }
+                const steps = Math.round(targetValue - sliderInfo.now);
+                const key = steps >= 0 ? 'ArrowRight' : 'ArrowLeft';
+                const count = Math.min(Math.abs(steps), 500); // cap to avoid runaway
+                for (let i = 0; i < count; i++) {
+                  await this.page.keyboard.press(key);
+                }
+              }
+            }
+          }
+
+          if (sliderHandle) {
+            await sliderHandle.dispose().catch(() => {});
+          }
           break;
         }
 
