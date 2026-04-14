@@ -266,7 +266,7 @@ describe('ActionEngine', () => {
     // fill uses coordinate-based: mouse.click to focus, Control+a to select all, keyboard.type to enter value
     expect(page.mouse.click).toHaveBeenCalled();
     expect(page.keyboard.press as jest.Mock).toHaveBeenCalledWith('Control+a');
-    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith('hello');
+    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith('hello', { delay: 90 });
   });
 
   it('append uses page.mouse.click to focus, keyboard.press(End) to move cursor, and keyboard.type to append', async () => {
@@ -282,7 +282,7 @@ describe('ActionEngine', () => {
     const pressCalls = (page.keyboard.press as jest.Mock).mock.calls as any[][];
     expect(pressCalls.some((args: any[]) => args[0] === 'End')).toBe(true);
     expect(pressCalls.some((args: any[]) => args[0] === 'Control+End')).toBe(true);
-    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith(' extra text');
+    expect(page.keyboard.type as jest.Mock).toHaveBeenCalledWith(' extra text', { delay: 90 });
   });
 
   // ─── performAction: remaining action types ──────────────────────────────────
@@ -886,9 +886,9 @@ describe('ActionEngine', () => {
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
     // "Submit" should be in the prompt; less relevant elements may be excluded
     expect(promptArg).toContain('Submit');
-    // Compact format uses "id | role | name" lines — count occurrences of " | " pattern
-    const elementLineCount = (promptArg.match(/\d+ \| \w+ \| /g) ?? []).length;
-    expect(elementLineCount).toBeLessThanOrEqual(2);
+    // Form fields + nearby buttons are always kept regardless of maxElements.
+    // The prompt should contain Submit (keyword match) and Email (form field, always kept).
+    expect(promptArg).toContain('Email');
   });
 
   it('chunk-processing: no filtering when element count ≤ maxElements', async () => {
@@ -1034,6 +1034,99 @@ describe('ActionEngine', () => {
 
     expect(result.success).toBe(true);
     expect(result.message).toContain('auto-recovery');
+  });
+
+  // ─── Slider fill: range, sibling-input, and keyboard strategies ───────────
+
+  it('fills a native range slider via in-page evaluate', async () => {
+    const page = makeMockPage();
+    // Slider evaluate returns 'range' → native input[type=range] was set
+    (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
+      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1] as any)) {
+        return 'range';
+      }
+      return { x: 0, y: 0 };
+    });
+
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'slider', name: 'Mindestpreis', boundingClientRect: { x: 200, y: 640, width: 20, height: 20 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'fill', value: '100', reasoning: 'Set min price' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Set minimum price to 100');
+
+    expect(result.success).toBe(true);
+    expect(result.action).toContain('fill');
+    // Verify evaluate was called with the value
+    const evalCalls = (page.evaluate as jest.Mock).mock.calls;
+    const sliderCall = evalCalls.find(c => c[1] && typeof c[1] === 'object' && 'val' in (c[1] as any));
+    expect(sliderCall).toBeDefined();
+    expect((sliderCall![1] as any).val).toBe('100');
+  });
+
+  it('falls back to sibling text-input when no native range input exists', async () => {
+    const page = makeMockPage();
+    // Slider evaluate returns 'sibling' → sibling text input was filled
+    (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
+      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1] as any)) {
+        return 'sibling';
+      }
+      return { x: 0, y: 0 };
+    });
+
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'slider', name: 'Mindestpreis', boundingClientRect: { x: 200, y: 640, width: 20, height: 20 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'fill', value: '100', reasoning: 'Set min price' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Set minimum price to 100');
+
+    expect(result.success).toBe(true);
+    // Keyboard fallback must NOT run when the sibling-input strategy succeeded
+    expect((page.keyboard.press as jest.Mock).mock.calls.filter((c: any) => c[0] === 'ArrowRight' || c[0] === 'ArrowLeft')).toHaveLength(0);
+  });
+
+  it('uses keyboard simulation for ARIA-only sliders', async () => {
+    const page = makeMockPage();
+    // After slider-fill evaluate signals 'keyboard', the next evaluate with {x,y}
+    // is the aria-slider-info call which must return min/max/now
+    let sliderFillTriggered = false;
+    (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
+      const arg = args[1];
+      if (arg && typeof arg === 'object' && 'val' in arg) {
+        sliderFillTriggered = true;
+        return 'keyboard';
+      }
+      if (sliderFillTriggered && arg && typeof arg === 'object' && 'x' in arg && !('val' in arg)) {
+        sliderFillTriggered = false;
+        return { min: 0, max: 500, now: 0 };
+      }
+      return { x: 0, y: 0 };
+    });
+
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'slider', name: 'Volume', boundingClientRect: { x: 200, y: 640, width: 20, height: 20 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 0, action: 'fill', value: '5', reasoning: 'Set volume' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Set volume to 5');
+
+    expect(result.success).toBe(true);
+    // Arrow keys should have been pressed to move from now=0 → target=5
+    const arrowPresses = (page.keyboard.press as jest.Mock).mock.calls.filter((c: any) => c[0] === 'ArrowRight');
+    expect(arrowPresses.length).toBe(5);
   });
 });
 
@@ -1277,15 +1370,16 @@ describe('filterRelevantElements', () => {
     expect(result).toBe(els); // same reference, no copy
   });
 
-  it('keeps top-N elements by keyword overlap', () => {
+  it('keeps top-N elements by keyword overlap, always preserving form fields and nearby buttons', () => {
     const els = [
       makeEl(0, 'button', 'Submit'),
       makeEl(1, 'textbox', 'Email'),
       makeEl(2, 'link', 'Home'),
     ];
     const result = filterRelevantElements(els, 'fill in the email field', 1);
-    expect(result).toHaveLength(1);
-    expect(result[0]!.name).toBe('Email');
+    // Form fields (textbox) and nearby buttons are always kept
+    expect(result.find(e => e.name === 'Email')).toBeDefined();
+    expect(result.length).toBeGreaterThanOrEqual(1);
   });
 
   it('scores by role + name so role matches count', () => {

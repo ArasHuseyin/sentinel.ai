@@ -8,6 +8,7 @@ import { slugifyInstruction } from '../core/selector-generator.js';
 import { AgentMemory } from './memory.js';
 import { Planner } from './planner.js';
 import { withSpan } from '../utils/telemetry.js';
+import { generateTOTP } from '../utils/totp.js';
 
 /** Returns a key derived from `slug` that does not yet exist in `map`. */
 function uniqueKey(slug: string, map: Record<string, unknown>): string {
@@ -62,16 +63,21 @@ export class AgentLoop {
   private planner: Planner;
   private memory: AgentMemory;
 
+  private mfaConfig: { type: 'totp'; secret: string; digits?: number; period?: number } | undefined;
+
   constructor(
     private actionEngine: ActionEngine,
     private extractionEngine: ExtractionEngine,
     private stateParser: StateParser,
     private gemini: LLMProvider,
     private page?: Page,
-    private visionGrounding?: VisionGrounding
+    private visionGrounding?: VisionGrounding,
+    plannerLLM?: LLMProvider,
+    mfaConfig?: { type: 'totp'; secret: string; digits?: number; period?: number }
   ) {
-    this.planner = new Planner(gemini);
+    this.planner = new Planner(plannerLLM ?? gemini);
     this.memory = new AgentMemory(20);
+    this.mfaConfig = mfaConfig;
   }
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<AgentResult> {
@@ -100,6 +106,11 @@ export class AgentLoop {
       if (stepNumber <= 3) {
         const recovered = await this.actionEngine.tryRecoverFromBlocker(state);
         if (recovered) {
+          // Scroll to top after blocker removal — the main content/form
+          // is almost always at the top of the page after overlays are gone.
+          if (this.page) {
+            await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+          }
           this.stateParser.invalidateCache();
           state = await this.stateParser.parse();
         }
@@ -116,9 +127,16 @@ export class AgentLoop {
         }
       }
 
+      // Generate TOTP code if MFA is configured — inject into goal so planner can use it
+      let effectiveGoal = goal;
+      if (this.mfaConfig?.type === 'totp') {
+        const code = generateTOTP(this.mfaConfig.secret, this.mfaConfig.digits, this.mfaConfig.period);
+        effectiveGoal = `${goal}\n\nIMPORTANT: If you see a 2FA/verification code/OTP field, fill it with: ${code}`;
+      }
+
       let planned;
       try {
-        planned = await this.planner.planNextStep(goal, state, this.memory, pageDescription);
+        planned = await this.planner.planNextStep(effectiveGoal, state, this.memory, pageDescription);
       } catch (err: any) {
         console.error(`[Agent] Planner error: ${err.message}`);
         break;
@@ -128,7 +146,27 @@ export class AgentLoop {
 
       // 3. Check if goal is already complete
       if (planned.isGoalComplete) {
-        console.log(`[Agent] ✅ Goal marked complete by planner.`);
+        // If the planner marks goal complete AND plans an extraction,
+        // execute the extraction before stopping — the data is part of the goal.
+        if (planned.type === 'extract') {
+          if (extractedData !== undefined) {
+            // Already extracted in a previous step — reuse, don't call LLM again
+            console.log(`[Agent] ✅ Goal complete (extraction already done).`);
+          } else {
+            console.log(`[Agent] ✅ Goal complete — executing final extraction.`);
+            try {
+              const extracted = await this.extractionEngine.extract(
+                planned.instruction, planned.extractionSchema as any
+              );
+              extractedData = extracted;
+              console.log(`[Agent] 📊 Extracted:`, JSON.stringify(extracted).slice(0, 500));
+            } catch (err: any) {
+              console.warn(`[Agent] ⚠️  Extraction failed: ${err.message}`);
+            }
+          }
+        } else {
+          console.log(`[Agent] ✅ Goal marked complete by planner.`);
+        }
         const event: AgentStepEvent = {
           stepNumber,
           type: planned.type ?? 'act',
@@ -137,6 +175,7 @@ export class AgentLoop {
           success: true,
           pageUrl: state.url,
           pageTitle: state.title,
+          ...(extractedData !== undefined ? { data: extractedData } : {}),
         };
         stepEvents.push(event);
         options.onStep?.(event);
@@ -168,6 +207,7 @@ export class AgentLoop {
             const extracted = await this.extractionEngine.extract(planned.instruction, schema);
             extractedData = extracted;
             stepData = extracted;
+            console.log(`[Agent] 📊 Extracted:`, JSON.stringify(extracted).slice(0, 500));
             span.setAttributes({ 'sentinel.success': true });
             return { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
           } catch (err: any) {
@@ -212,31 +252,13 @@ export class AgentLoop {
                 const titleChanged = state.title !== stateAfter.title;
                 const countChanged = state.elements.length !== stateAfter.elements.length;
 
-                // Check if any element names changed (allow up to 10% tolerance)
-                let nameChanges = 0;
-                const maxLen = Math.max(state.elements.length, stateAfter.elements.length);
-                for (let i = 0; i < maxLen; i++) {
-                  if (state.elements[i]?.name !== stateAfter.elements[i]?.name) nameChanges++;
-                }
-
-                // Check if any element states changed (focus, checked, disabled)
-                let stateChanges = 0;
-                for (let i = 0; i < Math.min(state.elements.length, stateAfter.elements.length); i++) {
-                  const before = state.elements[i]?.state;
-                  const after = stateAfter.elements[i]?.state;
-                  if (before?.focused !== after?.focused) stateChanges++;
-                  if (before?.checked !== after?.checked) stateChanges++;
-                  if (before?.disabled !== after?.disabled) stateChanges++;
-                }
-
-                // Check if any element values changed
-                let valueChanges = 0;
-                for (let i = 0; i < Math.min(state.elements.length, stateAfter.elements.length); i++) {
-                  if (state.elements[i]?.value !== stateAfter.elements[i]?.value) valueChanges++;
-                }
+                // Build compact fingerprints of both states for comparison.
+                // Includes name, role, region, value, and key state flags.
+                const fingerprint = (els: typeof state.elements) =>
+                  els.map(e => `${e.role}|${e.name}|${e.region ?? ''}|${e.value ?? ''}|${e.error ?? ''}|${e.state?.focused ? 'F' : ''}${e.state?.checked ?? ''}${e.state?.disabled ? 'D' : ''}`).join('\n');
 
                 const unchanged = !urlChanged && !titleChanged && !countChanged &&
-                  nameChanges === 0 && stateChanges === 0 && valueChanges === 0;
+                  fingerprint(state.elements) === fingerprint(stateAfter.elements);
 
                 if (unchanged) {
                   console.warn(`[Agent] ⚠️  Action reported success but page state unchanged — treating as failed`);
@@ -298,26 +320,30 @@ export class AgentLoop {
         consecutiveFailures = 0;
       }
 
-      // Instruction-loop detection: same or semantically similar instruction
-      // attempted 3 times in a row indicates the planner is stuck.
+      // Instruction-loop detection: same TARGET element acted on 3 times
+      // in a row without progress indicates the planner is stuck.
+      // Uses the actual target element name (not the full instruction text)
+      // to avoid false positives when different fields have similar instructions.
       const recentHistory = this.memory.getHistory().slice(-3);
       if (recentHistory.length === 3) {
-        // Exact match
-        const exactLoop = new Set(recentHistory.map(s => s.instruction)).size === 1;
-        // Semantic match: normalize to lowercase core words, ignore phrasing differences
-        const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9äöüß\s]/g, '').replace(/\s+/g, ' ').trim();
-        const normalized = recentHistory.map(s => normalize(s.instruction));
-        const semanticLoop = !exactLoop && new Set(normalized).size === 1;
-        // Target match: same element targeted 3 times (extract element name from action string)
+        // Extract target element + action type from the action string
         const extractTarget = (s: string) => {
           const match = s.match(/on\s+"([^"]+)"/i) ?? s.match(/"([^"]+)"/);
           return match?.[1]?.toLowerCase() ?? '';
         };
-        const targets = recentHistory.map(s => extractTarget(s.action));
-        const targetLoop = !exactLoop && !semanticLoop
-          && targets[0] !== '' && new Set(targets).size === 1;
+        const extractAction = (s: string) => {
+          const match = s.match(/^(\w+)\s/);
+          return match?.[1]?.toLowerCase() ?? s.toLowerCase();
+        };
 
-        if (exactLoop || semanticLoop || targetLoop) {
+        // Same action + same target 3 times = loop
+        const actionTargets = recentHistory.map(s => `${extractAction(s.action)}:${extractTarget(s.action)}`);
+        const targetLoop = actionTargets[0] !== ':' && new Set(actionTargets).size === 1;
+
+        // Exact instruction match = loop (regardless of target)
+        const exactLoop = new Set(recentHistory.map(s => s.instruction)).size === 1;
+
+        if (exactLoop || targetLoop) {
           console.error(
             `[Agent] ❌ Aborting: instruction loop detected — ` +
             `"${recentHistory[0]?.instruction}" repeated 3 times without progress.`

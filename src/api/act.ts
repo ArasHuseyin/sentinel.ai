@@ -189,7 +189,7 @@ function tokenize(text: string): string[] {
   return [...new Set(
     text
       .toLowerCase()
-      .replace(/[^a-z0-9äöüß\s]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter(t => t.length >= 2 && !STOP_WORDS.has(t))
   )];
@@ -214,21 +214,48 @@ export function filterRelevantElements(
   const tokens = tokenize(instruction);
   if (tokens.length === 0) return elements.slice(0, maxCount);
 
-  // Always-keep: cookie/consent/blocker elements must never be filtered out
+  // Always-keep: form fields, nearby buttons, and cookie/blocker elements.
+  // Form fields are the primary interaction targets — dropping them because their
+  // label doesn't keyword-match the (possibly different-language) goal is a bug.
+  // Buttons near form fields (submit/proceed) must also be kept — they're the
+  // natural next action after filling the form.
+  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker']);
   const alwaysKeep: typeof elements = [];
   const rest: typeof elements = [];
   for (const el of elements) {
-    if ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name)) {
+    if (FORM_ROLES.has(el.role) ||
+        ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name))) {
       alwaysKeep.push(el);
     } else {
       rest.push(el);
     }
   }
 
+  // Also keep buttons/links that are positionally near form fields (submit buttons).
+  // Submit buttons are almost always directly below the form — preserving them
+  // ensures the LLM can submit after filling, regardless of button label language.
+  const formEls = alwaysKeep.filter(e => FORM_ROLES.has(e.role));
+  if (formEls.length > 0) {
+    const formYs = formEls.map(e => e.boundingClientRect.y);
+    const minFormY = Math.min(...formYs);
+    const maxFormY = Math.max(...formEls.map(e => e.boundingClientRect.y + e.boundingClientRect.height));
+    const margin = Math.max(maxFormY - minFormY, 300);
+
+    for (let i = rest.length - 1; i >= 0; i--) {
+      const el = rest[i]!;
+      if ((el.role === 'button' || el.role === 'link') &&
+          el.boundingClientRect.y >= minFormY - 50 &&
+          el.boundingClientRect.y <= maxFormY + margin) {
+        alwaysKeep.push(el);
+        rest.splice(i, 1);
+      }
+    }
+  }
+
   const scored = rest.map(el => {
     const text = `${el.role} ${el.name}`
       .toLowerCase()
-      .replace(/[^a-z0-9äöüß\s]/g, ' ');
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ');
     let score = 0;
     for (const token of tokens) {
       if (text.includes(token)) score++;
@@ -249,7 +276,7 @@ function hasRelevantElements(elements: UIElement[], instruction: string): boolea
   const tokens = tokenize(instruction);
   if (tokens.length === 0) return true;
   return elements.some(el => {
-    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^a-z0-9äöüß\s]/g, ' ');
+    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
     return tokens.some(token => text.includes(token));
   });
 }
@@ -276,7 +303,14 @@ export class ActionEngine {
      */
     private verbose: 0 | 1 | 2 | 3 = 0,
     /** When true, mouse moves along a Bézier curve and per-action delays are added. */
-    private humanLike = false
+    private humanLike = false,
+    /**
+     * Element detection mode:
+     *  'aom' (default) — AOM coordinates, vision only as late fallback
+     *  'hybrid' — AOM primary, vision on coordinate mismatch
+     *  'vision' — Vision as primary, AOM as fallback
+     */
+    private mode: 'aom' | 'hybrid' | 'vision' = 'aom'
   ) {}
 
   private log(level: 1 | 2 | 3, message: string): void {
@@ -322,11 +356,12 @@ export class ActionEngine {
     }
 
     // ── Scroll-Discovery: find not-yet-rendered elements ──────────────────────
-    // When no elements match the instruction keywords, the target may be outside
-    // the viewport in a virtual-scrolling container. Scroll and re-parse until
-    // a relevant element appears or attempts are exhausted.
+    // Only scroll when the page has very few elements (likely a loading/empty state)
+    // AND no keyword matches exist. When the page has many elements, the LLM can
+    // pick the right one even without keyword overlap — scrolling is wasteful.
     let currentState = state;
-    if (currentState.elements.length > 0 && !hasRelevantElements(currentState.elements, resolvedInstruction)) {
+    const fewButSomeElements = currentState.elements.length > 0 && currentState.elements.length < 10;
+    if (fewButSomeElements && !hasRelevantElements(currentState.elements, resolvedInstruction)) {
       this.log(2, `[Act] No relevant elements for "${resolvedInstruction}" — trying scroll discovery`);
       for (let batch = 0; batch < MAX_SCROLL_DISCOVERY_BATCHES; batch++) {
         // Batch: scroll 3 times quickly with short pauses between
@@ -424,6 +459,46 @@ export class ActionEngine {
 
     this.log(2, `[Act] reasoning: ${decision.reasoning}`);
     this.log(3, `[Act] decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`);
+
+    // ── Vision-primary mode: use screenshot + vision LLM before AOM coordinates ──
+    if (this.mode === 'vision' && this.visionGrounding && !isScrollWithoutTarget) {
+      const firstTarget = currentState.elements.find(e => e.id === candidateIds[0]) ?? null;
+      if (firstTarget) {
+        try {
+          const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
+          const screenshot = await this.visionGrounding.takeScreenshot(this.page);
+          const bbox = await this.visionGrounding.findElement(
+            `${decision.action} on "${firstTarget.name}"`,
+            screenshot,
+            viewport.width,
+            viewport.height
+          );
+          if (bbox) {
+            const cx = bbox.x + bbox.width / 2;
+            const cy = bbox.y + bbox.height / 2;
+            if (decision.action === 'fill' || decision.action === 'append') {
+              await this.page.mouse.click(cx, cy);
+              await this.page.waitForTimeout(150);
+              await this.page.keyboard.press('Control+a');
+              await this.page.waitForTimeout(150);
+              await this.page.keyboard.type(decision.value || '', { delay: 90 });
+            } else {
+              await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${firstTarget.name}"`);
+            }
+            await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+            const selector = await generateSelector(this.page, firstTarget) ?? undefined;
+            return {
+              success: true,
+              message: `Successfully performed ${decision.action} on "${firstTarget.name}" (via Vision)`,
+              action: `${decision.action} on "${firstTarget.name}" (${firstTarget.role})`,
+              ...(selector !== undefined ? { selector } : {}),
+            };
+          }
+        } catch (visionErr: any) {
+          this.warn(2, `[Act] Vision-primary failed: ${visionErr.message} — falling back to AOM`);
+        }
+      }
+    }
 
     // ── Try each candidate in order ─────────────────────────────────────────
     // On failure, fall through to the next candidate without a new LLM call.
@@ -626,6 +701,33 @@ export class ActionEngine {
     target: UIElement | null,
     value?: string
   ): Promise<void> {
+    // Retry with backoff for transient failures (timeout, element detached, scroll issues).
+    // Non-transient errors (wrong element, validation) are thrown immediately so the
+    // caller can fall through to vision/semantic fallback instead of wasting retries.
+    const RETRY_DELAYS = [200, 500];
+    const isTransient = (err: any) =>
+      /timeout|detach|disposed|intercept|not found|outside viewport/i.test(err?.message ?? '');
+
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+      try {
+        await this.performActionOnce(action, target, value);
+        return;
+      } catch (err) {
+        if (attempt < RETRY_DELAYS.length && isTransient(err)) {
+          this.warn(2, `[Act] Transient failure (attempt ${attempt + 1}), retrying in ${RETRY_DELAYS[attempt]}ms...`);
+          await this.page.waitForTimeout(RETRY_DELAYS[attempt]!);
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private async performActionOnce(
+    action: ActionType,
+    target: UIElement | null,
+    value?: string
+  ): Promise<void> {
     // Scroll actions that don't need a target element.
     // mouse.wheel dispatches a native wheel event at the current cursor position so
     // the browser routes it to whichever element is actually scrollable — works for
@@ -646,6 +748,19 @@ export class ActionEngine {
     const cy = y + height / 2;
 
     const viewport = this.page.viewportSize() ?? { width: 1920, height: 1080 };
+
+    // Skip coordinate-based clicking entirely when coordinates are clearly impossible
+    // (e.g. y=-3184 on Booking.com autocomplete). Go straight to locator fallback.
+    if (cy < -500 || cx < -500) {
+      this.warn(2, `[Act] Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`);
+      const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
+      if (action === 'fill') {
+        await locator.fill(value || '', { timeout: 5000 });
+      } else {
+        await locator.click({ timeout: 5000 });
+      }
+      return;
+    }
 
     // Get scroll position to convert document coords to viewport coords
     let scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
@@ -673,6 +788,17 @@ export class ActionEngine {
       vpCy = cy - (scrollOffset?.y ?? 0);
     }
 
+    // Fallback: if scrollTo didn't work (SPAs may override scroll),
+    // try scrolling to page top first, then re-check
+    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
+      await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await this.page.waitForTimeout(100);
+      scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+        .catch(() => ({ x: 0, y: 0 }));
+      vpCx = cx - (scrollOffset?.x ?? 0);
+      vpCy = cy - (scrollOffset?.y ?? 0);
+    }
+
     if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
       throw new ActionError(
         `Element "${target.name}" is outside viewport at (${vpCx.toFixed(0)}, ${vpCy.toFixed(0)}) even after scrolling`,
@@ -682,6 +808,79 @@ export class ActionEngine {
 
     const clickX = vpCx;
     const clickY = vpCy;
+
+    // Click-target verification: confirm the element at (clickX, clickY)
+    // actually corresponds to the intended target. Catches coordinate mismatches
+    // where a dynamically-appeared element has stale AOM coordinates pointing
+    // to a different field (e.g., Motorleistung coords hit Treibstoff).
+    //
+    // Skip for slider+fill: the locator.fill() fallback fails silently on ARIA-only
+    // sliders, but the dedicated slider-fill logic in the switch below has its own
+    // locator-based element lookup with 3 fallback strategies.
+    const isSliderFill = target?.role === 'slider' && action === 'fill';
+    if (target && !isSliderFill && (action === 'fill' || action === 'click' || action === 'select')) {
+      const hitName = await this.page.evaluate(
+        ({ x, y }: { x: number; y: number }) => {
+          const el = document.elementFromPoint(x, y) as HTMLElement | null;
+          if (!el) return '';
+          // Walk up to find the nearest labeled container
+          let node: HTMLElement | null = el;
+          for (let d = 0; d < 5 && node; d++) {
+            const label = node.getAttribute('aria-label') ||
+              node.getAttribute('placeholder') ||
+              node.getAttribute('name') || '';
+            if (label) return label.toLowerCase();
+            const labelledBy = node.getAttribute('aria-labelledby');
+            if (labelledBy) {
+              const ref = document.getElementById(labelledBy);
+              if (ref) return ref.textContent?.trim().toLowerCase() || '';
+            }
+            node = node.parentElement;
+          }
+          return el.textContent?.trim().slice(0, 40).toLowerCase() || '';
+        },
+        { x: clickX, y: clickY }
+      ).catch(() => '');
+
+      if (hitName && target.name) {
+        const targetLower = target.name.toLowerCase();
+        // Technical IDs (contain dots, no spaces) are container/group names, not real mismatches.
+        // e.g. "auto.fahrzeug.erstbesitzv-radiogroup" is the radiogroup containing the radio button.
+        const hitIsTechnicalId = /^[\w.-]+$/.test(hitName) && hitName.includes('.');
+        const mismatch = !hitIsTechnicalId &&
+          hitName.length > 2 && targetLower.length > 2 &&
+          !hitName.includes(targetLower) && !targetLower.includes(hitName);
+        if (mismatch) {
+          // Coordinates point to wrong element — use Playwright locator as direct fallback.
+          // This is more reliable than coordinate-based clicking for dynamically positioned
+          // elements (dropdown options, conditional form fields, etc.).
+          this.warn(2, `[Act] Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`);
+          // Try multiple locator strategies: full name, short name (after ':'), just last word
+          const nameVariants = [target.name];
+          if (target.name.includes(':')) {
+            nameVariants.push(target.name.split(':').pop()!.trim());
+          }
+          for (const name of nameVariants) {
+            try {
+              const locator = this.page.getByRole(target.role as any, { name, exact: false });
+              if (action === 'fill') {
+                await locator.fill(value || '', { timeout: 3000 });
+              } else {
+                await locator.click({ timeout: 3000 });
+              }
+              return; // locator click succeeded
+            } catch {
+              continue; // try next name variant
+            }
+          }
+          // All variants failed
+          throw new ActionError(
+            `Coordinate mismatch: target is "${target.name}" but element at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) is "${hitName}"`,
+            { element: target.name, hitElement: hitName }
+          );
+        }
+      }
+    }
 
     // Human-like: move mouse along a Bézier curve to the target
     if (this.humanLike && (
@@ -728,24 +927,157 @@ export class ActionEngine {
         await withTimeout(this.page.mouse.click(clickX, clickY, { button: 'right' }), 10_000, `right-click "${target.name}"`);
         break;
 
-      case 'fill':
+      case 'fill': {
+        // Slider: three strategies, in order:
+        //  1. Native <input type="range"> — set .value directly
+        //  2. Sibling text/number/tel input in shared container (e.g. Amazon price filter,
+        //     idealo, Zalando) — fill the spatially-closest input
+        //  3. Keyboard simulation on the slider itself (ARIA-only sliders) — uses
+        //     aria-valuemin/valuemax/valuenow + Arrow keys to reach target value
+        if (target && target.role === 'slider' && value) {
+          // Get an element handle for the actual slider via Playwright locator.
+          // Coordinates from the AOM may be stale or point to a different element
+          // (Amazon's Mindestpreis slider reports coords under the header).
+          let sliderHandle: import('playwright').ElementHandle | null = null;
+          try {
+            const loc = this.page.getByRole('slider', { name: target.name, exact: false }).first();
+            sliderHandle = await loc.elementHandle({ timeout: 2000 });
+          } catch { /* fall through to coord-based lookup */ }
+
+          const handled = await this.page.evaluate(
+            ({ slider, x, y, val }: { slider: Node | null; x: number; y: number; val: string }) => {
+              const sliderEl = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+              if (!sliderEl) return 'none';
+
+              // Strategy 1: native range input
+              const rangeInput = sliderEl.tagName === 'INPUT' && (sliderEl as HTMLInputElement).type === 'range'
+                ? (sliderEl as HTMLInputElement)
+                : sliderEl.querySelector('input[type="range"]') as HTMLInputElement | null;
+              if (rangeInput) {
+                rangeInput.value = val;
+                rangeInput.dispatchEvent(new Event('input', { bubbles: true }));
+                rangeInput.dispatchEvent(new Event('change', { bubbles: true }));
+                return 'range';
+              }
+
+              // Strategy 2: sibling text/number/tel input in shared container
+              // Walk up until we find a container with numeric text inputs
+              let container: HTMLElement | null = sliderEl;
+              for (let depth = 0; depth < 8 && container; depth++) {
+                const inputs = Array.from(container.querySelectorAll<HTMLInputElement>(
+                  'input[type="text"], input[type="tel"], input[type="number"], input:not([type])'
+                )).filter(inp => inp.offsetParent !== null && !inp.disabled && !inp.readOnly);
+
+                if (inputs.length > 0) {
+                  // Pick the input closest to the slider's centroid
+                  const sliderRect = sliderEl.getBoundingClientRect();
+                  const sx = sliderRect.left + sliderRect.width / 2;
+                  const sy = sliderRect.top + sliderRect.height / 2;
+                  const closest = inputs
+                    .map(inp => {
+                      const r = inp.getBoundingClientRect();
+                      const cx = r.left + r.width / 2;
+                      const cy = r.top + r.height / 2;
+                      return { inp, dist: Math.hypot(cx - sx, cy - sy) };
+                    })
+                    .sort((a, b) => a.dist - b.dist)[0];
+
+                  if (closest) {
+                    const input = closest.inp;
+                    const nativeSetter = Object.getOwnPropertyDescriptor(
+                      window.HTMLInputElement.prototype, 'value'
+                    )?.set;
+                    input.focus();
+                    nativeSetter?.call(input, val);
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'sibling';
+                  }
+                }
+                container = container.parentElement;
+              }
+
+              return 'keyboard'; // signal to caller to try keyboard simulation
+            },
+            { slider: sliderHandle, x: clickX, y: clickY, val: value }
+          );
+
+          if (handled === 'keyboard') {
+            // Strategy 3: keyboard simulation using aria-valuemin/valuemax/valuenow
+            const sliderInfo = await this.page.evaluate(
+              ({ slider, x, y }: { slider: Node | null; x: number; y: number }) => {
+                const el = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+                if (!el) return null;
+                const min = parseFloat(el.getAttribute('aria-valuemin') ?? '0');
+                const max = parseFloat(el.getAttribute('aria-valuemax') ?? '100');
+                const now = parseFloat(el.getAttribute('aria-valuenow') ?? String(min));
+                return { min, max, now };
+              },
+              { slider: sliderHandle, x: clickX, y: clickY }
+            ).catch(() => null);
+
+            if (sliderInfo && !isNaN(sliderInfo.min) && !isNaN(sliderInfo.max)) {
+              const targetValue = parseFloat(value);
+              if (!isNaN(targetValue) && targetValue >= sliderInfo.min && targetValue <= sliderInfo.max) {
+                if (sliderHandle) {
+                  await sliderHandle.focus().catch(() => {});
+                } else {
+                  await this.page.mouse.click(clickX, clickY);
+                }
+                const steps = Math.round(targetValue - sliderInfo.now);
+                const key = steps >= 0 ? 'ArrowRight' : 'ArrowLeft';
+                const count = Math.min(Math.abs(steps), 500); // cap to avoid runaway
+                for (let i = 0; i < count; i++) {
+                  await this.page.keyboard.press(key);
+                }
+              }
+            }
+          }
+
+          if (sliderHandle) {
+            await sliderHandle.dispose().catch(() => {});
+          }
+          break;
+        }
+
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
 
-        // Combobox only (NOT listbox): click opens dropdown trigger,
-        // need to find & focus the actual search input that appears.
-        // Skipped for listbox — those are regular lists where the click
-        // itself is sufficient to start typing/filtering.
-        if (target.role === 'combobox') {
-          // Check if an input already received focus from the click
-          const needsInputSearch = await this.page.evaluate(() => {
-            const active = document.activeElement;
-            return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
-          }).catch(() => true);
+        // For combobox/listbox: click may open a dropdown trigger.
+        // Try to find & focus the actual search input inside the dropdown.
+        // Works for both combobox AND listbox roles — many dropdown widgets
+        // report as listbox but have a hidden search input.
+        // If no input is found, falls through to normal fill (no delay wasted).
+        let isDropdownInput = false;
+        if (target.role === 'combobox' || target.role === 'listbox') {
+          isDropdownInput = await this.page.evaluate(
+            ({ x, y }: { x: number; y: number }) => {
+              // Check if an input already has focus
+              const active = document.activeElement;
+              if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
 
-          if (needsInputSearch) {
+              // Search for a visible input in the container hierarchy
+              const el = document.elementFromPoint(x, y) as HTMLElement | null;
+              let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
+              for (let depth = 0; depth < 5 && container; depth++) {
+                const input = container.querySelector(
+                  'input[role="combobox"], input[type="search"], input[type="text"], ' +
+                  'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
+                ) as HTMLInputElement | null;
+                if (input && input.offsetParent !== null) { input.focus(); return true; }
+                container = container.parentElement;
+              }
+              return false;
+            },
+            { x: clickX, y: clickY }
+          ).catch(() => false);
+
+          // If no input found immediately, wait for dropdown animation and retry
+          if (!isDropdownInput) {
             await this.page.waitForTimeout(300);
-            await this.page.evaluate(
+            isDropdownInput = await this.page.evaluate(
               ({ x, y }: { x: number; y: number }) => {
+                const active = document.activeElement;
+                if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
                 const el = document.elementFromPoint(x, y) as HTMLElement | null;
                 let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
                 for (let depth = 0; depth < 5 && container; depth++) {
@@ -753,31 +1085,60 @@ export class ActionEngine {
                     'input[role="combobox"], input[type="search"], input[type="text"], ' +
                     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
                   ) as HTMLInputElement | null;
-                  if (input && input.offsetParent !== null) { input.focus(); return; }
+                  if (input && input.offsetParent !== null) { input.focus(); return true; }
                   container = container.parentElement;
                 }
+                return false;
               },
               { x: clickX, y: clickY }
-            );
+            ).catch(() => false);
           }
         }
 
         await this.page.keyboard.press('Control+a');
+        await this.page.waitForTimeout(150);
         if (this.humanLike) {
-          await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
+          await this.page.keyboard.type(value || '', { delay: 90 + Math.round(Math.random() * 40) });
         } else {
-          await withTimeout(this.page.keyboard.type(value || ''), 10_000, `type into "${target.name}"`);
+          await this.page.keyboard.type(value || '', { delay: 90 });
+        }
+
+        // Auto-select: after typing into a dropdown search, click the first matching option.
+        // This completes the dropdown interaction in one step instead of requiring a separate click.
+        if (isDropdownInput && value) {
+          await this.page.waitForTimeout(400); // wait for filter/render
+          await this.page.evaluate(
+            ({ val }: { val: string }) => {
+              const options = document.querySelectorAll('[role="option"]');
+              const lowerVal = val.toLowerCase();
+              // Exact match
+              for (const opt of Array.from(options)) {
+                if ((opt as HTMLElement).textContent?.trim().toLowerCase() === lowerVal) {
+                  (opt as HTMLElement).click(); return;
+                }
+              }
+              // Contains match
+              for (const opt of Array.from(options)) {
+                if ((opt as HTMLElement).textContent?.trim().toLowerCase().includes(lowerVal)) {
+                  (opt as HTMLElement).click(); return;
+                }
+              }
+            },
+            { val: value }
+          ).catch(() => {});
         }
         break;
+      }
 
       case 'append':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
         await this.page.keyboard.press('End');
         await this.page.keyboard.press('Control+End');
+        await this.page.waitForTimeout(150);
         if (this.humanLike) {
-          await this.page.keyboard.type(value || '', { delay: 30 + Math.round(Math.random() * 50) });
+          await this.page.keyboard.type(value || '', { delay: 90 + Math.round(Math.random() * 40) });
         } else {
-          await withTimeout(this.page.keyboard.type(value || ''), 10_000, `append to "${target.name}"`);
+          await this.page.keyboard.type(value || '', { delay: 90 });
         }
         break;
 
@@ -793,8 +1154,8 @@ export class ActionEngine {
       case 'select':
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
 
-        if (target.role === 'combobox') {
-          // Custom combobox: click trigger → find input → type to filter → click option
+        if (target.role === 'combobox' || target.role === 'listbox') {
+          // Custom dropdown: click trigger → find input → type to filter → click option
           const selectNeedsSearch = await this.page.evaluate(() => {
             const active = document.activeElement;
             return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
@@ -909,6 +1270,10 @@ export class ActionEngine {
       target.name
         ? this.page.getByText(target.name, { exact: false }).first()
         : null,
+      // 5. If name contains ':' context prefix, try without it (e.g. "Info: Weiter" → "Weiter")
+      target.name?.includes(':')
+        ? this.page.getByRole(target.role as any, { name: target.name.split(':').pop()!.trim() })
+        : null,
     ].filter((l): l is NonNullable<typeof l> => l !== null);
 
     for (const locator of strategies) {
@@ -990,11 +1355,19 @@ export class ActionEngine {
    * Returns true if a recovery action was performed.
    */
   async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
-    // Pattern 1: Cookie/consent banner
-    const cookieElement = state.elements.find(e =>
-      /cookie|consent|accept|akzeptieren|alle akzeptieren|accept all|got it|verstanden|i agree/i.test(e.name) &&
-      (e.role === 'button' || e.role === 'link')
+    // Pattern 1: Cookie/consent banner — prefer accept/agree buttons over settings buttons
+    const cookieCandidates = state.elements.filter(e =>
+      (e.role === 'button' || e.role === 'link') &&
+      /cookie|consent|accept|akzeptieren|zustimmen|accept all|got it|verstanden|i agree/i.test(e.name)
     );
+    // Prioritize buttons that actually ACCEPT (not "settings", "einstellungen", "manage")
+    const acceptPattern = /akzeptieren|accept|zustimmen|agree|got it|verstanden|alle /i;
+    const settingsPattern = /einstell|manage|settings|preferences|verwalten|anpassen/i;
+    // Only click accept-type elements. For links: require accept keywords (links without
+    // them are usually navigation to cookie policy pages, not dismiss actions).
+    // For buttons without accept keywords: only click if they don't match settings pattern.
+    const cookieElement = cookieCandidates.find(e => acceptPattern.test(e.name) && !settingsPattern.test(e.name))
+      ?? cookieCandidates.find(e => e.role === 'button' && !settingsPattern.test(e.name));
     if (cookieElement) {
       this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
       try {

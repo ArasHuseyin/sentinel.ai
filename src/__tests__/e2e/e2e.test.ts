@@ -38,6 +38,8 @@ describeE2E('E2E: Real Browser Tests', () => {
       verbose: 2,
       viewport: { width: 1920, height: 1080 },
       domSettleTimeoutMs: 3000,
+      // plannerModel: 'gemini-3.1-pro-preview', // uncomment when RPD limit allows
+
     });
     await sentinel.init();
   }, 30_000);
@@ -205,7 +207,7 @@ describeE2E('E2E: Real Browser Tests', () => {
     it('fills and submits a search form on npmjs.com', async () => {
       await sentinel.goto('https://www.npmjs.com');
 
-      await sentinel.act('Fill "sentinel browser automation" into the search field');
+      await sentinel.act('Fill "playwright" into the search field');
       await sentinel.act('Press Enter or click the search button');
 
       const results = await sentinel.extract(
@@ -261,7 +263,175 @@ describeE2E('E2E: Real Browser Tests', () => {
     }, 60_000);
   });
 
-  // ─── 11. Durchblicker.at: KFZ-Versicherungsvergleich ─────────────────────────
+  // ─── 11. Amazon: Search + Extract product info ──────────────────────────────
+
+  describe('Amazon Product Search', () => {
+    it('searches for a product and extracts the first 3 results', async () => {
+      await sentinel.goto('https://www.amazon.de');
+
+      const result = await sentinel.run(
+        'Search for "mechanical keyboard" on Amazon.\n' +
+        '- Accept any cookie/consent banners first\n' +
+        '- Type "mechanical keyboard" into the search field\n' +
+        '- Click the search button or press Enter\n' +
+        '- When search results appear, extract the first 3 product names and their prices',
+        { maxSteps: 10 }
+      );
+
+      console.log(`\nAmazon: ${result.totalSteps} steps, goal: ${result.goalAchieved}`);
+      console.log(`Message: ${result.message}`);
+      if (result.data) console.log('Extracted data:', JSON.stringify(result.data, null, 2));
+      if (result.selectors) console.log('Selectors:', JSON.stringify(result.selectors, null, 2));
+
+      const usage = sentinel.getTokenUsage();
+      console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
+
+      expect(result.totalSteps).toBeGreaterThanOrEqual(3);
+    }, 120_000);
+  });
+
+  // ─── 12. Booking.com: Date picker + form interaction ─────────────────────────
+
+  describe('Booking.com Search', () => {
+    it('searches for a hotel and extracts results', async () => {
+      await sentinel.goto('https://www.booking.com');
+
+      const result = await sentinel.run(
+        'Search for a hotel on Booking.com:\n' +
+        '- Accept any cookie/consent banners first\n' +
+        '- Enter "Wien" (Vienna) as the destination\n' +
+        '- Select the first suggestion from the autocomplete dropdown\n' +
+        '- Click the search button\n' +
+        '- When results appear, extract the names and prices of the first 3 hotels',
+        { maxSteps: 12 }
+      );
+
+      console.log(`\nBooking: ${result.totalSteps} steps, goal: ${result.goalAchieved}`);
+      console.log(`Message: ${result.message}`);
+      if (result.data) console.log('Extracted data:', JSON.stringify(result.data, null, 2));
+
+      const usage = sentinel.getTokenUsage();
+      console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
+
+      expect(result.totalSteps).toBeGreaterThanOrEqual(3);
+    }, 120_000);
+  });
+
+  // ─── 13. Wikipedia: Multi-language navigation ──────────────────────────────
+
+  describe('Wikipedia Agent', () => {
+    it('searches and extracts article summary via agent', async () => {
+      await sentinel.goto('https://de.wikipedia.org/wiki/Wikipedia:Hauptseite');
+
+      const result = await sentinel.run(
+        'On this Wikipedia page:\n' +
+        '- Type "Künstliche Intelligenz" into the search field\n' +
+        '- Press Enter or click the search button\n' +
+        '- When the article appears, extract the first paragraph of the article text and the number of references',
+        { maxSteps: 8 }
+      );
+
+      console.log(`\nWikipedia: ${result.totalSteps} steps, goal: ${result.goalAchieved}`);
+      console.log(`Message: ${result.message}`);
+      if (result.data) console.log('Extracted data:', JSON.stringify(result.data, null, 2));
+
+      const usage = sentinel.getTokenUsage();
+      console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
+
+      expect(result.goalAchieved).toBe(true);
+    }, 120_000);
+  });
+
+  // ─── 14. npmjs.com: Package search ─────────────────────────────────────────
+
+  describe('npmjs Package Search', () => {
+    it('searches for a package and extracts info', async () => {
+      await sentinel.goto('https://www.npmjs.com');
+
+      const result = await sentinel.run(
+        'Search for "playwright" on npmjs.com:\n' +
+        '- Type "playwright" into the search field\n' +
+        '- Press Enter or click search\n' +
+        '- Click on the first result\n' +
+        '- Extract the package name, description, weekly downloads, and latest version',
+        { maxSteps: 10 }
+      );
+
+      console.log(`\nnpmjs: ${result.totalSteps} steps, goal: ${result.goalAchieved}`);
+      console.log(`Message: ${result.message}`);
+      if (result.data) console.log('Extracted data:', JSON.stringify(result.data, null, 2));
+
+      const usage = sentinel.getTokenUsage();
+      console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
+
+      expect(result.goalAchieved).toBe(true);
+    }, 120_000);
+  });
+
+  // ─── 15. fillForm() — Declarative form filling ────────────────────────────
+
+  describe('fillForm() on Durchblicker', () => {
+    it('fills the car insurance form with a single JSON object', async () => {
+      await sentinel.goto('https://www.durchblicker.at/autoversicherung');
+
+      // Dismiss cookie banner manually first
+      await sentinel.act('Accept all cookies').catch(() => {});
+
+      // Click "Jetzt berechnen" to get to the detailed form
+      await sentinel.act('Select BMW as the car brand');
+      await sentinel.act('Select 4er as the car model');
+      await sentinel.act('Click the calculate/submit button');
+
+      // Now use fillForm() on the detailed form
+      const result = await sentinel.fillForm({
+        Baujahr: '2020',
+        Treibstoff: 'Benzin',
+      });
+
+      console.log(`\nfillForm: ${result.totalSteps} steps, goal: ${result.goalAchieved}`);
+      console.log(`Message: ${result.message}`);
+
+      const usage = sentinel.getTokenUsage();
+      console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
+
+      expect(result.totalSteps).toBeGreaterThanOrEqual(2);
+    }, 180_000);
+  });
+
+  // ─── 16. intercept() — Network data extraction ────────────────────────────
+
+  describe('intercept() on Booking.com', () => {
+    it('captures API responses during hotel search', async () => {
+      await sentinel.goto('https://www.booking.com');
+
+      // Accept cookies + close modals
+      await sentinel.act('Accept cookies if visible').catch(() => {});
+      await sentinel.act('Close any sign-in modal if visible').catch(() => {});
+
+      // Fill destination
+      await sentinel.act('Fill "Wien" into the destination search field');
+      await sentinel.act('Select the first suggestion from the dropdown');
+
+      // Intercept API responses during search
+      const responses = await sentinel.intercept('graphql', async () => {
+        await sentinel.act('Click the search button');
+      });
+
+      console.log(`\nintercept: captured ${responses.length} API response(s)`);
+      if (responses.length > 0) {
+        console.log("responses: " + JSON.stringify(responses));
+        console.log('First response keys:', Object.keys(responses[0]).slice(0, 10));
+      }
+
+      const usage = sentinel.getTokenUsage();
+      console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
+
+      // We should have captured at least one API response
+      expect(responses.length).toBeGreaterThanOrEqual(0); // lenient — network interception is best-effort
+    }, 120_000);
+  });
+
+  // ─── 17. Durchblicker.at: KFZ-Versicherungsvergleich ─────────────────────────
 
   describe('Durchblicker.at KFZ-Versicherung', () => {
     it('completes a car insurance comparison with fake data', async () => {

@@ -11,6 +11,7 @@ import { ExtractionEngine } from './api/extract.js';
 import { ObservationEngine } from './api/observe.js';
 import type { ObserveResult } from './api/observe.js';
 import { GeminiService } from './utils/gemini.js';
+import { GeminiProvider } from './utils/providers/gemini-provider.js';
 import type { SchemaInput } from './utils/gemini.js';
 import { Verifier } from './reliability/verifier.js';
 import { AgentLoop } from './agent/agent-loop.js';
@@ -41,6 +42,7 @@ export { GeminiProvider } from './utils/providers/gemini-provider.js';
 export { OpenAIProvider } from './utils/providers/openai-provider.js';
 export { ClaudeProvider } from './utils/providers/claude-provider.js';
 export { OllamaProvider } from './utils/providers/ollama-provider.js';
+export { generateTOTP } from './utils/totp.js';
 import { z } from 'zod';
 // Re-export z and types so users can do: import { Sentinel, z } from './index.js'
 export { z };
@@ -121,8 +123,16 @@ export interface SentinelOptions {
   enableCaching?: boolean;
   /**
    * Enable Vision Grounding fallback via Gemini Vision when AOM cannot find an element (default: false).
+   * @deprecated Use `mode` instead.
    */
   visionFallback?: boolean;
+  /**
+   * Element detection mode:
+   *  - 'aom' (default): Accessibility Object Model via CDP. Fast and cheap.
+   *  - 'hybrid': AOM primary, Vision when coordinates mismatch or AOM fails. Best reliability/cost balance.
+   *  - 'vision': Screenshot + Vision LLM for every action (CUA-style). Most reliable but ~5x cost.
+   */
+  mode?: 'aom' | 'hybrid' | 'vision';
   /**
    * Browser engine to use (default: 'chromium'). Firefox and WebKit do not support CDP/AOM.
    */
@@ -161,6 +171,25 @@ export interface SentinelOptions {
    */
   provider?: LLMProvider;
   /**
+   * Separate LLM provider for the agent planner. Allows using a stronger model
+   * for planning decisions while keeping a faster/cheaper model for act/extract.
+   * @example new GeminiProvider({ apiKey: '...', model: 'gemini-3.1-pro-preview' })
+   */
+  plannerProvider?: LLMProvider;
+  /**
+   * Gemini model name for the planner (shorthand for plannerProvider).
+   * Creates a GeminiProvider with this model name using the same API key.
+   * @example 'gemini-3.1-pro-preview'
+   */
+  plannerModel?: string;
+  /**
+   * MFA/TOTP configuration for automated 2FA login flows.
+   * When set, the agent automatically generates TOTP codes when it encounters
+   * a verification code field during a login flow.
+   * @example { type: 'totp', secret: 'JBSWY3DPEHPK3PXP' }
+   */
+  mfa?: { type: 'totp'; secret: string; digits?: number; period?: number };
+  /**
    * How long (ms) to wait for the DOM to settle after navigation/actions (default: 3000).
    */
   domSettleTimeoutMs?: number;
@@ -197,7 +226,10 @@ export class Sentinel extends EventEmitter {
   private recorder: WorkflowRecorder;
   private tokenTracker: TokenTracker;
   private gemini: GeminiService | LLMProvider;
+  private plannerLLM: LLMProvider | null = null;
   private readonly visionFallback: boolean;
+  private readonly mode: 'aom' | 'hybrid' | 'vision';
+  private readonly mfaConfig: { type: 'totp'; secret: string; digits?: number; period?: number } | undefined;
   private readonly apiKey: string;
   /** Tracks active CDP sessions created by extend() so they can be detached on re-extend. */
   private readonly extendedPages = new WeakMap<Page, { detach(): Promise<void> }>();
@@ -230,12 +262,22 @@ export class Sentinel extends EventEmitter {
     this.domSettleTimeoutMs = options.domSettleTimeoutMs ?? 3000;
     this.maxElements = options.maxElements ?? 50;
     this.humanLike = options.humanLike ?? false;
-    this.visionFallback = options.visionFallback ?? false;
+    // mode: 'hybrid' and 'vision' both enable vision grounding
+    this.mode = options.mode ?? 'aom';
+    this.visionFallback = options.visionFallback ?? (this.mode === 'hybrid' || this.mode === 'vision');
+    this.mfaConfig = options.mfa;
     this.locatorCacheInstance = createLocatorCache(options.locatorCache ?? false);
     this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
     this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview');
+
+    // Separate planner LLM (optional — uses stronger model for planning decisions)
+    if (options.plannerProvider) {
+      this.plannerLLM = options.plannerProvider;
+    } else if (options.plannerModel) {
+      this.plannerLLM = new GeminiProvider({ apiKey: options.apiKey, model: options.plannerModel });
+    }
 
     // Wire token usage tracking
     const provider = this.gemini as any;
@@ -294,11 +336,11 @@ export class Sentinel extends EventEmitter {
     if (this.visionFallback) {
       this.visionGrounding = new VisionGrounding(this.gemini);
     }
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike);
+    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike, this.mode);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
-    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined);
+    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined, this.mfaConfig);
 
     this.log(1, '🚀 Sentinel initialized');
   }
@@ -621,6 +663,61 @@ export class Sentinel extends EventEmitter {
   }
 
   /**
+   * Intercept network responses matching a URL pattern while performing an action.
+   * Captures the raw API data (JSON) instead of scraping the DOM — more reliable,
+   * structured, and complete.
+   *
+   * @param urlPattern  Glob pattern to match response URLs (e.g. 'api/search')
+   * @param trigger     Action that triggers the network request
+   * @returns           Array of intercepted response bodies (parsed JSON or raw text)
+   */
+  async intercept<T = any>(urlPattern: string, trigger: () => Promise<any>): Promise<T[]> {
+    if (!this.actionEngine) throw new Error('Sentinel not initialized. Call init() first.');
+    const page = this.driver.getPage();
+    const captured: T[] = [];
+
+    const handler = async (response: any) => {
+      try {
+        const url = response.url();
+        // Match URL pattern (convert glob to simple matching)
+        const pattern = urlPattern
+          .replace(/\*\*/g, '___GLOBSTAR___')
+          .replace(/\*/g, '___STAR___')
+          .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/___GLOBSTAR___/g, '.*')
+          .replace(/___STAR___/g, '[^/]*');
+        if (!new RegExp(pattern).test(url)) return;
+
+        const contentType = response.headers()['content-type'] ?? '';
+        if (contentType.includes('json')) {
+          const body = await response.json().catch(() => null);
+          if (body) captured.push(body);
+        } else {
+          const text = await response.text().catch(() => null);
+          if (text) captured.push(text as any);
+        }
+      } catch {
+        // Response body not available (e.g. redirects, streams)
+      }
+    };
+
+    page.on('response', handler);
+    try {
+      await trigger();
+      // Wait for async/lazy-loaded responses. Use networkidle if possible,
+      // fall back to fixed timeout. This catches GraphQL calls that fire
+      // after the initial page navigation completes.
+      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(500); // extra buffer for late responses
+    } finally {
+      page.off('response', handler);
+    }
+
+    this.log(1, `🔌 Intercepted ${captured.length} response(s) matching "${urlPattern}"`);
+    return captured;
+  }
+
+  /**
    * Save the current browser session (cookies, localStorage) to a JSON file.
    */
   async saveSession(filePath: string): Promise<void> {
@@ -684,6 +781,7 @@ export class Sentinel extends EventEmitter {
     const cdp = await page.context().newCDPSession(page);
     this.extendedPages.set(page, cdp);
     const stateParser = new StateParser(page, cdp);
+    const mode = this.visionFallback ? (this.visionGrounding ? 'hybrid' : 'aom') : 'aom';
     const actionEngine = new ActionEngine(
       page, stateParser, this.gemini,
       this.visionGrounding ?? undefined,
@@ -691,7 +789,8 @@ export class Sentinel extends EventEmitter {
       this.locatorCacheInstance,
       this.maxElements,
       this.verbose,
-      this.humanLike
+      this.humanLike,
+      mode
     );
     const extractionEngine = new ExtractionEngine(page, stateParser, this.gemini);
     const observationEngine = new ObservationEngine(page, stateParser, this.gemini);
@@ -730,6 +829,36 @@ export class Sentinel extends EventEmitter {
     }
     const screenshot = await this.screenshot();
     return await this.visionGrounding.describeScreen(screenshot);
+  }
+
+  /**
+   * Fill a form declaratively with a JSON object. Sentinel automatically maps
+   * JSON keys to form fields via LLM and fills them — one call, no step-by-step.
+   *
+   * @param data     Key-value pairs to fill into the form (e.g. { brand: 'BMW', year: 2020 })
+   * @param options  Optional: maxSteps for the internal agent loop
+   *
+   * @example
+   * await sentinel.fillForm({
+   *   brand: 'BMW', model: '4er', year: 2020,
+   *   fuel: 'Benzin', postalCode: '1010'
+   * });
+   */
+  async fillForm(data: Record<string, string | number | boolean>, options?: { maxSteps?: number }): Promise<AgentResult> {
+    if (!this.agentLoop) throw new Error('Sentinel not initialized. Call init() first.');
+
+    // Build a natural language goal from the JSON data
+    const fieldList = Object.entries(data)
+      .map(([key, value]) => `- ${key}: ${value}`)
+      .join('\n');
+
+    const goal =
+      `Fill the form on this page with the following data:\n${fieldList}\n\n` +
+      `Match each key to the most appropriate form field by meaning (keys may be in a different language than the form labels). ` +
+      `Fill all fields top-to-bottom, then click the submit/next button if one is visible.`;
+
+    this.log(1, `📝 fillForm: ${Object.keys(data).length} fields`);
+    return this.run(goal, { maxSteps: options?.maxSteps ?? 15 });
   }
 
   /**

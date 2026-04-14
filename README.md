@@ -18,6 +18,8 @@ Describe what you want to do. Sentinel figures out how.
 ## Table of Contents
 
 - [Why Sentinel over Stagehand?](#why-sentinel-over-stagehand)
+  - [Real-World Benchmark](#real-world-benchmark-april-2026)
+  - [Feature Comparison](#feature-comparison)
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -27,6 +29,8 @@ Describe what you want to do. Sentinel figures out how.
   - [Data Extraction](#data-extraction)
   - [Observation](#observation)
   - [Autonomous Agent](#autonomous-agent)
+  - [Declarative Form Filling](#sentinelfillformdata-options-promiseagentresult)
+  - [Network Interception](#sentinelintercepturlpattern-trigger-promiset)
   - [Tab Management](#tab-management)
   - [Session Persistence](#session-persistence)
   - [Record and Replay](#record-and-replay)
@@ -45,24 +49,45 @@ Describe what you want to do. Sentinel figures out how.
 
 ## Why Sentinel over Stagehand?
 
+### Real-World Benchmark (April 2026)
+
+Same model (Gemini Flash), same instructions, same machine. Default settings for both.
+
+| Website | Sentinel | Stagehand v3.2 | Winner |
+|---|---|---|---|
+| **Amazon** (search + extract) | 3 steps, $0.003 | 6 actions, ~$0.03 | Sentinel (2x fewer steps, 10x cheaper) |
+| **npmjs** (search + click + extract) | 5 steps, $0.003 | 10 actions, ~$0.03 | Sentinel (2x fewer steps) |
+| **Booking.com** (search + extract hotels) | 6 steps, $0.003 | 13 actions, failed | Sentinel (Stagehand can't extract) |
+| **Wikipedia DE** (search + extract article) | 4 steps, $0.003 | timeout/failed | Sentinel (Stagehand crashes) |
+| **Durchblicker.at** (complex multi-step form) | 17 steps, $0.018 | 26 actions, failed | Sentinel (Stagehand gives up) |
+
+**Why the difference?** Stagehand sends the **entire** accessibility tree to the LLM (29,000-51,000 tokens per action). Sentinel filters to the 50 most relevant elements (2,000-5,000 tokens). Result: 6-10x fewer tokens, faster responses, better decisions.
+
+### Feature Comparison
+
 | | Sentinel | Stagehand | BrowserUse |
 |---|---|---|---|
 | **Default model** | Gemini 3 Flash | GPT-4o | GPT-4o / Claude |
-| **Cost per run** | ~$0.002 | ~$0.08 | ~$0.05 |
-| **Speed per action** | ~0.5–1s | ~1.5–4s | ~1.2–3s |
-| **Top-3 candidate fallback** | ✅ (no extra LLM call) | ❌ | ❌ |
-| **Cookie/overlay auto-recovery** | ✅ | ❌ | ❌ |
-| **Pre-action validation** | ✅ | ❌ | ❌ |
-| **Spatial region tags** | ✅ | ❌ | ❌ |
+| **Cost per run** | ~$0.002 | ~$0.03-0.08 | ~$0.05 |
+| **Tokens per action** | 2-5k | 29-51k | ~10-20k |
+| **Separate planner model** | ✅ (`plannerModel` option) | ❌ | ❌ |
+| **Declarative form filling** | ✅ (`fillForm(json)`) | ❌ | ❌ |
+| **Network interception** | ✅ (`intercept()`) | ❌ | ❌ |
+| **TOTP/MFA automation** | ✅ (`mfa: { secret }`) | ❌ | ❌ |
+| **Cookie/overlay auto-recovery** | ✅ (proactive) | partial | ❌ |
+| **Click-target verification** | ✅ | ❌ | ❌ |
+| **Validation error detection** | ✅ | ❌ | ❌ |
+| **Form field intelligence** | ✅ (filled/unfilled status) | ❌ | ❌ |
 | **Self-healing locators** | ✅ | ❌ | ❌ |
-| **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | OpenAI only | OpenAI, Claude |
+| **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | Partial (adapter-based) | OpenAI, Claude |
+| **Parallel execution** | ✅ | ❌ | ❌ |
 | **CLI** | ✅ | ❌ | ❌ |
 | **MCP server** | ✅ | ❌ | ❌ |
 | **Playwright Test fixture** | ✅ | ❌ | ❌ |
+| **Selector export** | ✅ | ❌ | ❌ |
+| **Detection mode** | aom / hybrid / vision | dom / hybrid | vision |
 | **Language** | TypeScript | TypeScript | Python |
 | **Open source** | ✅ MIT | ✅ MIT | ✅ MIT |
-
-> Benchmark: "Search Amazon for laptop, extract the top 3 results" — 5 runs averaged, Gemini 3 Flash vs. GPT-4o, April 2026.
 
 ---
 
@@ -72,20 +97,27 @@ Describe what you want to do. Sentinel figures out how.
 |---|---|
 | Natural Language Actions | `act('Click the login button')` — no selectors needed |
 | Structured Extraction | Zod-typed `extract()` with full TypeScript inference |
+| Network Interception | `intercept(pattern, trigger)` — capture raw API data instead of scraping DOM |
+| Declarative Form Filling | `fillForm({ name: 'Max', email: 'max@test.com' })` — one JSON, all fields |
+| TOTP/MFA Automation | `mfa: { type: 'totp', secret: '...' }` — auto-generate 2FA codes during login |
 | Autonomous Agent Loop | `run(goal)` — Plan, Execute, Verify, Reflect cycle |
-| Top-3 Candidate Ranking | LLM returns 3 candidates per action — instant fallback without extra LLM call |
-| Pre-Action Validation | Detects disabled, hidden, or overlay-blocked elements before clicking |
-| Cookie/Overlay Auto-Recovery | Automatically dismisses cookie banners and closes modals |
-| Spatial Region Tags | Every element tagged with `header`/`nav`/`sidebar`/`main`/`modal` for disambiguation |
-| contenteditable Support | Rich-text editors (WhatsApp, Slack, Gmail, Notion) detected and interacted with correctly |
-| Scroll Discovery | Finds elements in virtual-scrolling containers by batch-scrolling and re-parsing |
+| Separate Planner Model | `plannerModel: 'gemini-3.1-pro'` — smart model for planning, cheap model for execution |
+| Detection Modes | `mode: 'aom' \| 'hybrid' \| 'vision'` — choose speed vs. reliability |
+| Click-Target Verification | Verifies the element at click coordinates matches the intended target |
+| Validation Error Detection | Reads form error messages (aria-invalid, role=alert) and shows them to the planner |
+| Form Intelligence | Separates form fields from buttons, tracks filled/unfilled status |
+| Widget Detection | 9 patterns: custom dropdowns, datepickers, sliders, CSS-library components |
+| Cookie/Overlay Auto-Recovery | Proactively dismisses cookie banners before each step |
+| Self-Healing Locators | Cache successful element lookups — skip the LLM on repeated calls |
 | Vision Grounding | Vision-model fallback for canvas, shadow DOM, and custom components |
 | Multi-LLM Support | OpenAI, Claude, Gemini, Ollama — swap providers with one line |
-| Multi-Tab and Multi-Browser | Chromium, Firefox, WebKit + full tab management |
-| Record and Replay | Capture workflows, export as TypeScript or JSON, replay on demand |
+| Parallel Execution | `Sentinel.parallel(tasks, { concurrency: 5 })` for batch automation |
+| Stealth and Proxy | Bezier mouse movements, human-like typing delays, proxy rotation |
 | Session Persistence | Save and restore cookies and localStorage for authenticated flows |
-| Stealth and Proxy | Human-like delays, User-Agent rotation, proxy configuration |
-| Self-Healing Locators | Cache successful element lookups — skip the LLM on repeated calls |
+| Selector Export | AI-generated stable CSS selectors for Playwright test integration |
+| CLI | `npx sentinel run "goal" --url https://...` — no code needed |
+| MCP Server | Use Sentinel from Claude, Cursor, or any MCP-compatible AI assistant |
+| Playwright Test Fixture | `import { test } from '@isoldex/sentinel/test'` — drop-in for existing suites |
 | Intelligent Errors | Failure messages include which paths were tried and an actionable fix tip |
 | CLI | `npx @isoldex/sentinel run/act/extract/screenshot` — no code required |
 | MCP Server | Expose all browser tools directly to Cursor, Windsurf, Claude Desktop |
@@ -168,6 +200,10 @@ GEMINI_VERSION=gemini-3-flash-preview   # optional, defaults to gemini-3-flash-p
 | `locatorCache` | `boolean \| string` | `false` | Cache successful element lookups. `true` = in-memory, `'file.json'` = file-persisted. Skips LLM on repeated calls. |
 | `promptCache` | `boolean \| string` | `false` | Cache LLM responses by prompt hash. `true` = in-memory (200 entries, LRU), `'file.json'` = file-persisted |
 | `maxElements` | `number` | `50` | Max interactive elements sent to the LLM per `act()` call. Filters by keyword relevance when the page has more. |
+| `mode` | `'aom' \| 'hybrid' \| 'vision'` | `'aom'` | Element detection mode. `aom` = fast/cheap, `hybrid` = AOM + vision fallback, `vision` = screenshot-based (CUA-style) |
+| `plannerModel` | `string` | — | Gemini model name for the agent planner (e.g. `'gemini-3.1-pro-preview'`). Uses a stronger model for planning decisions while keeping a cheap model for execution. |
+| `plannerProvider` | `LLMProvider` | — | Custom LLM provider for the planner (overrides `plannerModel`). |
+| `mfa` | `{ type: 'totp', secret: string }` | — | TOTP/MFA configuration. When set, the agent auto-generates 2FA codes during login flows. The `secret` is the base32 key from your authenticator app. |
 
 #### `ProxyOptions`
 
@@ -336,6 +372,35 @@ console.log(result.data);          // structured data extracted during the run (
 The agent automatically aborts if the same instruction repeats three times without progress (loop detection) or if three consecutive steps fail.
 
 `AgentResult.selectors` is also populated after each run — a camelCase map of instruction slugs to the most stable CSS selector found for that element. Copy them directly into Playwright tests.
+
+#### `sentinel.fillForm(data, options?): Promise<AgentResult>`
+
+Fill a form declaratively with a JSON object. Sentinel maps keys to form fields automatically via LLM — no step-by-step instructions needed. Works in any language.
+
+```typescript
+await sentinel.goto('https://www.durchblicker.at/autoversicherung');
+
+await sentinel.fillForm({
+  brand: 'BMW',
+  model: '4er',
+  year: 2020,
+  fuel: 'Benzin',
+  postalCode: '1010',
+});
+// Sentinel maps: brand → Marke, model → Modell, year → Baujahr, etc.
+// Fills all fields top-to-bottom, then clicks submit.
+```
+
+#### `sentinel.intercept(urlPattern, trigger): Promise<T[]>`
+
+Capture raw API responses during an action. Extracts structured JSON data directly from network traffic instead of scraping the DOM — more reliable, complete, and fast.
+
+```typescript
+const hotels = await sentinel.intercept('graphql', async () => {
+  await sentinel.act('Click the search button');
+});
+// hotels = [{ data: { searchResults: [{ name: "Hotel A", price: 89 }, ...] } }]
+```
 
 #### `sentinel.runStream(goal, options?): AsyncGenerator<AgentStepEvent | AgentResult>`
 
