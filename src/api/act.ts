@@ -945,8 +945,8 @@ export class ActionEngine {
           } catch { /* fall through to coord-based lookup */ }
 
           const handled = await this.page.evaluate(
-            ({ slider, x, y, val }: { slider: HTMLElement | null; x: number; y: number; val: string }) => {
-              const sliderEl = slider ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+            ({ slider, x, y, val }: { slider: Node | null; x: number; y: number; val: string }) => {
+              const sliderEl = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
               if (!sliderEl) return 'none';
 
               // Strategy 1: native range input
@@ -1005,8 +1005,8 @@ export class ActionEngine {
           if (handled === 'keyboard') {
             // Strategy 3: keyboard simulation using aria-valuemin/valuemax/valuenow
             const sliderInfo = await this.page.evaluate(
-              ({ slider, x, y }: { slider: HTMLElement | null; x: number; y: number }) => {
-                const el = slider ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+              ({ slider, x, y }: { slider: Node | null; x: number; y: number }) => {
+                const el = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
                 if (!el) return null;
                 const min = parseFloat(el.getAttribute('aria-valuemin') ?? '0');
                 const max = parseFloat(el.getAttribute('aria-valuemax') ?? '100');
