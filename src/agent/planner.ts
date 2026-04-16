@@ -32,7 +32,7 @@ Current page:
 - Interactive elements, sorted top-to-bottom:
 ${(() => {
   const sorted = filterRelevantElements(state.elements, goal, 50).slice().sort((a, b) => a.boundingClientRect.y - b.boundingClientRect.y);
-  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker']);
+  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker', 'file']);
   const formFields = sorted.filter(e => FORM_ROLES.has(e.role));
   const others = sorted.filter(e => !FORM_ROLES.has(e.role));
   const fmtEl = (e: typeof sorted[0], prefix = '') => `${prefix}${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}${e.error ? ` | ⚠ "${e.error}"` : ''}`;

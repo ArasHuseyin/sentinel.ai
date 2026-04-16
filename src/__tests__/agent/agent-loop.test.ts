@@ -464,4 +464,120 @@ describe('AgentLoop', () => {
       expect((llm.generateStructuredData as jest.Mock).mock.calls.length).toBeGreaterThan(0);
     });
   });
+
+  // ── State-based cookie-banner recovery ─────────────────────────────────────
+
+  describe('state-based blocker recovery', () => {
+    /**
+     * Builds a state parser that returns states from `seq` on each parse call,
+     * clamping to the last entry once exhausted. This lets us script the
+     * "banner present on step 1, still present on step 2, gone on step 3" flow.
+     */
+    function makeScriptedStateParser(seq: SimplifiedState[]) {
+      let i = 0;
+      return {
+        parse: jest.fn(async () => seq[Math.min(i++, seq.length - 1)]!),
+        invalidateCache: jest.fn(),
+      };
+    }
+
+    function withCookieBanner(url = 'https://example.com'): SimplifiedState {
+      return {
+        url,
+        title: 'Welcome',
+        elements: [
+          {
+            id: 0, role: 'button', name: 'Accept all cookies',
+            boundingClientRect: { x: 10, y: 10, width: 120, height: 40 },
+          },
+          {
+            id: 1, role: 'button', name: 'Continue',
+            boundingClientRect: { x: 200, y: 100, width: 80, height: 40 },
+          },
+        ],
+      };
+    }
+
+    function withoutBanner(url = 'https://example.com/next'): SimplifiedState {
+      return {
+        url,
+        title: 'Next Page',
+        elements: [
+          {
+            id: 0, role: 'button', name: 'Continue',
+            boundingClientRect: { x: 200, y: 100, width: 80, height: 40 },
+          },
+        ],
+      };
+    }
+
+    it('fires recovery whenever a blocker is present (not gated by step number)', async () => {
+      const llm = makePlannerLLM({ instruction: 'click continue' });
+      const actionEngine = makeActionEngine(true);
+      // Banner is present right from step 1 — this case already worked under the old
+      // step<=3 gate. The critical coverage is in the throttle + reset tests below,
+      // which prove the NEW gate semantics (state-based, fingerprint-bounded).
+      const stateParser = makeScriptedStateParser([withCookieBanner(), withCookieBanner()]);
+
+      const loop = new AgentLoop(
+        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
+      );
+      await loop.run('proceed through flow', { maxSteps: 1 });
+
+      expect(actionEngine.tryRecoverFromBlocker).toHaveBeenCalled();
+    });
+
+    it('stops retrying after 2 attempts on an unclearable blocker', async () => {
+      const llm = makePlannerLLM({ instruction: 'click continue' });
+      const actionEngine = makeActionEngine(true);
+      // Persistent banner that recovery cannot clear
+      actionEngine.tryRecoverFromBlocker = jest.fn(async () => false);
+      const banner = withCookieBanner('https://example.com/stuck');
+      const stateParser = makeScriptedStateParser([banner, banner, banner, banner, banner, banner, banner, banner]);
+
+      const loop = new AgentLoop(
+        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
+      );
+      await loop.run('get past banner', { maxSteps: 4 });
+
+      // Bounded to MAX_RECOVERY_ATTEMPTS_PER_STATE (2) for the same fingerprint
+      expect(actionEngine.tryRecoverFromBlocker).toHaveBeenCalledTimes(2);
+    });
+
+    it('resets attempt counter when the fingerprint changes (e.g. navigation)', async () => {
+      const llm = makePlannerLLM({ instruction: 'proceed' });
+      const actionEngine = makeActionEngine(true);
+      actionEngine.tryRecoverFromBlocker = jest.fn(async () => false);
+      // Three DIFFERENT banners across three pages — each gets its own 2-attempt budget
+      const stateParser = makeScriptedStateParser([
+        withCookieBanner('https://a.example'), withCookieBanner('https://a.example'),
+        withCookieBanner('https://b.example'), withCookieBanner('https://b.example'),
+        withCookieBanner('https://c.example'), withCookieBanner('https://c.example'),
+      ]);
+
+      const loop = new AgentLoop(
+        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
+      );
+      await loop.run('navigate multi-domain', { maxSteps: 3 });
+
+      // One attempt per distinct fingerprint (different URLs → different fingerprints),
+      // total 3 attempts across 3 steps.
+      expect(actionEngine.tryRecoverFromBlocker).toHaveBeenCalledTimes(3);
+    });
+
+    it('no recovery when no blocker is present', async () => {
+      const llm = makePlannerLLM({ instruction: 'do something' });
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makeScriptedStateParser([
+        withoutBanner(), withoutBanner(), withoutBanner(), withoutBanner(),
+      ]);
+
+      const loop = new AgentLoop(
+        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
+      );
+      await loop.run('clean flow', { maxSteps: 2 });
+
+      expect(actionEngine.tryRecoverFromBlocker).not.toHaveBeenCalled();
+    });
+  });
 });

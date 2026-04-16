@@ -72,3 +72,29 @@ export class NotInitializedError extends SentinelError {
     this.name = 'NotInitializedError';
   }
 }
+
+/**
+ * Thrown when the configured token or cost budget is exceeded.
+ * The error fires on the *next* LLM call after a budget threshold was crossed
+ * — the call that tripped the check has already been billed. Catch this to
+ * halt long-running agent loops before runaway costs accumulate.
+ */
+export class BudgetExceededError extends SentinelError {
+  constructor(message: string, context?: Record<string, any>) {
+    super(message, 'BUDGET_EXCEEDED', context);
+    this.name = 'BudgetExceededError';
+  }
+}
+
+/**
+ * Thrown when a per-domain rate limit is breached synchronously (i.e. the
+ * caller opted out of auto-delay). Currently the built-in rate limiter
+ * *waits* instead of throwing; this error is reserved for future opt-in
+ * strict-mode rate limiting.
+ */
+export class RateLimitError extends SentinelError {
+  constructor(message: string, context?: Record<string, any>) {
+    super(message, 'RATE_LIMITED', context);
+    this.name = 'RateLimitError';
+  }
+}

@@ -23,6 +23,8 @@ export type { LLMProvider };
 import { WorkflowRecorder } from './recorder/workflow-recorder.js';
 import type { RecordedWorkflow } from './recorder/workflow-recorder.js';
 import { TokenTracker } from './utils/token-tracker.js';
+import { RateLimiter } from './utils/rate-limiter.js';
+import { createLogger, type Logger } from './utils/logger.js';
 import { createLocatorCache } from './core/locator-cache.js';
 import type { ILocatorCache, CachedLocator } from './core/locator-cache.js';
 export type { ILocatorCache, CachedLocator };
@@ -35,8 +37,10 @@ export { RoundRobinProxyProvider, WebshareProxyProvider };
 export type { IProxyProvider, WebshareProxyOptions };
 import { withSpan, createTracingProvider, actCounter, actDuration, agentSteps, llmTokens } from './utils/telemetry.js';
 export { slugifyInstruction } from './core/selector-generator.js';
-import { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError } from './types/errors.js';
-export { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError };
+import { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError, BudgetExceededError, RateLimitError } from './types/errors.js';
+export { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError, BudgetExceededError, RateLimitError };
+export type { Logger, LogEvent, LogLevel, JsonSink } from './utils/logger.js';
+export { ConsoleLogger, JsonLogger, createLogger, createFileSink } from './utils/logger.js';
 export type { RecordedWorkflow };
 export { GeminiProvider } from './utils/providers/gemini-provider.js';
 export { OpenAIProvider } from './utils/providers/openai-provider.js';
@@ -212,6 +216,51 @@ export interface SentinelOptions {
    * Covers all LLM calls: `act()`, `extract()`, `observe()`, and the agent loop.
    */
   promptCache?: false | true | string;
+  /**
+   * Hard cap on total tokens (input + output) across all LLM calls in this
+   * instance's lifetime. Once exceeded, the next LLM call throws
+   * `BudgetExceededError`. Prevents runaway agent loops from burning budget
+   * during dev/CI or when a page pattern confuses the planner.
+   */
+  maxTokens?: number;
+  /**
+   * Hard cap on estimated USD cost across all LLM calls, derived from the
+   * model's pricing table in `TokenTracker`. Same semantics as `maxTokens`.
+   */
+  maxCostUsd?: number;
+  /**
+   * Per-hostname navigation rate limit (requests per second). Applied inside
+   * `Sentinel.goto()`. Omit (or 0) to disable. Default: unlimited.
+   *
+   * Example: `rateLimit: 2` throttles `goto('https://amazon.com/...')` to at
+   * most two requests per second regardless of how many parallel workers
+   * target the host, while other domains are unaffected.
+   */
+  rateLimit?: number;
+  /**
+   * Structured logging mode:
+   *  false / omitted — legacy plain-text `console.log` (default)
+   *  true            — JSON lines written to stdout, one object per event
+   *  string          — JSON lines appended to this file path
+   *
+   * Verbose level still gates which events are emitted. Warnings bypass the
+   * filter in both modes. Use `logger` for a custom transport (Pino, Winston,
+   * OpenTelemetry log exporter, etc.).
+   */
+  logFormat?: false | true | string;
+  /**
+   * Inject a fully custom logger. Overrides `logFormat` entirely.
+   * Useful for routing logs through Pino, Winston, or your own transport.
+   */
+  logger?: Logger;
+  /**
+   * File path for persistent cost audit. When set, every LLM token usage
+   * entry is flushed to this file as JSON — survives process restarts and
+   * is mergeable across parallel runs.
+   *
+   * Omit for in-memory only (default — matches prior behaviour).
+   */
+  costAuditPath?: string;
 }
 
 export class Sentinel extends EventEmitter {
@@ -241,6 +290,8 @@ export class Sentinel extends EventEmitter {
   private readonly humanLike: boolean;
   private readonly locatorCacheInstance: ILocatorCache | null;
   private readonly promptCacheInstance: IPromptCache | null;
+  private readonly rateLimiter: RateLimiter | null;
+  private readonly logger: Logger;
   private _tokenUsageCallback: ((usage: { inputTokens: number; outputTokens: number }) => void) | undefined;
 
   constructor(options: SentinelOptions) {
@@ -258,6 +309,7 @@ export class Sentinel extends EventEmitter {
     // Use custom provider if supplied, otherwise fall back to GeminiService
     this.gemini = (options.provider as any) ?? new GeminiService(options.apiKey);
     this.verbose = options.verbose ?? 1;
+    this.logger = createLogger(options.logFormat ?? false, this.verbose, options.logger).child('Sentinel');
     this.enableCaching = options.enableCaching ?? true;
     this.domSettleTimeoutMs = options.domSettleTimeoutMs ?? 3000;
     this.maxElements = options.maxElements ?? 50;
@@ -270,7 +322,19 @@ export class Sentinel extends EventEmitter {
     this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
-    this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview');
+    this.tokenTracker = new TokenTracker(
+      process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview',
+      {
+        budget: {
+          ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+          ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
+        },
+        ...(options.costAuditPath !== undefined ? { persistPath: options.costAuditPath } : {}),
+      }
+    );
+    this.rateLimiter = options.rateLimit && options.rateLimit > 0
+      ? new RateLimiter(options.rateLimit)
+      : null;
 
     // Separate planner LLM (optional — uses stronger model for planning decisions)
     if (options.plannerProvider) {
@@ -340,12 +404,20 @@ export class Sentinel extends EventEmitter {
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
-    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined, this.mfaConfig);
+    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined, this.mfaConfig, this.logger);
 
     this.log(1, '🚀 Sentinel initialized');
   }
 
   async goto(url: string) {
+    if (this.rateLimiter) {
+      try {
+        const hostname = new URL(url).hostname;
+        if (hostname) await this.rateLimiter.acquire(hostname);
+      } catch {
+        // Invalid URL — let driver.goto surface the real navigation error.
+      }
+    }
     await this.driver.goto(url);
     this.stateParser?.invalidateCache();
     this.recorder.record({ type: 'goto', url, pageUrl: url, pageTitle: '' });
@@ -966,8 +1038,11 @@ export class Sentinel extends EventEmitter {
   // ─── Internal helpers ─────────────────────────────────────────────────────
 
   private log(level: 0 | 1 | 2 | 3, message: string) {
-    if (this.verbose >= level) {
-      console.log(`[Sentinel] ${message}`);
-    }
+    // Delegates to the configured Logger so verbose-gating semantics are
+    // preserved while also enabling structured/JSON output when opted in.
+    if (level === 0) return;
+    if (level === 1) this.logger.info(message);
+    else if (level === 2) this.logger.notice(message);
+    else this.logger.debug(message);
   }
 }

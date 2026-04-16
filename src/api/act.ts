@@ -1,4 +1,4 @@
-import type { Page } from 'playwright';
+import type { Frame, Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
 import type { UIElement, SimplifiedState } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
@@ -43,7 +43,9 @@ export type ActionType =
   | 'right-click'
   | 'scroll-down'
   | 'scroll-up'
-  | 'scroll-to';
+  | 'scroll-to'
+  | 'upload'
+  | 'drag';
 
 /**
  * Replaces %variable% placeholders in an instruction string.
@@ -219,7 +221,7 @@ export function filterRelevantElements(
   // label doesn't keyword-match the (possibly different-language) goal is a bug.
   // Buttons near form fields (submit/proceed) must also be kept — they're the
   // natural next action after filling the form.
-  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker']);
+  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker', 'file']);
   const alwaysKeep: typeof elements = [];
   const rest: typeof elements = [];
   for (const el of elements) {
@@ -281,6 +283,261 @@ function hasRelevantElements(elements: UIElement[], instruction: string): boolea
   });
 }
 
+// ─── Datepicker / Timepicker helpers ─────────────────────────────────────────
+
+export interface DateParts {
+  year: number;   // 0 = unset (time-only values)
+  month: number;  // 1-12, 0 = unset
+  day: number;    // 1-31, 0 = unset
+  hour?: number;
+  minute?: number;
+}
+
+/**
+ * Parses a human-entered date/time string into its numeric parts. Supports:
+ *  - ISO 8601: `YYYY-MM-DD`, `YYYY-MM-DDTHH:mm`
+ *  - European dot-notation: `DD.MM.YYYY`
+ *  - Slash notation: `DD/MM/YYYY` (if day > 12) or `MM/DD/YYYY` (otherwise)
+ *  - Time-only: `HH:mm`
+ *  - Any format accepted by `Date.parse` as final fallback
+ *    (e.g. `October 15, 2026`, `15 Oct 2026`)
+ */
+export function parseDateValue(value: string): DateParts | null {
+  const s = value.trim();
+  if (!s) return null;
+
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{2}))?/.exec(s);
+  if (iso) {
+    const year = +iso[1]!, month = +iso[2]!, day = +iso[3]!;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const result: DateParts = { year, month, day };
+      if (iso[4] !== undefined) result.hour = +iso[4];
+      if (iso[5] !== undefined) result.minute = +iso[5];
+      return result;
+    }
+  }
+
+  const eu = /^(\d{1,2})\.(\d{1,2})\.(\d{4})/.exec(s);
+  if (eu) {
+    const day = +eu[1]!, month = +eu[2]!, year = +eu[3]!;
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return { year, month, day };
+  }
+
+  const sl = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+  if (sl) {
+    const a = +sl[1]!, b = +sl[2]!, year = +sl[3]!;
+    // If first segment > 12, must be DD/MM; otherwise assume US MM/DD
+    if (a > 12 && b <= 12) return { year, month: b, day: a };
+    if (a <= 12 && b <= 31) return { year, month: a, day: b };
+  }
+
+  const timeOnly = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (timeOnly) {
+    const hour = +timeOnly[1]!, minute = +timeOnly[2]!;
+    if (hour <= 23 && minute <= 59) return { year: 0, month: 0, day: 0, hour, minute };
+  }
+
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    return {
+      year: parsed.getFullYear(),
+      month: parsed.getMonth() + 1,
+      day: parsed.getDate(),
+      hour: parsed.getHours(),
+      minute: parsed.getMinutes(),
+    };
+  }
+
+  return null;
+}
+
+/** Formats DateParts into the ISO-like string expected by native typed inputs. */
+export function formatNativeInputValue(type: string, parts: DateParts): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  switch (type) {
+    case 'date':
+      return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+    case 'time':
+      return `${pad(parts.hour ?? 0)}:${pad(parts.minute ?? 0)}`;
+    case 'datetime-local':
+      return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour ?? 0)}:${pad(parts.minute ?? 0)}`;
+    case 'month':
+      return `${parts.year}-${pad(parts.month)}`;
+    case 'week': {
+      // ISO 8601 week number calculation (Thursday-of-week rule)
+      const d = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+      const dayNum = d.getUTCDay() || 7;
+      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      const weekNum = Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+      return `${d.getUTCFullYear()}-W${pad(weekNum)}`;
+    }
+    default:
+      return '';
+  }
+}
+
+/**
+ * Strategy 3 helper: navigates an open calendar popup to the target month/year
+ * and clicks the day cell. Locale-aware via `Intl.DateTimeFormat` on the page's
+ * own declared locale (`<html lang>` / `navigator.language`) — no hardcoded
+ * language tables. Navigation buttons are matched by multi-lingual aria-label
+ * keywords first, then by header-row position (leftmost=prev, rightmost=next).
+ *
+ * Returns `true` if a day cell was clicked, `false` if navigation/clicking
+ * failed after the bounded retry budget.
+ */
+async function pickDateFromPopup(page: Page, parts: DateParts): Promise<boolean> {
+  for (let attempt = 0; attempt < 36; attempt++) {
+    const clicked = await page.evaluate(
+      ({ year, month, day }: { year: number; month: number; day: number }) => {
+        const locale = document.documentElement.lang || navigator.language || 'en-US';
+        const target = new Date(year, month - 1, day);
+        const candidates = new Set<string>();
+        const safeFormat = (opts: Intl.DateTimeFormatOptions) => {
+          try { return new Intl.DateTimeFormat(locale, opts).format(target); } catch { return ''; }
+        };
+        candidates.add(safeFormat({ year: 'numeric', month: 'long', day: 'numeric' }));
+        candidates.add(safeFormat({ year: 'numeric', month: 'short', day: 'numeric' }));
+        candidates.add(safeFormat({ year: 'numeric', month: '2-digit', day: '2-digit' }));
+        candidates.add(safeFormat({ weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }));
+        candidates.add(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+        candidates.delete('');
+
+        const roots = Array.from(document.querySelectorAll<HTMLElement>(
+          '[role="dialog"]:not([aria-hidden="true"]), [role="grid"]:not([aria-hidden="true"])'
+        )).filter(el => el.offsetParent !== null);
+        if (roots.length === 0) return false;
+        const root = roots[roots.length - 1]!;
+
+        const cells = Array.from(root.querySelectorAll<HTMLElement>(
+          '[role="gridcell"], [role="button"], button, td[role], [data-day]'
+        )).filter(c =>
+          c.offsetParent !== null &&
+          c.getAttribute('aria-disabled') !== 'true' &&
+          !(c as HTMLButtonElement).disabled
+        );
+
+        // Pass 1: aria-label / title contains any locale-formatted candidate
+        for (const cell of cells) {
+          const label = cell.getAttribute('aria-label') || cell.getAttribute('title') || '';
+          for (const cand of candidates) {
+            if (cand && label.includes(cand)) { cell.click(); return true; }
+          }
+        }
+
+        // Pass 2: text content == day number AND cell not in outside-month state
+        const dayStr = String(day);
+        for (const cell of cells) {
+          const txt = cell.textContent?.trim();
+          if (txt !== dayStr) continue;
+          const cls = cell.className || '';
+          if (/outside|other-?month|adjacent|different-?month/i.test(String(cls))) continue;
+          if (cell.getAttribute('aria-selected') === 'false' &&
+              cell.getAttribute('tabindex') === '-1' &&
+              /disabled|muted/i.test(String(cls))) continue;
+          cell.click();
+          return true;
+        }
+
+        return false;
+      },
+      { year: parts.year, month: parts.month, day: parts.day }
+    ).catch(() => false);
+
+    if (clicked) return true;
+
+    // Determine navigation direction by reading popup header
+    const direction = await page.evaluate(
+      ({ year, month }: { year: number; month: number }) => {
+        const locale = document.documentElement.lang || navigator.language || 'en-US';
+        const roots = Array.from(document.querySelectorAll<HTMLElement>(
+          '[role="dialog"]:not([aria-hidden="true"]), [role="grid"]:not([aria-hidden="true"])'
+        )).filter(el => el.offsetParent !== null);
+        if (roots.length === 0) return 0;
+        const root = roots[roots.length - 1]!;
+        const scope = root.parentElement || root;
+
+        const headerEls = Array.from(scope.querySelectorAll<HTMLElement>(
+          '[role="heading"], [aria-live], [class*="header"], [class*="caption"], [class*="title"], [class*="label"]'
+        ));
+        const headerText = (headerEls.map(e => e.textContent || '').join(' ') || scope.textContent || '').toLowerCase();
+
+        let detectedMonth = 0;
+        for (let m = 1; m <= 12; m++) {
+          for (const style of ['long', 'short'] as const) {
+            try {
+              const name = new Intl.DateTimeFormat(locale, { month: style })
+                .format(new Date(2000, m - 1, 1)).toLowerCase();
+              if (name && name.length >= 3 && headerText.includes(name)) { detectedMonth = m; break; }
+            } catch { /* locale unavailable */ }
+          }
+          if (detectedMonth) break;
+        }
+        const ym = /\b(19|20)\d{2}\b/.exec(headerText);
+        const detectedYear = ym ? +ym[0] : 0;
+        if (!detectedMonth || !detectedYear) return 0;
+
+        const diff = (year - detectedYear) * 12 + (month - detectedMonth);
+        if (diff > 0) return 1;
+        if (diff < 0) return -1;
+        return 0;
+      },
+      { year: parts.year, month: parts.month }
+    ).catch(() => 0);
+
+    if (direction === 0) return false;
+
+    const navigated = await page.evaluate(
+      ({ dir }: { dir: number }) => {
+        const roots = Array.from(document.querySelectorAll<HTMLElement>(
+          '[role="dialog"]:not([aria-hidden="true"]), [role="grid"]:not([aria-hidden="true"])'
+        )).filter(el => el.offsetParent !== null);
+        if (roots.length === 0) return false;
+        const root = roots[roots.length - 1]!;
+        const scope = root.parentElement || root;
+
+        const btns = Array.from(scope.querySelectorAll<HTMLElement>('button, [role="button"]'))
+          .filter(b => b.offsetParent !== null && !(b as HTMLButtonElement).disabled);
+        if (btns.length === 0) return false;
+
+        // Multi-lingual aria-label matching (best effort — covers common European languages)
+        const prevPatterns = /prev|back|zur[uü]ck|vorig|vorherig|précédent|precedent|anterior|precedente|vorige|poprzedni|предыдущ/i;
+        const nextPatterns = /next|nach|weiter|n[aä]chst|suivant|siguiente|successivo|proch|pr[oó]xim|volgende|nast[eę]pn|следующ/i;
+
+        for (const btn of btns) {
+          const label = btn.getAttribute('aria-label') || btn.getAttribute('title') || btn.textContent || '';
+          if (dir > 0 && nextPatterns.test(label)) { btn.click(); return true; }
+          if (dir < 0 && prevPatterns.test(label)) { btn.click(); return true; }
+        }
+
+        // Fallback: position-based. Header-row buttons (near top of popup):
+        // leftmost = prev, rightmost = next.
+        const topY = Math.min(...btns.map(b => b.getBoundingClientRect().top));
+        const headerBtns = btns.filter(b => {
+          const r = b.getBoundingClientRect();
+          return r.top - topY < 40; // same header row
+        });
+        if (headerBtns.length >= 2) {
+          headerBtns.sort((a, b) =>
+            a.getBoundingClientRect().left - b.getBoundingClientRect().left
+          );
+          const picked = dir > 0 ? headerBtns[headerBtns.length - 1]! : headerBtns[0]!;
+          picked.click();
+          return true;
+        }
+        return false;
+      },
+      { dir: direction }
+    ).catch(() => false);
+
+    if (!navigated) return false;
+    await page.waitForTimeout(200);
+  }
+
+  return false;
+}
+
 /** Max batch-scroll iterations when looking for not-yet-rendered elements. */
 const MAX_SCROLL_DISCOVERY_BATCHES = 2;
 
@@ -319,6 +576,180 @@ export class ActionEngine {
 
   private warn(level: 1 | 2 | 3, message: string): void {
     if (this.verbose >= level) console.warn(message);
+  }
+
+  /**
+   * Executes an action against an element that lives inside an iframe.
+   *
+   * Uses Playwright's frame-scoped locator API — `frame.getByRole(...)`
+   * resolves within the frame's document, so the resulting click / fill /
+   * keystroke is routed to the correct context without coordinate math.
+   * The `[frame] ` prefix the parser adds for LLM visibility is stripped
+   * before locator lookup because the element inside the iframe does not
+   * carry that literal accessible name.
+   *
+   * Limitations (intentional for this iteration):
+   *   - No slider / datepicker cascade inside frames — relies on direct fill.
+   *   - No vision-grounding fallback inside frames.
+   *   - No locator cache for frame elements (frameId is parse-local).
+   */
+  /**
+   * Uploads file(s) to an `<input type="file">` via Playwright's
+   * `locator.setInputFiles()`. Accepts a single absolute path or a
+   * comma-separated list for multi-file uploads. Works with visually
+   * hidden inputs — no click is dispatched.
+   *
+   * Locator resolution cascades through: accessible label → name/id/aria-label
+   * attribute match → first file input in the context. This covers labeled
+   * inputs, named inputs, and minimalist pages with a single file control.
+   */
+  private async performUpload(
+    ctx: Page | Frame,
+    target: UIElement,
+    value: string | undefined
+  ): Promise<void> {
+    const paths = (value ?? '')
+      .split(',')
+      .map(p => p.trim())
+      .filter(Boolean);
+    if (paths.length === 0) {
+      throw new ActionError('upload requires a file path in "value"', {
+        element: target.name,
+        action: 'upload',
+      });
+    }
+
+    const escape = (s: string) => s.replace(/"/g, '\\"');
+    const n = escape(target.name);
+    const strategies: Array<() => ReturnType<typeof ctx.locator>> = [
+      () => ctx.getByLabel(target.name, { exact: false }),
+      () => ctx.locator(`input[type="file"][name="${n}"]`),
+      () => ctx.locator(`input[type="file"][id="${n}"]`),
+      () => ctx.locator(`input[type="file"][aria-label="${n}"]`),
+      () => ctx.locator('input[type="file"]'),
+    ];
+
+    let lastErr: unknown;
+    for (const build of strategies) {
+      try {
+        await build().first().setInputFiles(paths, { timeout: 3000 });
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw new ActionError(
+      `Could not locate a file input for "${target.name}": ${(lastErr as Error)?.message ?? 'no strategy succeeded'}`,
+      { element: target.name, action: 'upload' }
+    );
+  }
+
+  /**
+   * Drags the source element onto the drop target via Playwright's
+   * `locator.dragTo()`, which dispatches the full HTML5 drag sequence
+   * (dragstart → dragover on target → drop) and handles autoscroll when
+   * the target is off-screen. Works for kanban boards, reorderable lists,
+   * and file-manager-style drops.
+   */
+  private async performDrag(
+    ctx: Page | Frame,
+    source: UIElement,
+    dropTarget: UIElement
+  ): Promise<void> {
+    const FRAME_PREFIX = '[frame] ';
+    const strip = (s: string) => s.startsWith(FRAME_PREFIX) ? s.slice(FRAME_PREFIX.length) : s;
+
+    const srcLocator = ctx
+      .getByRole(source.role as Parameters<Page['getByRole']>[0], { name: strip(source.name), exact: false })
+      .first();
+    const dstLocator = ctx
+      .getByRole(dropTarget.role as Parameters<Page['getByRole']>[0], { name: strip(dropTarget.name), exact: false })
+      .first();
+
+    await srcLocator.dragTo(dstLocator, { timeout: 10_000 });
+  }
+
+  private async executeInFrame(
+    frame: Frame,
+    action: ActionType,
+    target: UIElement,
+    value?: string,
+    dropTarget?: UIElement | null
+  ): Promise<void> {
+    const FRAME_PREFIX = '[frame] ';
+    const nameInFrame = target.name.startsWith(FRAME_PREFIX)
+      ? target.name.slice(FRAME_PREFIX.length)
+      : target.name;
+
+    const locator = frame
+      .getByRole(target.role as Parameters<Frame['getByRole']>[0], { name: nameInFrame, exact: false })
+      .first();
+
+    await locator.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+
+    switch (action) {
+      case 'click':
+        await locator.click({ timeout: 10_000 });
+        break;
+      case 'double-click':
+        await locator.dblclick({ timeout: 10_000 });
+        break;
+      case 'right-click':
+        await locator.click({ button: 'right', timeout: 10_000 });
+        break;
+      case 'hover':
+        await locator.hover({ timeout: 10_000 });
+        break;
+      case 'fill':
+        await locator.fill(value ?? '', { timeout: 10_000 });
+        break;
+      case 'append':
+        await locator.focus({ timeout: 10_000 });
+        await this.page.keyboard.press('End');
+        await this.page.keyboard.type(value ?? '', { delay: 90 });
+        break;
+      case 'press':
+        await locator.focus({ timeout: 10_000 });
+        await this.page.keyboard.press(value || 'Enter');
+        break;
+      case 'select':
+        // Native <select> → selectOption; custom dropdown → click + type + Enter.
+        try {
+          await locator.selectOption(value ?? '', { timeout: 3000 });
+        } catch {
+          await locator.click({ timeout: 5000 });
+          if (value) {
+            await this.page.keyboard.type(value, { delay: 90 });
+            await frame.waitForTimeout(300);
+            await this.page.keyboard.press('Enter');
+          }
+        }
+        break;
+      case 'scroll-down':
+        await frame.evaluate(() => { window.scrollBy(0, 300); });
+        break;
+      case 'scroll-up':
+        await frame.evaluate(() => { window.scrollBy(0, -300); });
+        break;
+      case 'scroll-to':
+        // scrollIntoViewIfNeeded already ran above; nothing more to do.
+        break;
+      case 'upload':
+        await this.performUpload(frame, target, value);
+        break;
+      case 'drag':
+        if (!dropTarget) {
+          throw new ActionError('drag requires a drop-target element', { action });
+        }
+        if (dropTarget.frameId && dropTarget.frameId !== target.frameId) {
+          throw new ActionError(
+            'Cross-frame drag is not supported — source and drop target must share the same frame',
+            { source: target.name, target: dropTarget.name }
+          );
+        }
+        await this.performDrag(frame, target, dropTarget);
+        break;
+    }
   }
 
   async act(instruction: string, options?: ActOptions): Promise<ActionResult> {
@@ -403,12 +834,15 @@ export class ActionEngine {
       - "append": add text to the end of an input field without clearing existing content (requires "value")
       - "hover": move mouse over an element
       - "press": press a keyboard key or shortcut (requires "value", e.g. "Enter", "Escape", "Tab", "Control+a")
-      - "select": select an option from a <select> dropdown (requires "value" = option text or value)
+      - "select": pick an option from ANY dropdown — native <select> OR any element whose role is combobox/listbox (requires "value" = option text). This is a one-shot that opens the dropdown, filters to the option, and commits the selection. ALWAYS prefer "select" over "click" when the target is a dropdown and you know which option to pick — "click" only opens the dropdown and leaves you mid-flow.
+      - "upload": upload file(s) to an <input type="file"> (requires "value" = absolute path; for multiple files comma-separate: "/a.pdf,/b.pdf"). Prefer this over "click" for elements with role="file".
+      - "drag": drag one element onto another (requires "targetElementId" = the drop-target element id). Use for reorderable lists, kanban boards, file-manager style drops.
       - "scroll-down": scroll the page down (elementId optional, use 0 if no specific element)
       - "scroll-up": scroll the page up (elementId optional, use 0 if no specific element)
       - "scroll-to": scroll to bring a specific element into view (requires elementId)
 
-      If the action is "fill", "append", "press", or "select", provide the "value" field.
+      If the action is "fill", "append", "press", "select", or "upload", provide the "value" field.
+      If the action is "drag", provide the "targetElementId" field (the id of the drop target).
       For scroll actions without a target element, set elementId to 0 in the first candidate.
     `;
 
@@ -431,10 +865,12 @@ export class ActionEngine {
           enum: [
             'click', 'double-click', 'right-click',
             'fill', 'append', 'hover', 'press', 'select',
+            'upload', 'drag',
             'scroll-down', 'scroll-up', 'scroll-to',
           ],
         },
         value: { type: 'string' },
+        targetElementId: { type: 'number' },
         reasoning: { type: 'string' },
       },
       required: ['candidates', 'action', 'reasoning'],
@@ -444,6 +880,7 @@ export class ActionEngine {
       candidates: { elementId: number; confidence?: number }[];
       action: ActionType;
       value?: string;
+      targetElementId?: number;
       reasoning: string;
     }>(prompt, schema);
 
@@ -534,8 +971,13 @@ export class ActionEngine {
       // Invalidate cache after action – state will change
       this.stateParser.invalidateCache();
 
+      // For drag, resolve the drop-target element alongside the source.
+      const dropTarget = decision.action === 'drag' && decision.targetElementId !== undefined
+        ? (currentState.elements.find(e => e.id === decision.targetElementId) ?? null)
+        : null;
+
       try {
-        await this.performAction(decision.action, target, decision.value);
+        await this.performAction(decision.action, target, decision.value, dropTarget);
         await waitForPageSettle(this.page, this.domSettleTimeoutMs);
         // ── Self-Healing Locator: populate cache on success ──────────────────
         if (this.locatorCache && target && !isScrollWithoutTarget) {
@@ -570,7 +1012,7 @@ export class ActionEngine {
               });
             });
             // Retry the same candidate after removing the blocker
-            await this.performAction(decision.action, target, decision.value);
+            await this.performAction(decision.action, target, decision.value, dropTarget);
             await waitForPageSettle(this.page, this.domSettleTimeoutMs);
             if (this.locatorCache && target && !isScrollWithoutTarget) {
               this.locatorCache.set(currentState.url, resolvedInstruction, {
@@ -699,7 +1141,8 @@ export class ActionEngine {
   private async performAction(
     action: ActionType,
     target: UIElement | null,
-    value?: string
+    value?: string,
+    dropTarget?: UIElement | null
   ): Promise<void> {
     // Retry with backoff for transient failures (timeout, element detached, scroll issues).
     // Non-transient errors (wrong element, validation) are thrown immediately so the
@@ -710,7 +1153,7 @@ export class ActionEngine {
 
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
       try {
-        await this.performActionOnce(action, target, value);
+        await this.performActionOnce(action, target, value, dropTarget);
         return;
       } catch (err) {
         if (attempt < RETRY_DELAYS.length && isTransient(err)) {
@@ -726,7 +1169,8 @@ export class ActionEngine {
   private async performActionOnce(
     action: ActionType,
     target: UIElement | null,
-    value?: string
+    value?: string,
+    dropTarget?: UIElement | null
   ): Promise<void> {
     // Scroll actions that don't need a target element.
     // mouse.wheel dispatches a native wheel event at the current cursor position so
@@ -742,6 +1186,37 @@ export class ActionEngine {
     }
 
     if (!target) throw new ActionError('No target element provided', { action });
+
+    // Cross-frame routing: element lives inside an iframe.
+    // Delegate to Playwright's frame locator API, which dispatches clicks,
+    // fills, and keystrokes into the frame's document — coordinate-based
+    // paths would hit the iframe boundary rather than the inner content.
+    if (target.frameId) {
+      const frame = this.stateParser.getFrame(target.frameId);
+      if (frame) {
+        await this.executeInFrame(frame, action, target, value, dropTarget);
+        return;
+      }
+      this.warn(2, `[Act] Frame "${target.frameId}" not in registry — falling back to main-frame path`);
+    }
+
+    // File upload: locator-based, no coordinates required (setInputFiles
+    // works even for visually hidden <input type="file">).
+    if (action === 'upload') {
+      await this.performUpload(this.page, target, value);
+      return;
+    }
+
+    // Drag & drop: source → drop-target via Playwright locator.dragTo().
+    // Cross-frame drag is not supported in this iteration — both elements
+    // must share the same context (main document or same iframe).
+    if (action === 'drag') {
+      if (!dropTarget) {
+        throw new ActionError('drag requires a drop-target element', { action });
+      }
+      await this.performDrag(this.page, target, dropTarget);
+      return;
+    }
 
     const { x, y, width, height } = target.boundingClientRect;
     const cx = x + width / 2;
@@ -818,7 +1293,8 @@ export class ActionEngine {
     // sliders, but the dedicated slider-fill logic in the switch below has its own
     // locator-based element lookup with 3 fallback strategies.
     const isSliderFill = target?.role === 'slider' && action === 'fill';
-    if (target && !isSliderFill && (action === 'fill' || action === 'click' || action === 'select')) {
+    const isDatepickerFill = (target?.role === 'datepicker' || target?.role === 'timepicker') && action === 'fill';
+    if (target && !isSliderFill && !isDatepickerFill && (action === 'fill' || action === 'click' || action === 'select')) {
       const hitName = await this.page.evaluate(
         ({ x, y }: { x: number; y: number }) => {
           const el = document.elementFromPoint(x, y) as HTMLElement | null;
@@ -954,7 +1430,21 @@ export class ActionEngine {
                 ? (sliderEl as HTMLInputElement)
                 : sliderEl.querySelector('input[type="range"]') as HTMLInputElement | null;
               if (rangeInput) {
-                rangeInput.value = val;
+                // Controlled-input bypass: frameworks (React, Preact, Solid,
+                // Vue with v-model) replace the value descriptor on the input
+                // instance to track their own state. A direct `.value = val`
+                // assignment writes to the framework-wrapped setter and is
+                // ignored / reverted on the next re-render. Using the native
+                // HTMLInputElement.prototype setter writes to the real DOM
+                // property, which the subsequent `input` event then carries
+                // back into the framework's state tree as a user-originated
+                // change. Universal across any framework built on controlled
+                // inputs — no library-specific detection.
+                const nativeSetter = Object.getOwnPropertyDescriptor(
+                  window.HTMLInputElement.prototype, 'value'
+                )?.set;
+                rangeInput.focus();
+                nativeSetter?.call(rangeInput, val);
                 rangeInput.dispatchEvent(new Event('input', { bubbles: true }));
                 rangeInput.dispatchEvent(new Event('change', { bubbles: true }));
                 return 'range';
@@ -1003,14 +1493,67 @@ export class ActionEngine {
           );
 
           if (handled === 'keyboard') {
-            // Strategy 3: keyboard simulation using aria-valuemin/valuemax/valuenow
+            // Strategy 3: keyboard simulation using aria-valuemin/valuemax/valuenow.
+            //
+            // Critical detail: many component libraries (MUI, Material-UI, Chakra,
+            // Radix) place `role="slider"` on an inner thumb element, with ARIA
+            // attributes ONLY on that thumb. `elementFromPoint` at the slider
+            // centroid returns the track or wrapper, which has no aria-* attrs
+            // and cannot receive focus meaningfully. We must walk from the hit
+            // element to the nearest `[role="slider"]` descendant/ancestor and
+            // focus it explicitly — arrow keys only move the thumb if it's the
+            // active element.
             const sliderInfo = await this.page.evaluate(
               ({ slider, x, y }: { slider: Node | null; x: number; y: number }) => {
-                const el = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
-                if (!el) return null;
-                const min = parseFloat(el.getAttribute('aria-valuemin') ?? '0');
-                const max = parseFloat(el.getAttribute('aria-valuemax') ?? '100');
-                const now = parseFloat(el.getAttribute('aria-valuenow') ?? String(min));
+                const hit = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+                if (!hit) return null;
+                // Ancestor-walk to find the focusable slider element. The hit
+                // target may be a track, rail, label, or styled wrapper that
+                // doesn't itself respond to arrow keys. We walk UP (bounded)
+                // and at each level check current + descendants.
+                //
+                // Preference order when both exist in the same subtree:
+                //   1. input[type="range"] — native keyboard handler, reliable
+                //      focus target, value stays in sync with aria-valuenow.
+                //   2. [role="slider"] — explicit ARIA role on a custom element
+                //      (span, div) that the library listens to for keydown.
+                //
+                // ARIA attributes may live on either element; we read them
+                // from whichever we focus.
+                let sliderEl: HTMLElement | null = null;
+                let cursor: HTMLElement | null = hit;
+                for (let depth = 0; depth < 8 && cursor && !sliderEl; depth++) {
+                  // Native range input wins — directly focusable and keyboard-native
+                  const nativeInput = cursor.matches?.('input[type="range"]')
+                    ? (cursor as HTMLInputElement)
+                    : cursor.querySelector<HTMLInputElement>('input[type="range"]');
+                  if (nativeInput) { sliderEl = nativeInput; break; }
+                  // Fall back to explicit ARIA slider role
+                  if (cursor.matches?.('[role="slider"]')) { sliderEl = cursor; break; }
+                  sliderEl = cursor.querySelector<HTMLElement>('[role="slider"]');
+                  if (!sliderEl) cursor = cursor.parentElement;
+                }
+                if (!sliderEl) return null;
+                // Focus inside the evaluate so page.keyboard.press arrow
+                // events land on the active element without a round-trip.
+                sliderEl.focus();
+                // Read ARIA values from sliderEl directly; if missing (e.g. we
+                // focused the native input and ARIA lives on a sibling thumb),
+                // fall back to ancestor/descendant lookup within a small window.
+                const readAria = (attr: string): string | null => {
+                  const own = sliderEl!.getAttribute(attr);
+                  if (own !== null) return own;
+                  const parent = sliderEl!.parentElement;
+                  const sibling = parent?.querySelector(`[${attr}]`);
+                  return sibling?.getAttribute(attr) ?? null;
+                };
+                const min = parseFloat(readAria('aria-valuemin') ?? '0');
+                const max = parseFloat(readAria('aria-valuemax') ?? '100');
+                // When the focused element is a native range input, its .value
+                // is the authoritative current value (always a number).
+                const inputValue = (sliderEl as HTMLInputElement).value;
+                const parsedInput = inputValue !== undefined ? parseFloat(inputValue) : NaN;
+                const now = !isNaN(parsedInput) ? parsedInput : parseFloat(readAria('aria-valuenow') ?? String(min));
                 return { min, max, now };
               },
               { slider: sliderHandle, x: clickX, y: clickY }
@@ -1019,10 +1562,11 @@ export class ActionEngine {
             if (sliderInfo && !isNaN(sliderInfo.min) && !isNaN(sliderInfo.max)) {
               const targetValue = parseFloat(value);
               if (!isNaN(targetValue) && targetValue >= sliderInfo.min && targetValue <= sliderInfo.max) {
+                // Extra focus attempt via the Playwright handle if we have one —
+                // belt-and-suspenders for cases where the in-evaluate focus() is
+                // overridden by framework effects after return.
                 if (sliderHandle) {
                   await sliderHandle.focus().catch(() => {});
-                } else {
-                  await this.page.mouse.click(clickX, clickY);
                 }
                 const steps = Math.round(targetValue - sliderInfo.now);
                 const key = steps >= 0 ? 'ArrowRight' : 'ArrowLeft';
@@ -1038,6 +1582,110 @@ export class ActionEngine {
             await sliderHandle.dispose().catch(() => {});
           }
           break;
+        }
+
+        // Datepicker / Timepicker: universal three-strategy cascade.
+        //  1. Native <input type="date|time|datetime-local|month|week"> →
+        //     format to ISO, set via native value setter + dispatch events.
+        //     Avoids opening the OS-level picker UI.
+        //  2. Wrapped writable <input> (MUI, Ant Design, react-datepicker) →
+        //     click to focus, Ctrl+A to clear, type raw value, Tab to commit.
+        //  3. Popup-only (flatpickr readonly, pure-UI calendars) →
+        //     open popup, navigate via ARIA headings + locale-aware Intl
+        //     month detection, click target day cell.
+        if (target && (target.role === 'datepicker' || target.role === 'timepicker') && value) {
+          const parts = parseDateValue(value);
+
+          const classification = await this.page.evaluate(
+            ({ x, y }: { x: number; y: number }) => {
+              const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+              if (!hit) return { kind: 'unknown' as const };
+              const NATIVE_SEL =
+                'input[type="date"], input[type="time"], input[type="datetime-local"], ' +
+                'input[type="month"], input[type="week"]';
+              let node: HTMLElement | null = hit;
+              for (let depth = 0; depth < 6 && node; depth++) {
+                const nativeHere: HTMLInputElement | null = node.matches?.(NATIVE_SEL)
+                  ? (node as HTMLInputElement)
+                  : node.querySelector<HTMLInputElement>(NATIVE_SEL);
+                if (nativeHere) return { kind: 'native' as const, type: nativeHere.type };
+
+                const writable = Array.from(node.querySelectorAll<HTMLInputElement>('input'))
+                  .find(i =>
+                    i.offsetParent !== null && !i.disabled && !i.readOnly &&
+                    i.type !== 'hidden' && i.type !== 'button' && i.type !== 'submit'
+                  );
+                if (writable) return { kind: 'writable' as const };
+                node = node.parentElement;
+              }
+              return { kind: 'popup' as const };
+            },
+            { x: clickX, y: clickY }
+          );
+
+          // Strategy 1: native input
+          if (classification.kind === 'native' && parts) {
+            const formatted = formatNativeInputValue(classification.type, parts);
+            if (formatted) {
+              await this.page.evaluate(
+                ({ x, y, val, sel }: { x: number; y: number; val: string; sel: string }) => {
+                  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+                  if (!hit) return;
+                  let input: HTMLInputElement | null = null;
+                  let node: HTMLElement | null = hit;
+                  for (let d = 0; d < 6 && node && !input; d++) {
+                    input = node.matches?.(sel)
+                      ? (node as HTMLInputElement)
+                      : node.querySelector<HTMLInputElement>(sel);
+                    if (!input) node = node.parentElement;
+                  }
+                  if (!input) return;
+                  const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value'
+                  )?.set;
+                  input.focus();
+                  setter?.call(input, val);
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                  input.dispatchEvent(new Event('change', { bubbles: true }));
+                  input.blur();
+                },
+                {
+                  x: clickX, y: clickY, val: formatted,
+                  sel: 'input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]',
+                }
+              );
+              break;
+            }
+          }
+
+          // Strategy 2: writable wrapped input — click, clear, type, commit via Tab.
+          if (classification.kind === 'writable') {
+            await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
+            await this.page.waitForTimeout(150);
+            await this.page.keyboard.press('Control+a');
+            await this.page.waitForTimeout(50);
+            const typeDelay = this.humanLike ? 90 + Math.round(Math.random() * 40) : 90;
+            await this.page.keyboard.type(value, { delay: typeDelay });
+            await this.page.keyboard.press('Tab').catch(() => {});
+            break;
+          }
+
+          // Strategy 3: popup-only — open calendar, navigate months, click day.
+          if (classification.kind === 'popup' && parts && parts.year && parts.month && parts.day) {
+            await this.page.mouse.click(clickX, clickY);
+            await this.page.waitForTimeout(400);
+            const ok = await pickDateFromPopup(this.page, parts);
+            if (!ok) {
+              await this.page.keyboard.press('Escape').catch(() => {});
+              throw new ActionError(
+                `Could not navigate datepicker popup for "${target.name}" to ${parts.year}-${parts.month}-${parts.day}`,
+                { element: target.name, value }
+              );
+            }
+            break;
+          }
+
+          // Unclassifiable or unparsable value → fall through to generic fill.
         }
 
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
