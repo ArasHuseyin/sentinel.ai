@@ -1204,4 +1204,52 @@ describe('StateParser', () => {
       expect(state.elements).toHaveLength(5);
     });
   });
+
+  // ─── computeTargetFingerprints ────────────────────────────────────────────
+
+  describe('computeTargetFingerprints', () => {
+    it('returns an empty Map when no targets are provided', async () => {
+      const cdp = makeMockCDP([], []);
+      const page = makeMockPage();
+      const parser = new StateParser(page as any, cdp as any);
+      const out = await parser.computeTargetFingerprints([]);
+      expect(out.size).toBe(0);
+    });
+
+    it('delegates to page.evaluate with the target list', async () => {
+      const cdp = makeMockCDP([], []);
+      const page = makeMockPage();
+      // Mock page.evaluate to simulate the browser-side output shape
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, targets?: any) => {
+        if (!targets) return [];
+        return (targets as { id: number }[]).reduce((acc, t) => {
+          acc[t.id] = { aria: `role-${t.id}||`, topology: `0:div-${t.id}` };
+          return acc;
+        }, {} as Record<number, unknown>);
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const out = await parser.computeTargetFingerprints([
+        { id: 7, x: 10, y: 20 },
+        { id: 42, x: 50, y: 60 },
+      ]);
+
+      expect(out.size).toBe(2);
+      expect(out.get(7)?.aria).toBe('role-7||');
+      expect(out.get(42)?.topology).toBe('0:div-42');
+    });
+
+    it('returns an empty Map when page.evaluate throws', async () => {
+      const cdp = makeMockCDP([], []);
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, targets?: any) => {
+        if (targets) throw new Error('detached');
+        return [];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const out = await parser.computeTargetFingerprints([{ id: 1, x: 0, y: 0 }]);
+      expect(out.size).toBe(0);
+    });
+  });
 });

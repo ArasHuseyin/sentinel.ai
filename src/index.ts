@@ -26,6 +26,9 @@ import { TokenTracker } from './utils/token-tracker.js';
 import { RateLimiter } from './utils/rate-limiter.js';
 import { createLogger, type Logger } from './utils/logger.js';
 import { createLocatorCache } from './core/locator-cache.js';
+import { createPatternCache, type IPatternCache } from './core/pattern-cache.js';
+import { detectCaptcha, describeCaptcha } from './reliability/captcha-detector.js';
+import { attemptAutoSolve, type CaptchaSolverOptions } from './reliability/captcha-solver.js';
 import type { ILocatorCache, CachedLocator } from './core/locator-cache.js';
 export type { ILocatorCache, CachedLocator };
 import { createPromptCache, createCachingProvider } from './core/prompt-cache.js';
@@ -37,10 +40,14 @@ export { RoundRobinProxyProvider, WebshareProxyProvider };
 export type { IProxyProvider, WebshareProxyOptions };
 import { withSpan, createTracingProvider, actCounter, actDuration, agentSteps, llmTokens } from './utils/telemetry.js';
 export { slugifyInstruction } from './core/selector-generator.js';
-import { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError, BudgetExceededError, RateLimitError } from './types/errors.js';
-export { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError, BudgetExceededError, RateLimitError };
+import { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError, BudgetExceededError, RateLimitError, CaptchaDetectedError } from './types/errors.js';
+export { SentinelError, ActionError, ExtractionError, NavigationError, AgentError, NotInitializedError, BudgetExceededError, RateLimitError, CaptchaDetectedError };
+export type { CaptchaType } from './types/errors.js';
 export type { Logger, LogEvent, LogLevel, JsonSink } from './utils/logger.js';
 export { ConsoleLogger, JsonLogger, createLogger, createFileSink } from './utils/logger.js';
+export type { IPatternCache, PatternSequence, StoredPattern, PatternCacheStats, FingerprintLayer } from './core/pattern-cache.js';
+export { InMemoryPatternCache, FilePatternCache, createPatternCache } from './core/pattern-cache.js';
+export type { PatternFingerprint } from './core/pattern-signature.js';
 export type { RecordedWorkflow };
 export { GeminiProvider } from './utils/providers/gemini-provider.js';
 export { OpenAIProvider } from './utils/providers/openai-provider.js';
@@ -151,6 +158,29 @@ export interface SentinelOptions {
    */
   humanLike?: boolean;
   /**
+   * Enable anti-bot stealth patches on the browser launcher. Requires the
+   * optional peer dependencies `playwright-extra` and
+   * `puppeteer-extra-plugin-stealth` to be installed:
+   *
+   * ```
+   * npm install playwright-extra puppeteer-extra-plugin-stealth
+   * ```
+   *
+   * Patches applied: `navigator.webdriver = false`, WebGL fingerprint
+   * normalization, Chrome runtime presence, plugins/mimeTypes coherence,
+   * Permissions API determinism, Accept-Language / platform alignment.
+   *
+   * Impact: reduces CAPTCHA encounter rates on bot-gated sites by roughly
+   * 90%. Preferable to configuring a CAPTCHA solver because most CAPTCHAs
+   * never appear in the first place.
+   *
+   * Falls back gracefully to plain Playwright with a console warning if
+   * the peer deps aren't installed.
+   *
+   * Default: `false`.
+   */
+  stealth?: boolean;
+  /**
    * Path to a session file to load/save cookies & storage state.
    */
   sessionPath?: string;
@@ -194,7 +224,13 @@ export interface SentinelOptions {
    */
   mfa?: { type: 'totp'; secret: string; digits?: number; period?: number };
   /**
-   * How long (ms) to wait for the DOM to settle after navigation/actions (default: 3000).
+   * How long (ms) to wait for the DOM to settle after navigation/actions
+   * (default: 5000, hard-capped internally at 8000). Settling uses a
+   * two-signal strategy: MutationObserver silence (~300 ms) AND no
+   * visible loading indicators (aria-busy, progressbar, skeleton,
+   * spinner, loading classes). Modern SPAs often need 3-5 s for GraphQL
+   * hydration — raising from the old 3 s default fixes silent stale-state
+   * issues on Shopify, Airbnb, and similar apps.
    */
   domSettleTimeoutMs?: number;
   /**
@@ -261,6 +297,43 @@ export interface SentinelOptions {
    * Omit for in-memory only (default — matches prior behaviour).
    */
   costAuditPath?: string;
+  /**
+   * CAPTCHA handling strategy. When Sentinel detects a CAPTCHA blocking
+   * an action, one of these strategies runs before `CaptchaDetectedError`
+   * is surfaced:
+   *
+   *  `'auto'` (default) — built-in solver: click the reCAPTCHA v2
+   *     checkbox and/or wait for Turnstile's proof-of-work to resolve.
+   *     Works for the subset that solves "for free" (~50-70% in the
+   *     wild). No external API keys required.
+   *  `'skip'` — detect only, don't attempt to solve. The error surfaces
+   *     with the exact CAPTCHA type so callers can route to their own
+   *     solver (2captcha, CapSolver, etc.).
+   *  `'manual'` — headful only: pause action and poll until the human
+   *     solves the CAPTCHA in the browser, then resume.
+   *
+   * Or pass an object to override the per-attempt `timeoutMs` (default 20s).
+   */
+  captcha?: 'auto' | 'skip' | 'manual' | { strategy: 'auto' | 'skip' | 'manual'; timeoutMs?: number };
+  /**
+   * Cross-site widget-pattern cache. Fingerprints interactive widgets by
+   * ARIA / library-class / DOM-topology and reuses successful interaction
+   * sequences across ANY site that renders the same widget shape:
+   *
+   *  true (default)  — in-memory cache, cleared when the instance closes.
+   *                    Every act() that succeeds populates the cache; repeat
+   *                    interactions within the same session skip the LLM.
+   *  false           — disabled entirely (no fingerprinting overhead)
+   *  string          — file path for JSON persistence across runs. Patterns
+   *                    survive restarts and can be pre-seeded from a benchmark
+   *                    run (→ zero-token hits on known widgets from Day 1).
+   *
+   * Unlike `locatorCache` (which is URL-scoped), patterns transfer between
+   * sites: a DatePicker interaction learned on site A works on site B.
+   * Sensitive-field values (password / tel) are redacted before persist.
+   * On cache miss the LLM path runs as normal — no behaviour change.
+   */
+  patternCache?: false | true | string;
 }
 
 export class Sentinel extends EventEmitter {
@@ -290,8 +363,10 @@ export class Sentinel extends EventEmitter {
   private readonly humanLike: boolean;
   private readonly locatorCacheInstance: ILocatorCache | null;
   private readonly promptCacheInstance: IPromptCache | null;
+  private readonly patternCacheInstance: IPatternCache | null;
   private readonly rateLimiter: RateLimiter | null;
   private readonly logger: Logger;
+  private readonly captchaOption: 'auto' | 'skip' | 'manual' | { strategy: 'auto' | 'skip' | 'manual'; timeoutMs?: number };
   private _tokenUsageCallback: ((usage: { inputTokens: number; outputTokens: number }) => void) | undefined;
 
   constructor(options: SentinelOptions) {
@@ -302,6 +377,7 @@ export class Sentinel extends EventEmitter {
       ...(options.browser ? { browser: options.browser } : {}),
       ...(options.proxy ? { proxy: options.proxy } : {}),
       ...(options.humanLike ? { humanLike: options.humanLike } : {}),
+      ...(options.stealth ? { stealth: options.stealth } : {}),
       ...(options.sessionPath ? { sessionPath: options.sessionPath } : {}),
       ...(options.userDataDir ? { userDataDir: options.userDataDir } : {}),
     };
@@ -311,7 +387,7 @@ export class Sentinel extends EventEmitter {
     this.verbose = options.verbose ?? 1;
     this.logger = createLogger(options.logFormat ?? false, this.verbose, options.logger).child('Sentinel');
     this.enableCaching = options.enableCaching ?? true;
-    this.domSettleTimeoutMs = options.domSettleTimeoutMs ?? 3000;
+    this.domSettleTimeoutMs = options.domSettleTimeoutMs ?? 5000;
     this.maxElements = options.maxElements ?? 50;
     this.humanLike = options.humanLike ?? false;
     // mode: 'hybrid' and 'vision' both enable vision grounding
@@ -320,6 +396,7 @@ export class Sentinel extends EventEmitter {
     this.mfaConfig = options.mfa;
     this.locatorCacheInstance = createLocatorCache(options.locatorCache ?? false);
     this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
+    this.patternCacheInstance = createPatternCache(options.patternCache ?? true);
     this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
     this.tokenTracker = new TokenTracker(
@@ -332,6 +409,7 @@ export class Sentinel extends EventEmitter {
         ...(options.costAuditPath !== undefined ? { persistPath: options.costAuditPath } : {}),
       }
     );
+    this.captchaOption = options.captcha ?? 'auto';
     this.rateLimiter = options.rateLimit && options.rateLimit > 0
       ? new RateLimiter(options.rateLimit)
       : null;
@@ -400,7 +478,7 @@ export class Sentinel extends EventEmitter {
     if (this.visionFallback) {
       this.visionGrounding = new VisionGrounding(this.gemini);
     }
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike, this.mode);
+    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike, this.mode, this.patternCacheInstance);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini);
@@ -619,11 +697,34 @@ export class Sentinel extends EventEmitter {
       try {
         const retries = options?.retries ?? 2;
         let currentAttempt = 0;
+        let captchaSolveAttempts = 0;
+        const captchaCfg: CaptchaSolverOptions = typeof this.captchaOption === 'string'
+          ? { strategy: this.captchaOption }
+          : this.captchaOption;
 
         while (currentAttempt <= retries) {
           stateParser.invalidateCache();
           const stateBefore = await stateParser.parse();
-          const result = await actionEngine.act(instruction, options);
+          let result;
+          try {
+            result = await actionEngine.act(instruction, options);
+          } catch (err: any) {
+            // CAPTCHA detected mid-action: try the configured solver once,
+            // then retry. If the solver can't clear it, surface the error
+            // so the caller can route to an external service.
+            if (err instanceof CaptchaDetectedError && captchaSolveAttempts === 0) {
+              captchaSolveAttempts++;
+              this.log(1, `🧩 ${describeCaptcha(err.type, (err.context?.captchaSource) as string | undefined)}`);
+              this.log(2, `[Captcha] attempting ${captchaCfg.strategy ?? 'auto'} strategy...`);
+              const solved = await attemptAutoSolve(this.driver.getPage(), err.type, captchaCfg);
+              if (solved) {
+                this.log(1, `✅ CAPTCHA cleared, retrying action`);
+                continue; // re-enter while loop with same currentAttempt
+              }
+              this.log(1, `❌ CAPTCHA solve failed — surfacing ${err.type} error`);
+            }
+            throw err;
+          }
 
           if (!result.success) {
             this.log(1, `⚠️  Action failed: ${result.message}. Attempt ${currentAttempt + 1}/${retries + 1}`);
@@ -655,7 +756,10 @@ export class Sentinel extends EventEmitter {
           }
 
           const stateAfter = await stateParser.parse();
-          const verification = await verifier.verifyAction(instruction, stateBefore, stateAfter);
+          // Pass the technical action label (e.g. 'click on "Switch demo" (checkbox)')
+          // rather than the user instruction ('Toggle the first switch') so the
+          // verifier's fast-paths can detect the target role accurately.
+          const verification = await verifier.verifyAction(result.action ?? instruction, stateBefore, stateAfter);
 
           if (verification.success && verification.confidence > 0.7) {
             this.log(1, `✅ "${instruction}" verified (confidence: ${(verification.confidence * 100).toFixed(0)}%)`);
@@ -862,7 +966,8 @@ export class Sentinel extends EventEmitter {
       this.maxElements,
       this.verbose,
       this.humanLike,
-      mode
+      mode,
+      this.patternCacheInstance
     );
     const extractionEngine = new ExtractionEngine(page, stateParser, this.gemini);
     const observationEngine = new ObservationEngine(page, stateParser, this.gemini);
@@ -957,7 +1062,7 @@ export class Sentinel extends EventEmitter {
       agentSteps.record(r.totalSteps, { goal_achieved: String(r.goalAchieved) });
       return r;
     });
-    this.log(1, `🤖 Agent finished: ${result.message}`);
+    this.log(1, `✔️ Agent finished: ${result.message}`);
     return result;
   }
 

@@ -62,12 +62,22 @@ const VISION_ELEMENT_THRESHOLD = 100;
 
 /**
  * Keywords that identify cookie-consent / GDPR / privacy CTA elements.
- * Used for both detection (has-blocker check) and fingerprinting (attempt
- * throttle). Multi-lingual on purpose — this is not a site-specific hack,
- * it's universal consent-banner vocabulary.
+ * Used for fingerprinting blocker-recovery attempts (throttle). Multi-
+ * lingual on purpose — universal consent-banner vocabulary.
  */
 const COOKIE_BLOCKER_PATTERN =
   /cookie|consent|accept|akzeptieren|zustimmen|agree|got it|verstanden|gdpr|datenschutz|privacy/i;
+
+/**
+ * Strong accept-intent keywords — a CTA carrying one of these in a
+ * prominent (non-footer, non-nav) position is almost certainly a
+ * dismiss button for an overlay the state-parser didn't classify as
+ * modal. Narrower than COOKIE_BLOCKER_PATTERN: the latter matches
+ * "Hinweise zu Cookies" / "Privacy policy" footer links, which are
+ * navigation, not blockers.
+ */
+const ACCEPT_INTENT_PATTERN =
+  /akzeptieren|accept all|accept cookies|zustimmen|^i agree|got it|verstanden/i;
 
 /** Max `tryRecoverFromBlocker` calls per distinct blocker fingerprint. */
 const MAX_RECOVERY_ATTEMPTS_PER_STATE = 2;
@@ -98,13 +108,39 @@ export class AgentLoop {
     this.logger = (logger ?? new ConsoleLogger(1)).child('Agent');
   }
 
-  /** Returns true if the current page state contains a cookie banner or modal overlay. */
+  /**
+   * Returns true if the current page state contains an actual blocking
+   * overlay (modal/popup) OR a prominent accept-style CTA outside the
+   * footer/nav.
+   *
+   * Why this is stricter than a plain cookie-keyword match: many sites
+   * — Amazon, most large shops, any GDPR-compliant site — carry a
+   * footer link like "Hinweise zu Cookies", "Privacy policy", or
+   * "Cookie preferences" that matches `/cookie|privacy|datenschutz/i`.
+   * The previous check treated these as blockers and ran recovery on
+   * every single step, even though no banner was present. That
+   * repeatedly triggered Pattern 2 (widget remover), which on Amazon
+   * wipes 17+ legitimate `a-overlay-*` framework nodes each step and
+   * destabilises the entire run.
+   *
+   * New rule:
+   *  1. A modal/popup region must exist (state-parser's classification
+   *     of overlays), OR
+   *  2. A button/link with strong accept-intent (`akzeptieren`,
+   *     `accept all`, `got it`, …) must exist outside the footer and
+   *     nav regions. Catches banners the parser didn't classify but
+   *     excludes footer cookie-policy links (their names rarely match
+   *     accept-intent).
+   */
   private hasBlocker(state: SimplifiedState): boolean {
-    const hasCookieCta = state.elements.some(e =>
-      (e.role === 'button' || e.role === 'link') && COOKIE_BLOCKER_PATTERN.test(e.name)
-    );
     const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
-    return hasCookieCta || hasModal;
+    if (hasModal) return true;
+    return state.elements.some(e =>
+      (e.role === 'button' || e.role === 'link') &&
+      ACCEPT_INTENT_PATTERN.test(e.name) &&
+      e.region !== 'footer' &&
+      e.region !== 'nav'
+    );
   }
 
   /**

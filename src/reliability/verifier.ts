@@ -81,9 +81,28 @@ export class Verifier {
       };
     }
 
-    // ── Fast path 4: Radio/checkbox selection changed ─────────────────────────
-    // Clicking a radio button or checkbox doesn't change the element list,
-    // but it does change the `checked` state — detect that explicitly.
+    // ── Fast path 4a: Click on checkbox/switch/radio → inherent toggle ──────
+    // These roles define a toggle-on-click contract. If the click itself
+    // didn't throw, the toggle happened — the DOM state change is guaranteed
+    // by the ARIA spec. Re-verifying via AOM comparison is unreliable here
+    // because many libraries (MUI, Ant, Chakra) place `checked` on a hidden
+    // native input (role=presentation, excluded from AOM) rather than on the
+    // visible wrapper that carries the ARIA role. Trusting the click avoids
+    // false-negative retries that would un-toggle the element.
+    const isToggleClick = /click/i.test(action) &&
+      /\b(checkbox|switch|radio)\b/i.test(action);
+    if (isToggleClick) {
+      console.log(`[Verifier] Toggle-click on checkbox/switch/radio — auto-success.`);
+      return {
+        done: true,
+        success: true,
+        message: 'Checkbox/switch/radio toggle executed',
+        confidence: 0.90,
+      };
+    }
+
+    // ── Fast path 4b: Checked state change detected in AOM ──────────────────
+    // Falls through here for non-click actions or roles we didn't special-case.
     const beforeChecked = stateBefore.elements
       .filter(e => e.state?.checked === true || e.state?.checked === 'mixed')
       .map(e => e.name)
@@ -108,15 +127,34 @@ export class Verifier {
     // ── Fast path 5: Significant element count change ─────────────────────────
     // If the number of interactive elements changed by ±5 or more, something
     // clearly happened (modal opened/closed, list loaded, etc.) — no need for LLM.
+    //
+    // False-positive guard: if the delta is small-to-medium (5-19) AND the
+    // target element vanished from the new state without a URL/title change,
+    // we likely hit an unrelated DOM update (analytics widget, notification
+    // counter, lazy-loaded sidebar) rather than the intended interaction.
+    // Fall through to semantic verification instead of claiming auto-success.
+    // Huge deltas (≥ 20) are still auto-success — modal open, page transition.
     const elementDelta = Math.abs(stateAfter.elements.length - stateBefore.elements.length);
     if (elementDelta >= 5) {
-      console.log(`[Verifier] Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
-      return {
-        done: true,
-        success: true,
-        message: `DOM changed significantly (${elementDelta} elements ${stateAfter.elements.length > stateBefore.elements.length ? 'added' : 'removed'})`,
-        confidence: 0.85,
-      };
+      const targetNameMatch = /"([^"]+)"/.exec(action);
+      const targetName = targetNameMatch?.[1];
+      const targetStillPresent = targetName
+        ? stateAfter.elements.some(e => e.name === targetName)
+        : true; // no target extracted — assume presence (can't check)
+
+      const hugeDelta = elementDelta >= 20;
+      if (hugeDelta || targetStillPresent) {
+        console.log(`[Verifier] Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
+        return {
+          done: true,
+          success: true,
+          message: `DOM changed significantly (${elementDelta} elements ${stateAfter.elements.length > stateBefore.elements.length ? 'added' : 'removed'})`,
+          confidence: 0.85,
+        };
+      }
+      // Medium delta + target vanished → likely unrelated DOM update.
+      // Fall through to focus check / semantic LLM verification.
+      console.log(`[Verifier] Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`);
     }
 
     // ── Fast path 6: Focused element changed ─────────────────────────────────

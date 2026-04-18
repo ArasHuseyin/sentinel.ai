@@ -4,9 +4,12 @@ import type { UIElement, SimplifiedState } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { VisionGrounding } from '../core/vision-grounding.js';
 import type { ILocatorCache } from '../core/locator-cache.js';
+import type { IPatternCache, PatternSequence } from '../core/pattern-cache.js';
+import type { PatternFingerprint } from '../core/pattern-signature.js';
 import { generateSelector } from '../core/selector-generator.js';
 import { withTimeout } from '../utils/with-timeout.js';
-import { ActionError } from '../types/errors.js';
+import { ActionError, CaptchaDetectedError } from '../types/errors.js';
+import { detectCaptcha, describeCaptcha } from '../reliability/captcha-detector.js';
 
 export interface ActOptions {
   variables?: Record<string, string>;
@@ -58,34 +61,78 @@ function interpolateVariables(instruction: string, variables?: Record<string, st
 /**
  * Waits for the DOM to stabilise after an action.
  *
- * Uses a MutationObserver to detect when the DOM stops changing (300 ms of
- * silence) rather than `networkidle`, which is unreliable on SPAs that keep
- * persistent WebSocket / SSE connections open. Falls back gracefully if the
- * page is in the middle of a navigation (no body) or if the evaluate call
- * fails for any reason.
+ * Two-signal strategy (universal, no library-specific selectors):
  *
- * Typical settle time: ~300 ms.  Hard cap: min(timeout, 3 000) ms.
+ *   1. MutationObserver — resolves after `stabilityMs` of DOM silence.
+ *      Handles classic re-renders where React/Vue/etc swap in content
+ *      and then stop touching the tree.
+ *
+ *   2. Loading-indicator detection — DOES NOT resolve while any of these
+ *      are visible, regardless of mutation silence:
+ *        - `[aria-busy="true"]`  (WAI-ARIA standard)
+ *        - `[role="progressbar"]` (visible)
+ *        - visible elements whose class contains `loading`/`skeleton`/`spinner`
+ *      This catches modern SPAs where the initial render fires fast but
+ *      real content arrives 3-8 s later (Shopify, Airbnb, many GraphQL
+ *      apps). Without this check the old 3 s cap expired mid-skeleton.
+ *
+ * Hard cap: min(timeout, 8 000) ms — safety net for pages whose loading
+ * indicators never disappear (broken spinners, animated placeholders).
+ * Typical real settle time: 300 ms – 2 s.
  */
-async function waitForPageSettle(page: Page, timeout = 3000): Promise<void> {
+async function waitForPageSettle(page: Page, timeout = 5000): Promise<void> {
   const stabilityMs = 300;
-  const hardCapMs = Math.min(timeout, 3000);
+  const hardCapMs = Math.min(timeout, 8000);
 
   const domSettle = page.evaluate(
     ({ stabilityMs, hardCapMs }: { stabilityMs: number; hardCapMs: number }) =>
       new Promise<void>(resolve => {
-        let timer: ReturnType<typeof setTimeout> = setTimeout(resolve, stabilityMs);
-        const observer = new MutationObserver(() => {
-          clearTimeout(timer);
-          timer = setTimeout(resolve, stabilityMs);
-        });
-        observer.observe(document.body, {
-          childList: true,
-          subtree: true,
-        });
-        setTimeout(() => {
+        const start = Date.now();
+        let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+        let done = false;
+
+        const finish = (): void => {
+          if (done) return;
+          done = true;
           observer.disconnect();
+          if (silenceTimer) clearTimeout(silenceTimer);
           resolve();
-        }, hardCapMs);
+        };
+
+        const hasLoadingSignal = (): boolean => {
+          // WAI-ARIA standard: aria-busy signals "work in progress"
+          if (document.querySelector('[aria-busy="true"]')) return true;
+          // Explicit progress indicator (W3C role)
+          const pb = document.querySelector('[role="progressbar"]');
+          if (pb && (pb as HTMLElement).offsetParent !== null) return true;
+          // Common class-name heuristics — tolerant of any CSS framework
+          const candidates = document.querySelectorAll(
+            '[class*="loading" i], [class*="skeleton" i], [class*="spinner" i]'
+          );
+          for (const el of Array.from(candidates)) {
+            if ((el as HTMLElement).offsetParent !== null) return true;
+          }
+          return false;
+        };
+
+        const armSilenceTimer = (): void => {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          silenceTimer = setTimeout(() => {
+            silenceTimer = null;
+            // Stability reached. Release only if no loading indicator is
+            // still visible — otherwise wait for the next mutation, which
+            // will re-arm this timer.
+            if (!hasLoadingSignal()) finish();
+          }, stabilityMs);
+        };
+
+        const observer = new MutationObserver(armSilenceTimer);
+        observer.observe(document.body, { childList: true, subtree: true });
+        armSilenceTimer(); // kick off
+
+        // Hard-cap safety net — always release eventually
+        setTimeout(finish, hardCapMs);
+        void start;
       }),
     { stabilityMs, hardCapMs }
   ).catch(() => {});
@@ -567,7 +614,14 @@ export class ActionEngine {
      *  'hybrid' — AOM primary, vision on coordinate mismatch
      *  'vision' — Vision as primary, AOM as fallback
      */
-    private mode: 'aom' | 'hybrid' | 'vision' = 'aom'
+    private mode: 'aom' | 'hybrid' | 'vision' = 'aom',
+    /**
+     * Cross-site widget pattern cache. When present, each `act()` call
+     * first fingerprints the top relevant elements and probes the cache
+     * — a hit routes past the LLM entirely. Successful and failed
+     * actions write back to build up the library of learned patterns.
+     */
+    private patternCache: IPatternCache | null = null
   ) {}
 
   private log(level: 1 | 2 | 3, message: string): void {
@@ -576,6 +630,210 @@ export class ActionEngine {
 
   private warn(level: 1 | 2 | 3, message: string): void {
     if (this.verbose >= level) console.warn(message);
+  }
+
+  /**
+   * Loose name-compatibility check used at pattern lookup time. Two names
+   * are compatible if either is a non-trivial substring of the other —
+   * after lowercase-trim normalisation. This preserves cross-site reuse
+   * ("Email" on site A matches "Email address" on site B) while rejecting
+   * false same-shape hits within a single page ("Outlined" vs "With a
+   * start adornment").
+   */
+  private static namesCompatible(candidate: string, cached: string): boolean {
+    const a = candidate.toLowerCase().trim();
+    const b = cached.toLowerCase().trim();
+    if (!a || !b) return a === b;
+    if (a === b) return true;
+    // Substring either direction — but require at least 3 chars of overlap
+    // to avoid accidental matches on short words like "ok" or "id".
+    if (a.length >= 3 && b.includes(a)) return true;
+    if (b.length >= 3 && a.includes(b)) return true;
+    return false;
+  }
+
+  /** Roles whose textual value is sensitive and must NOT be persisted to the pattern cache. */
+  private static readonly SENSITIVE_VALUE_ROLES: ReadonlySet<string> = new Set<string>([
+    // Password fields are classified as 'textbox' by the parser — we can't
+    // distinguish them by role alone. Attribute-level filtering happens when
+    // the pattern is recorded (type=password / type=tel on the element).
+  ]);
+
+  /**
+   * Sanitises a candidate PatternSequence before recording — strips the
+   * user-entered value when the target looks like a sensitive input so
+   * we never persist credentials / phone numbers / card data into the
+   * shared pattern cache.
+   */
+  private static sanitiseForCache(
+    sequence: PatternSequence,
+    sensitive: boolean
+  ): PatternSequence {
+    if (!sensitive) return sequence;
+    const { value, ...rest } = sequence;
+    void value;
+    return rest;
+  }
+
+  /** Heuristic: is filling this element's value a privacy concern worth redacting? */
+  private async isSensitiveTarget(target: UIElement): Promise<boolean> {
+    if (!target) return false;
+    // Role-based fast check
+    if (ActionEngine.SENSITIVE_VALUE_ROLES.has(target.role)) return true;
+    // DOM-level check: look for type=password / type=tel at the target coords
+    try {
+      const { x, y, width, height } = target.boundingClientRect;
+      return await this.page.evaluate(
+        ({ cx, cy }: { cx: number; cy: number }) => {
+          const el = document.elementFromPoint(cx, cy) as HTMLElement | null;
+          if (!el) return false;
+          let cursor: HTMLElement | null = el;
+          for (let d = 0; d < 4 && cursor; d++) {
+            if (cursor.tagName === 'INPUT') {
+              const t = (cursor as HTMLInputElement).type?.toLowerCase();
+              if (t === 'password' || t === 'tel') return true;
+            }
+            const input = cursor.querySelector?.('input[type="password"], input[type="tel"]');
+            if (input) return true;
+            cursor = cursor.parentElement;
+          }
+          return false;
+        },
+        { cx: x + width / 2, cy: y + height / 2 }
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Fingerprints the top-N candidates in a single round-trip. Computed
+   * ONCE per `act()` call BEFORE the action fires so both the cache
+   * lookup and any post-success recording reference the pre-action DOM
+   * state — critical for stability since many libraries mutate widget
+   * classes after focus/fill/select (e.g. `Mui-focused` prepended to a
+   * container's classList would otherwise flip the library signature
+   * between lookup and record, causing permanent cache misses).
+   */
+  /**
+   * How many relevance-ranked candidates get fingerprinted and probed.
+   * Wider pools increase the chance of hitting the user's intended target
+   * when many same-shape widgets exist on one page (MUI docs can easily
+   * render 15+ textbox variants). Upper bound is a cost-vs-coverage
+   * trade-off: each extra candidate is ~2ms of `elementFromPoint` +
+   * fingerprint work, all in a single page.evaluate round-trip.
+   */
+  private static readonly PATTERN_PROBE_TOP_N = 20;
+
+  private async fingerprintTopCandidates(
+    candidates: UIElement[],
+  ): Promise<Map<number, PatternFingerprint>> {
+    if (!this.patternCache || candidates.length === 0) return new Map();
+    const top = candidates
+      .slice(0, ActionEngine.PATTERN_PROBE_TOP_N)
+      .filter(c => c.boundingClientRect.width > 0);
+    if (top.length === 0) return new Map();
+    return await this.stateParser.computeTargetFingerprints(
+      top.map(e => ({
+        id: e.id,
+        x: e.boundingClientRect.x + e.boundingClientRect.width / 2,
+        y: e.boundingClientRect.y + e.boundingClientRect.height / 2,
+      })),
+    );
+  }
+
+  /**
+   * Probes the pattern cache for any of the pre-fingerprinted candidates.
+   * Returns a successful ActionResult on a confirmed hit, `null` on miss
+   * (the caller then continues down to the LLM path).
+   *
+   * Failure semantics: if a cache-hit action throws, we record a failure
+   * against that pattern (confidence decay) and return `null` so the
+   * normal LLM flow takes over. Self-healing by design.
+   */
+  private async tryPatternCache(
+    candidates: UIElement[],
+    fingerprints: Map<number, PatternFingerprint>,
+    instruction: string,
+  ): Promise<ActionResult | null> {
+    if (!this.patternCache || fingerprints.size === 0) return null;
+    // Iterate candidates in relevance order — first cache hit wins.
+    const top = candidates.slice(0, ActionEngine.PATTERN_PROBE_TOP_N);
+    this.log(2, `[Pattern] probing ${top.length} candidate(s) against cache (${fingerprints.size} fingerprints computed)`);
+    for (const candidate of top) {
+      const fp = fingerprints.get(candidate.id);
+      if (!fp || (!fp.aria && !fp.library && !fp.topology)) {
+        this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — no fingerprint (elementFromPoint returned nothing)`);
+        continue;
+      }
+      const entry = this.patternCache.get(fp, instruction);
+      if (!entry) {
+        this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — MISS fp=${JSON.stringify(fp)}`);
+        continue;
+      }
+      // Name-compat check: several widgets on the same page often share a
+      // fingerprint (e.g. every MUI TextField has the same ARIA shape).
+      // The stored sequence points at a specific element by name, so hit
+      // only when the candidate's accessible name is compatible with the
+      // cached one — exact or substring either direction. Prevents cache
+      // hits from routing the action to the wrong same-shape widget.
+      if (!ActionEngine.namesCompatible(candidate.name, entry.sequence.name)) {
+        this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — FP match but name differs from cached "${entry.sequence.name}" — skipping`);
+        continue;
+      }
+      this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — HIT fp=${JSON.stringify(fp)}`);
+
+      const actionLabel = `${entry.sequence.action} on "${candidate.name}" (${candidate.role}) [pattern]`;
+      this.log(1, `[Act] 🎯 ${actionLabel}`);
+      this.stateParser.invalidateCache();
+      try {
+        await this.performAction(entry.sequence.action, candidate, entry.sequence.value);
+        await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+        // Successful hit — bump confidence
+        this.patternCache.recordSuccess(fp, instruction, entry.sequence);
+        return {
+          success: true,
+          message: `Successfully performed ${entry.sequence.action} on "${candidate.name}" (pattern)`,
+          action: actionLabel,
+        };
+      } catch (err: any) {
+        // Pattern matched but execution failed — decay confidence, fall through to LLM
+        this.patternCache.recordFailure(fp, instruction);
+        this.warn(2, `[Act] Pattern hit failed (${err?.message ?? 'unknown'}) — falling back to LLM`);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Records a successful LLM-directed action into the pattern cache.
+   * Uses the pre-action fingerprint map populated by `act()` (either via
+   * the initial top-N batch or the JIT single-target compute triggered
+   * when the LLM picked outside the top-N). Both paths guarantee the
+   * stored key was computed on the same pre-action DOM state a future
+   * lookup will probe — no drift from framework state classes.
+   * Sensitive-field filter kicks in for password / tel / card inputs.
+   */
+  private async recordPatternSuccess(
+    target: UIElement,
+    sequence: PatternSequence,
+    instruction: string,
+    preActionFingerprints: Map<number, PatternFingerprint>,
+  ): Promise<void> {
+    if (!this.patternCache) return;
+    try {
+      const fp = preActionFingerprints.get(target.id);
+      if (!fp || (!fp.aria && !fp.library && !fp.topology)) {
+        this.log(2, `[Pattern] record skipped for ${target.id} "${target.name}" — no usable fingerprint`);
+        return;
+      }
+      const sensitive = await this.isSensitiveTarget(target);
+      this.patternCache.recordSuccess(fp, instruction, ActionEngine.sanitiseForCache(sequence, sensitive));
+      this.log(2, `[Pattern] recorded ${target.role} "${target.name}" fp=${JSON.stringify(fp)}`);
+    } catch {
+      // Pattern recording must never abort the caller's action path.
+    }
   }
 
   /**
@@ -689,7 +947,7 @@ export class ActionEngine {
 
     switch (action) {
       case 'click':
-        await locator.click({ timeout: 10_000 });
+        await this.clickLocator(locator, { timeout: 10_000 });
         break;
       case 'double-click':
         await locator.dblclick({ timeout: 10_000 });
@@ -717,7 +975,7 @@ export class ActionEngine {
         try {
           await locator.selectOption(value ?? '', { timeout: 3000 });
         } catch {
-          await locator.click({ timeout: 5000 });
+          await this.clickLocator(locator, { timeout: 5000 });
           if (value) {
             await this.page.keyboard.type(value, { delay: 90 });
             await frame.waitForTimeout(300);
@@ -815,6 +1073,16 @@ export class ActionEngine {
     if (currentState.elements.length > visibleElements.length) {
       this.log(3, `[Act] chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
     }
+
+    // ── Pattern cache: cross-site learned widget interactions ───────────────
+    // Fingerprint the top relevant candidates ONCE, pre-action. The same
+    // fingerprint map feeds both lookup and post-success recording, so
+    // the key written on run N matches the key probed on run N+1 — state
+    // classes added by the action (e.g. focus indicators) don't drift
+    // the hash.
+    const preActionFingerprints = await this.fingerprintTopCandidates(visibleElements);
+    const patternResult = await this.tryPatternCache(visibleElements, preActionFingerprints, resolvedInstruction);
+    if (patternResult) return patternResult;
 
     const prompt = `
       Current Page URL: ${currentState.url}
@@ -971,6 +1239,22 @@ export class ActionEngine {
       // Invalidate cache after action – state will change
       this.stateParser.invalidateCache();
 
+      // JIT pre-action fingerprint: if the LLM picked a target that wasn't
+      // in the initial top-N fingerprinted pool, capture its fingerprint
+      // NOW (still pre-action — performAction hasn't fired yet). This
+      // guarantees the recorded fingerprint matches the state a future
+      // `tryPatternCache` lookup will probe — no post-action drift.
+      if (this.patternCache && target && !preActionFingerprints.has(target.id)) {
+        const { x, y, width, height } = target.boundingClientRect;
+        if (width > 0 && height > 0) {
+          const extra = await this.stateParser.computeTargetFingerprints([
+            { id: target.id, x: x + width / 2, y: y + height / 2 },
+          ]);
+          const fp = extra.get(target.id);
+          if (fp) preActionFingerprints.set(target.id, fp);
+        }
+      }
+
       // For drag, resolve the drop-target element alongside the source.
       const dropTarget = decision.action === 'drag' && decision.targetElementId !== undefined
         ? (currentState.elements.find(e => e.id === decision.targetElementId) ?? null)
@@ -987,6 +1271,15 @@ export class ActionEngine {
             name: target.name,
             ...(decision.value !== undefined ? { value: decision.value } : {}),
           });
+        }
+        // ── Pattern cache: record widget-level success for cross-site reuse ──
+        if (target && !isScrollWithoutTarget) {
+          await this.recordPatternSuccess(target, {
+            action: decision.action,
+            role: target.role,
+            name: target.name,
+            ...(decision.value !== undefined ? { value: decision.value } : {}),
+          }, resolvedInstruction, preActionFingerprints);
         }
         return {
           success: true,
@@ -1045,11 +1338,20 @@ export class ActionEngine {
     const recoveryState = await this.stateParser.parse();
     const recovered = await this.tryRecoverFromBlocker(recoveryState);
     if (recovered) {
-      // Re-parse after recovery and retry the first candidate
+      // Re-parse after recovery and retry the first candidate. Match by
+      // role + name, NOT by `element.id`: the id is a parse-counter
+      // (0..N) that the state-parser re-assigns on every parse, so
+      // `candidateIds[0]` from the pre-recovery state points to an
+      // arbitrary element in the fresh state (often a completely
+      // unrelated widget that happens to land at that index). Role +
+      // name are semantic and survive re-parse.
       this.stateParser.invalidateCache();
       const freshState = await this.stateParser.parse();
-      const retryTarget = freshState.elements.find(e => e.id === candidateIds[0])
-        ?? freshState.elements.find(e => e.name === fallbackTarget?.name);
+      const retryTarget = fallbackTarget
+        ? (freshState.elements.find(e =>
+            e.role === fallbackTarget.role && e.name === fallbackTarget.name
+          ) ?? null)
+        : null;
       if (retryTarget) {
         try {
           await this.performAction(decision.action, retryTarget, decision.value);
@@ -1134,6 +1436,23 @@ export class ActionEngine {
       attempts.push({ path: 'locator-fallback', error: fallbackError.message });
       const message = buildFailureMessage(resolvedInstruction, target, attempts);
       this.warn(2, `[Act] All paths failed:\n${message}`);
+
+      // Before giving up, check whether a CAPTCHA is blocking the page.
+      // When one is present, the generic "action failed" message is useless —
+      // the user needs to know they hit a bot-check so they can route the
+      // call through an external solver, enable stealth patches, or fall
+      // back to manual intervention. Throwing CaptchaDetectedError instead
+      // of returning success:false short-circuits Sentinel's retry loop
+      // (no point retrying the same CAPTCHA) and surfaces the exact type.
+      const captcha = await detectCaptcha(this.page).catch(() => ({ type: null as null }));
+      if (captcha.type) {
+        throw new CaptchaDetectedError(
+          captcha.type,
+          describeCaptcha(captcha.type, captcha.source),
+          { captchaSource: captcha.source, failedAttempts: attempts }
+        );
+      }
+
       return { success: false, message, action: actionLabel, attempts };
     }
   }
@@ -1218,6 +1537,24 @@ export class ActionEngine {
       return;
     }
 
+    // Radio buttons: AOM bounding boxes frequently cover the entire radio-
+    // group container rather than the individual radio circle + label. Using
+    // coordinate-based clicking at the AOM centroid therefore hits the group
+    // wrapper, triggering a coordinate-mismatch error. Playwright's locator
+    // API resolves the individual radio by accessible name — no coordinates
+    // needed, works regardless of group nesting or label layout.
+    if (action === 'click' && target.role === 'radio') {
+      try {
+        await this.page
+          .getByRole('radio', { name: target.name, exact: false })
+          .first()
+          .click({ timeout: 10_000 });
+        return;
+      } catch {
+        // Locator miss — fall through to coordinate path
+      }
+    }
+
     const { x, y, width, height } = target.boundingClientRect;
     const cx = x + width / 2;
     const cy = y + height / 2;
@@ -1232,7 +1569,7 @@ export class ActionEngine {
       if (action === 'fill') {
         await locator.fill(value || '', { timeout: 5000 });
       } else {
-        await locator.click({ timeout: 5000 });
+        await this.clickLocator(locator, { timeout: 5000 });
       }
       return;
     }
@@ -1342,7 +1679,7 @@ export class ActionEngine {
               if (action === 'fill') {
                 await locator.fill(value || '', { timeout: 3000 });
               } else {
-                await locator.click({ timeout: 3000 });
+                await this.clickLocator(locator, { timeout: 3000 });
               }
               return; // locator click succeeded
             } catch {
@@ -1691,55 +2028,17 @@ export class ActionEngine {
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
 
         // For combobox/listbox: click may open a dropdown trigger.
-        // Try to find & focus the actual search input inside the dropdown.
-        // Works for both combobox AND listbox roles — many dropdown widgets
-        // report as listbox but have a hidden search input.
-        // If no input is found, falls through to normal fill (no delay wasted).
+        // Locate the dropdown's internal search input via the ARIA popup
+        // contract (aria-controls / aria-owns, trigger subtree, or a
+        // visible popup-role element). See `focusDropdownPopupInput` for
+        // the scope rules — never ascends to ancestor divs, so it cannot
+        // grab unrelated inputs elsewhere on the page.
         let isDropdownInput = false;
         if (target.role === 'combobox' || target.role === 'listbox') {
-          isDropdownInput = await this.page.evaluate(
-            ({ x, y }: { x: number; y: number }) => {
-              // Check if an input already has focus
-              const active = document.activeElement;
-              if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
-
-              // Search for a visible input in the container hierarchy
-              const el = document.elementFromPoint(x, y) as HTMLElement | null;
-              let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
-              for (let depth = 0; depth < 5 && container; depth++) {
-                const input = container.querySelector(
-                  'input[role="combobox"], input[type="search"], input[type="text"], ' +
-                  'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
-                ) as HTMLInputElement | null;
-                if (input && input.offsetParent !== null) { input.focus(); return true; }
-                container = container.parentElement;
-              }
-              return false;
-            },
-            { x: clickX, y: clickY }
-          ).catch(() => false);
-
-          // If no input found immediately, wait for dropdown animation and retry
+          isDropdownInput = await this.focusDropdownPopupInput(clickX, clickY);
           if (!isDropdownInput) {
             await this.page.waitForTimeout(300);
-            isDropdownInput = await this.page.evaluate(
-              ({ x, y }: { x: number; y: number }) => {
-                const active = document.activeElement;
-                if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
-                const el = document.elementFromPoint(x, y) as HTMLElement | null;
-                let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
-                for (let depth = 0; depth < 5 && container; depth++) {
-                  const input = container.querySelector(
-                    'input[role="combobox"], input[type="search"], input[type="text"], ' +
-                    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
-                  ) as HTMLInputElement | null;
-                  if (input && input.offsetParent !== null) { input.focus(); return true; }
-                  container = container.parentElement;
-                }
-                return false;
-              },
-              { x: clickX, y: clickY }
-            ).catch(() => false);
+            isDropdownInput = await this.focusDropdownPopupInput(clickX, clickY);
           }
         }
 
@@ -1751,29 +2050,12 @@ export class ActionEngine {
           await this.page.keyboard.type(value || '', { delay: 90 });
         }
 
-        // Auto-select: after typing into a dropdown search, click the first matching option.
-        // This completes the dropdown interaction in one step instead of requiring a separate click.
+        // Auto-select: after typing into a dropdown search, click the best
+        // matching option. Completes the dropdown interaction in one step
+        // instead of requiring a separate click step.
         if (isDropdownInput && value) {
           await this.page.waitForTimeout(400); // wait for filter/render
-          await this.page.evaluate(
-            ({ val }: { val: string }) => {
-              const options = document.querySelectorAll('[role="option"]');
-              const lowerVal = val.toLowerCase();
-              // Exact match
-              for (const opt of Array.from(options)) {
-                if ((opt as HTMLElement).textContent?.trim().toLowerCase() === lowerVal) {
-                  (opt as HTMLElement).click(); return;
-                }
-              }
-              // Contains match
-              for (const opt of Array.from(options)) {
-                if ((opt as HTMLElement).textContent?.trim().toLowerCase().includes(lowerVal)) {
-                  (opt as HTMLElement).click(); return;
-                }
-              }
-            },
-            { val: value }
-          ).catch(() => {});
+          await this.clickBestMatchingOption(value).catch(() => false);
         }
         break;
       }
@@ -1799,65 +2081,55 @@ export class ActionEngine {
         await this.page.keyboard.press(value || 'Enter');
         break;
 
-      case 'select':
+      case 'select': {
+        // Native <select> first. AOM reports native selects as `combobox`,
+        // which previously routed them through the custom-dropdown flow
+        // (click → search-input walk → type → option-click). That path is
+        // wrong for OS-owned popups — the dropdown can't be driven from
+        // the DOM, and the ancestor-walk input search could grab unrelated
+        // inputs on the page (e.g. a top-nav search bar) because a common
+        // layout container lived within 5 levels. Bypass the click entirely
+        // and drive the HTMLSelectElement via its native value setter.
+        if (value && await this.trySetNativeSelectValue(clickX, clickY, value)) {
+          break;
+        }
+
         await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
 
         if (target.role === 'combobox' || target.role === 'listbox') {
-          // Custom dropdown: click trigger → find input → type to filter → click option
-          const selectNeedsSearch = await this.page.evaluate(() => {
+          // Custom dropdown: open → focus popup-scoped input → type → click option.
+          const activeIsInput = await this.page.evaluate(() => {
             const active = document.activeElement;
-            return !(active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA');
-          }).catch(() => true);
+            return active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
+          }).catch(() => false);
 
-          if (selectNeedsSearch) {
+          if (!activeIsInput) {
             await this.page.waitForTimeout(300);
-            await this.page.evaluate(
-              ({ x, y }: { x: number; y: number }) => {
-                const el = document.elementFromPoint(x, y) as HTMLElement | null;
-                let container: HTMLElement | null = el?.closest?.('div') ?? el?.parentElement ?? null;
-                for (let depth = 0; depth < 5 && container; depth++) {
-                  const input = container.querySelector(
-                    'input[role="combobox"], input[type="search"], input[type="text"], ' +
-                    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'
-                  ) as HTMLInputElement | null;
-                  if (input && input.offsetParent !== null) { input.focus(); input.select(); return; }
-                  container = container.parentElement;
-                }
-              },
-              { x: clickX, y: clickY }
-            );
+            await this.focusDropdownPopupInput(clickX, clickY);
           }
 
           await this.page.keyboard.type(value || '');
           await this.page.waitForTimeout(500);
 
-          // Click the matching option from the dropdown
-          const clicked = await this.page.evaluate(
-            ({ val }: { val: string }) => {
-              const options = document.querySelectorAll(
-                '[role="option"], [role="listbox"] li, [role="listbox"] div[id]'
-              );
-              // Exact match first
-              for (const opt of Array.from(options)) {
-                const text = (opt as HTMLElement).textContent?.trim();
-                if (text === val) { (opt as HTMLElement).click(); return true; }
-              }
-              // Partial match (contains)
-              for (const opt of Array.from(options)) {
-                const text = (opt as HTMLElement).textContent?.trim();
-                if (text && text.includes(val)) { (opt as HTMLElement).click(); return true; }
-              }
-              return false;
-            },
-            { val: value || '' }
-          );
+          const clicked = await this.clickBestMatchingOption(value || '').catch(() => false);
 
           if (!clicked) {
-            // Fallback: press Enter to confirm current selection
+            // Fallback: press Enter to confirm current selection. Native
+            // <select> dropdowns close on Enter; custom popovers may not
+            // — the trailing `ensurePopoverClosed` takes care of that.
             await this.page.keyboard.press('Enter');
           }
+
+          // Universal close: if the popover is still open (trigger's
+          // aria-expanded still true near our click coords), dispatch
+          // Escape. Covers custom popovers whose close-handler didn't
+          // fire from our synthetic option click or from Enter — without
+          // affecting spec-compliant widgets (they've already closed, so
+          // the stuck check returns false and Escape is skipped).
+          await this.ensurePopoverClosed(clickX, clickY);
         } else {
-          // Native <select> element
+          // Native <select> fallback when the upfront detection missed
+          // (e.g. an overlay sits on top of the <select> at click coords).
           await this.page.evaluate(
             ({ x, y, val }: { x: number; y: number; val: string }) => {
               const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
@@ -1870,6 +2142,7 @@ export class ActionEngine {
           );
         }
         break;
+      }
 
       case 'scroll-down':
         await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
@@ -1891,6 +2164,347 @@ export class ActionEngine {
           if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, { x: clickX, y: clickY });
         break;
+    }
+  }
+
+  /**
+   * Focuses the search/filter input that belongs to a dropdown popup
+   * opened at `(clickX, clickY)`. Returns `true` if an input was focused
+   * (either already-focused by the click, or located and focused here).
+   *
+   * Scope rules, in order:
+   *   1. If the trigger (or its closest `[role="combobox"]` ancestor)
+   *      declares `aria-controls` / `aria-owns`, only that popup element
+   *      is searched. This is the WAI-ARIA contract for combobox-popup
+   *      linkage and is authoritative when present.
+   *   2. The trigger's own subtree — covers wrapper widgets (MUI
+   *      Autocomplete, Ant Design Select) where the input is a child
+   *      of the combobox-root.
+   *   3. Any visible element with `role="listbox" | "dialog" | "menu" |
+   *      "tree"` elsewhere in the document — popups rendered via portals
+   *      (Radix, Headless UI, Shadcn).
+   *
+   * Critically, this **never walks up to ancestor `<div>`s** looking for
+   * inputs. The previous implementation did, which on deeply-nested
+   * layouts (e.g. e-commerce results pages) could easily match the
+   * top-nav search bar or a newsletter signup instead of the dropdown's
+   * own filter input.
+   */
+  private async focusDropdownPopupInput(clickX: number, clickY: number): Promise<boolean> {
+    return await this.page.evaluate(
+      ({ x, y }: { x: number; y: number }) => {
+        // Already-focused input from the click itself (MUI TextField,
+        // plain `<input role="combobox">`) — nothing more to do.
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return true;
+
+        const trigger = document.elementFromPoint(x, y) as HTMLElement | null;
+        if (!trigger) return false;
+
+        const INPUT_SEL =
+          'input[role="combobox"], input[role="searchbox"], input[type="search"], input[type="text"], ' +
+          'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])';
+
+        const isVisible = (el: Element): boolean => {
+          const he = el as HTMLElement;
+          const r = he.getBoundingClientRect();
+          if (r.width < 1 || r.height < 1) return false;
+          if (he.offsetParent === null) {
+            // offsetParent is null for `position: fixed` — fall back to
+            // computed visibility so portal-rendered popups still qualify.
+            const cs = getComputedStyle(he);
+            if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+          }
+          return true;
+        };
+
+        const firstVisibleInput = (root: Element | null): HTMLInputElement | null => {
+          if (!root) return null;
+          const inputs = root.querySelectorAll<HTMLInputElement>(INPUT_SEL);
+          for (const inp of Array.from(inputs)) {
+            if (!inp.disabled && !inp.readOnly && isVisible(inp)) return inp;
+          }
+          return null;
+        };
+
+        const comboRoot =
+          (trigger.closest('[role="combobox"], [role="listbox"]') as HTMLElement | null) ?? trigger;
+
+        // Scope 1: aria-controls / aria-owns target(s).
+        const controlsAttr = comboRoot.getAttribute('aria-controls') || comboRoot.getAttribute('aria-owns');
+        if (controlsAttr) {
+          for (const id of controlsAttr.split(/\s+/).filter(Boolean)) {
+            const popup = document.getElementById(id);
+            const input = firstVisibleInput(popup);
+            if (input) { input.focus(); input.select?.(); return true; }
+          }
+        }
+
+        // Scope 2: combobox's own subtree.
+        const ownInput = firstVisibleInput(comboRoot);
+        if (ownInput) { ownInput.focus(); ownInput.select?.(); return true; }
+
+        // Scope 3: any visible popup-role element. Excludes the combobox
+        // itself (already covered by scope 2) and `aria-hidden` nodes.
+        const popups = document.querySelectorAll<HTMLElement>(
+          '[role="listbox"], [role="dialog"], [role="menu"], [role="tree"]'
+        );
+        for (const p of Array.from(popups)) {
+          if (p === comboRoot || comboRoot.contains(p) || p.contains(comboRoot)) continue;
+          if (p.getAttribute('aria-hidden') === 'true') continue;
+          if (!isVisible(p)) continue;
+          const input = firstVisibleInput(p);
+          if (input) { input.focus(); input.select?.(); return true; }
+        }
+
+        return false;
+      },
+      { x: clickX, y: clickY }
+    ).catch(() => false);
+  }
+
+  /**
+   * Detects a native `<select>` at `(clickX, clickY)` and sets its value
+   * directly via the prototype value setter + `change` event.
+   *
+   * Returns `true` when handled — the caller should skip any mouse click
+   * and the custom-dropdown flow entirely. The AOM reports native selects
+   * as `combobox`, so without this detection they would incorrectly
+   * follow the click-to-open-popup path (which can't drive OS dropdowns
+   * and whose fallback input search was the original bug).
+   *
+   * Matching is lenient: exact text, exact value, or case-insensitive
+   * substring on the option's text. This covers locale-differing labels
+   * („Beste Ergebnisse" vs. "Featured") where the LLM supplied the
+   * English value but options are localised.
+   */
+  private async trySetNativeSelectValue(clickX: number, clickY: number, value: string): Promise<boolean> {
+    return await this.page.evaluate(
+      ({ x, y, val }: { x: number; y: number; val: string }) => {
+        const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+        if (!hit) return false;
+        const sel = (hit.closest?.('select') ?? hit.querySelector?.('select')) as HTMLSelectElement | null;
+        if (!sel) return false;
+
+        const trimmed = val.trim();
+        const lower = trimmed.toLowerCase();
+        const match =
+          Array.from(sel.options).find(o => o.text.trim() === trimmed || o.value === trimmed) ??
+          Array.from(sel.options).find(o => o.text.trim().toLowerCase() === lower) ??
+          Array.from(sel.options).find(o => o.text.trim().toLowerCase().includes(lower));
+        if (!match) return false;
+
+        // Use the native prototype setter so framework-controlled selects
+        // (React/Vue v-model) see the change as user-originated. A plain
+        // `sel.value = …` assignment gets swallowed by the framework's
+        // wrapped descriptor.
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+        sel.focus();
+        setter?.call(sel, match.value);
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        sel.blur();
+        return true;
+      },
+      { x: clickX, y: clickY, val: value }
+    ).catch(() => false);
+  }
+
+  /**
+   * Click a locator with a universal fallback for pointer-intercept
+   * errors. Playwright's `locator.click()` runs an actionability check
+   * that times out when a decorative overlay sits on top of the real
+   * target — typical on sites that style native `<select>`s, wrap
+   * `<button>`s with chrome elements, or put `aria-hidden="true"`
+   * labels over an interactive element (Amazon's `a-dropdown-prompt`
+   * over the sort `<select>`, Bootstrap label-covered checkboxes, MUI
+   * ripple spans, etc.).
+   *
+   * On the intercept error only, retry via
+   * `locator.evaluate(el => el.click())` — dispatches a synthetic
+   * `click` MouseEvent directly on the target element, bypassing
+   * pointer routing entirely. Any delegated `click` listener, React
+   * `onClick`, or `data-action` handler still fires; overlays don't
+   * swallow it. Other errors (timeout on truly invisible elements,
+   * detached nodes) re-throw unchanged — the fallback must not mask
+   * real actionability problems.
+   *
+   * Scope: left-click only. Right-click and double-click need
+   * different event dispatches and keep Playwright's native paths.
+   */
+  private async clickLocator(
+    locator: import('playwright').Locator,
+    options: { timeout?: number } = {}
+  ): Promise<void> {
+    try {
+      await locator.click(options);
+    } catch (err: any) {
+      const msg = err?.message ?? '';
+      if (/intercepts pointer events|intercept.*pointer events/i.test(msg)) {
+        this.warn(2, `[Act] Pointer-intercept detected — retrying via DOM-level click`);
+        await locator.evaluate((el: HTMLElement) => el.click());
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Clicks the option in an open dropdown/listbox that best matches
+   * `value`. Returns `true` on a confirmed click, `false` when no option
+   * scored high enough to trust.
+   *
+   * Two universal bugs this replaces in the older selectors:
+   *
+   * 1. **Wrapper-vs-option ambiguity.** The previous query
+   *    `'[role="option"], [role="listbox"] li, …'` returned
+   *    `<li role="presentation">` wrappers *before* their inner
+   *    `<a role="option">` because `querySelectorAll` returns in
+   *    document-tree order, not selector-order. Sites like Amazon pin
+   *    the click handler on the inner anchor and read `data-value`
+   *    off it; dispatching `.click()` on the outer `<li>` fires the
+   *    handler with `event.target = <li>`, so the handler finds no
+   *    `data-value` on the target and silently no-ops. We now query
+   *    explicit `[role="option"]` first (the accessible option itself),
+   *    and only fall back to structural listbox children when no
+   *    explicit option exists — and within a chosen wrapper, we drill
+   *    down to the interactive descendant before clicking.
+   *
+   * 2. **Asymmetric substring matching.** The previous check
+   *    `text === val || text.includes(val)` failed when the option
+   *    text was an *abbreviation* of the LLM-provided value (Amazon:
+   *    option `"Durchschn. Kundenbewertung"`, LLM passes the full
+   *    `"Durchschnittliche Kundenbewertung"`). Scoring now combines
+   *    normalization (lowercase, punctuation-stripped, whitespace-
+   *    collapsed), bi-directional substring, and token-overlap with
+   *    `startsWith` so `durchschnittliche` matches the option's
+   *    `durchschn.` token. A 0.5 coverage threshold keeps low-overlap
+   *    false matches out.
+   */
+  private async clickBestMatchingOption(value: string): Promise<boolean> {
+    if (!value) return false;
+    return await this.page.evaluate(
+      ({ val }: { val: string }) => {
+        const normalize = (s: string): string =>
+          s.toLowerCase().replace(/[\s.,:;!?()[\]{}"'·•/\\-]+/g, ' ').trim();
+        const normVal = normalize(val);
+        if (!normVal) return false;
+        const valTokens = normVal.split(/\s+/).filter(t => t.length > 1);
+
+        const isInteractable = (el: HTMLElement): boolean => {
+          if (el.getAttribute('aria-hidden') === 'true') return false;
+          if (el.getAttribute('aria-disabled') === 'true') return false;
+          const r = el.getBoundingClientRect();
+          return r.width >= 1 && r.height >= 1;
+        };
+
+        // Primary pool: explicit ARIA options (the accessible element
+        // the screen reader / keyboard focus would land on).
+        const explicit = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
+          .filter(isInteractable);
+        // Structural fallback: listboxes whose items don't use the
+        // explicit role (older code, pre-ARIA listboxes). `:not(
+        // [role="presentation"])` excludes wrapper <li>s like Amazon's.
+        const structural = Array.from(document.querySelectorAll<HTMLElement>(
+          '[role="listbox"] li:not([role="presentation"]), ' +
+          '[role="listbox"] div[id]:not([role="presentation"])'
+        )).filter(isInteractable);
+
+        const pools: HTMLElement[][] = explicit.length > 0
+          ? [explicit]
+          : [structural];
+        if (pools.length === 0 || pools[0]!.length === 0) return false;
+
+        const score = (text: string): number => {
+          const n = normalize(text);
+          if (!n) return 0;
+          if (n === normVal) return 100;
+          if (n.includes(normVal)) return 80;   // option longer than val
+          if (normVal.includes(n)) return 70;   // option shorter than val (abbreviation)
+          if (valTokens.length === 0) return 0;
+          const textTokens = n.split(/\s+/);
+          const overlap = valTokens.filter(vt =>
+            textTokens.some(tt => tt === vt || tt.startsWith(vt) || vt.startsWith(tt))
+          ).length;
+          const coverage = overlap / Math.max(valTokens.length, textTokens.length);
+          return coverage >= 0.5 ? Math.round(50 * coverage) : 0;
+        };
+
+        let best: { el: HTMLElement; score: number } | null = null;
+        for (const pool of pools) {
+          for (const opt of pool) {
+            // Prefer the element's accessible label if provided —
+            // falls back to textContent for the common case.
+            const label =
+              opt.getAttribute('aria-label') ||
+              opt.textContent || '';
+            const s = score(label);
+            if (s > 0 && (!best || s > best.score)) best = { el: opt, score: s };
+          }
+          if (best) break; // don't fall through to structural pool once explicit matched
+        }
+
+        if (!best) return false;
+
+        // Drill down to the most specific clickable descendant when the
+        // matched element is a wrapper. Synthetic `.click()` events do
+        // not bubble from a parent to its children, so if the site's
+        // click handler reads `event.target`/`data-value` off the inner
+        // element, clicking the wrapper misses. When the match is
+        // already an `<a>`, `<button>`, or `[role="option"]`, there's
+        // nothing more specific to find.
+        const isSpecific = best.el.matches('[role="option"], a, button, input, [onclick]');
+        const interactive = isSpecific
+          ? best.el
+          : (best.el.querySelector<HTMLElement>(
+              '[role="option"], a[href], a[data-value], button, [tabindex="0"], [onclick]'
+            ) ?? best.el);
+        interactive.click();
+        return true;
+      },
+      { val: value }
+    ).catch(() => false);
+  }
+
+  /**
+   * Best-effort guarantee that a combobox/dropdown popover has closed
+   * after a selection action. Idempotent — a no-op on pages that
+   * already closed correctly.
+   *
+   * Signal: any element with `aria-expanded="true"` whose centroid lies
+   * within ~250 px of the click coordinates. Per WAI-ARIA 1.2, the
+   * combobox trigger MUST toggle `aria-expanded` with its popup state;
+   * a lingering `true` value after commit means the widget's internal
+   * close handler did not fire (common on sites that pin close-handlers
+   * to `mousedown` or `isTrusted` click events, both of which
+   * Playwright's synthetic click loses). We then dispatch `Escape`,
+   * which every ARIA-conformant widget (and most non-conformant ones)
+   * treats as a dismiss signal.
+   *
+   * The 250 px proximity check is the safety net: it prevents Escape
+   * from dismissing unrelated expanded widgets elsewhere on the page
+   * (e.g. a sidebar accordion that legitimately stays open).
+   */
+  private async ensurePopoverClosed(clickX: number, clickY: number): Promise<void> {
+    await this.page.waitForTimeout(150);
+    const stuck = await this.page.evaluate(
+      ({ x, y }: { x: number; y: number }) => {
+        const expanded = Array.from(
+          document.querySelectorAll<HTMLElement>('[aria-expanded="true"]')
+        );
+        for (const el of expanded) {
+          const r = el.getBoundingClientRect();
+          if (r.width < 1 || r.height < 1) continue;
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          if (Math.hypot(cx - x, cy - y) < 250) return true;
+        }
+        return false;
+      },
+      { x: clickX, y: clickY }
+    ).catch(() => false);
+    if (stuck) {
+      await this.page.keyboard.press('Escape').catch(() => {});
     }
   }
 
@@ -2025,20 +2639,60 @@ export class ActionEngine {
       } catch { /* recovery failed, continue */ }
     }
 
-    // Pattern 2: Remove pointer-intercepting widgets (marketing popups, chat widgets)
+    // Pattern 2: Remove pointer-intercepting widgets (marketing popups,
+    // chat widgets, newsletter overlays).
+    //
+    // The selector is intentionally vendor-specific instead of matching
+    // generic `[class*="popup"]` / `[class*="overlay"]`. CSS frameworks
+    // (Amazon's `a-overlay-*`, Bootstrap, Material) use those tokens
+    // for non-blocking primitives — product-image hover overlays, lazy-
+    // load placeholders, dropdown-popover roots. Removing them on every
+    // step destroys the page: on Amazon search results the old greedy
+    // selector wiped 17+ framework nodes per step and made the sort
+    // dropdown unstable.
+    //
+    // We now only remove:
+    //  - Named third-party vendor widgets (getsitecontrol, intercom,
+    //    drift, zendesk, hubspot, tawk, freshchat, usabilla) — these
+    //    are exclusively overlay popups/chat bubbles with no legitimate
+    //    in-flow use.
+    //  - Elements carrying the explicit `aria-modal="true"` contract —
+    //    WAI-ARIA signals a blocking dialog unambiguously.
+    //
+    // Plus a structural sanity check: the candidate must be positioned
+    // (fixed/absolute) with a non-trivial size AND either high z-index
+    // OR explicit aria-modal, before we `.remove()` it. Stops stray
+    // decorative absolute-positioned spans from being wiped.
     try {
       const removed = await this.page.evaluate(() => {
         const blockers = document.querySelectorAll(
-          'getsitecontrol-widget, [class*="popup"], [class*="overlay"], [id*="widget"], [class*="chat-widget"], [class*="intercom"]'
+          'getsitecontrol-widget, ' +
+          '[class*="getsitecontrol"], ' +
+          '[class*="intercom-"], [id*="intercom-"], ' +
+          '[class*="drift-frame"], [class*="drift-widget"], ' +
+          '[class*="zendesk-"], [id*="zendesk-"], ' +
+          '[id*="hubspot-messages"], ' +
+          '[id*="fc_frame"], ' +                  // Freshchat
+          '[id*="tawk-container"], [class*="tawk-"], ' +
+          '[class*="usabilla-"], ' +
+          '[aria-modal="true"]'
         );
         let count = 0;
         for (const el of Array.from(blockers)) {
-          const style = window.getComputedStyle(el);
-          // Only remove elements that cover a large area or have high z-index
-          if (style.position === 'fixed' || style.position === 'absolute' || style.zIndex > '999') {
-            el.remove();
-            count++;
-          }
+          const he = el as HTMLElement;
+          const style = window.getComputedStyle(he);
+          if (style.position !== 'fixed' && style.position !== 'absolute') continue;
+          const rect = he.getBoundingClientRect();
+          // Must be visibly sized — decorative tiny absolutes don't block.
+          if (rect.width < 80 || rect.height < 80) continue;
+          const z = parseInt(style.zIndex || '0', 10) || 0;
+          const isAriaModal = he.getAttribute('aria-modal') === 'true';
+          // Either elevated z-index (overlay-typical) or explicit
+          // aria-modal. Excludes decorative absolutely-positioned
+          // elements at default stacking.
+          if (!isAriaModal && z < 100) continue;
+          he.remove();
+          count++;
         }
         return count;
       });
@@ -2084,9 +2738,9 @@ export class ActionEngine {
       case 'click':
         if (target.role === 'radio' || target.role === 'checkbox') {
           try { await locator.check({ timeout: 5000 }); }
-          catch { await locator.click({ timeout: 5000 }); }
+          catch { await this.clickLocator(locator, { timeout: 5000 }); }
         } else {
-          await locator.click({ timeout: 5000 });
+          await this.clickLocator(locator, { timeout: 5000 });
         }
         break;
       case 'double-click':

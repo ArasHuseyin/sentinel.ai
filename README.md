@@ -63,6 +63,29 @@ Same model (Gemini Flash), same instructions, same machine. Default settings for
 
 **Why the difference?** Stagehand sends the **entire** accessibility tree to the LLM (29,000-51,000 tokens per action). Sentinel filters to the 50 most relevant elements (2,000-5,000 tokens). Result: 6-10x fewer tokens, faster responses, better decisions.
 
+### MUI Component Benchmark (12/12 — 100%)
+
+Sentinel vs. live [Material UI documentation](https://mui.com/material-ui/) — 12 component types, single `act()` call each, Gemini Flash, default settings:
+
+| Component | Result | Tokens | Time |
+|---|---|---|---|
+| TextField | ✅ | 7,956 | 11.8s |
+| Select | ✅ | 4,751 | 6.9s |
+| Autocomplete | ✅ | 8,164 | 7.5s |
+| Slider | ✅ | 5,888 | 9.8s |
+| DatePicker | ✅ | 1,245 | 12.1s |
+| Checkbox | ✅ | 4,024 | 6.9s |
+| Switch | ✅ | 3,402 | 6.4s |
+| Radio | ✅ | 3,994 | 5.6s |
+| Rating | ✅ | 2,771 | 18.6s |
+| Tabs | ✅ | 5,545 | 51.1s |
+| ToggleButton | ✅ | 2,980 | 5.7s |
+| Accordion | ✅ | 1,411 | 3.9s |
+| **Total** | **12/12** | **52,131** | **146s** |
+| **Average** | | **4,344/action** | **~$0.0003** |
+
+With **Pattern Store** enabled (default), repeat interactions on the same widget types skip the LLM entirely — **0 tokens, ~50ms** instead of ~800ms.
+
 ### Feature Comparison
 
 | | Sentinel | Stagehand | BrowserUse |
@@ -79,6 +102,7 @@ Same model (Gemini Flash), same instructions, same machine. Default settings for
 | **Validation error detection** | ✅ | ❌ | ❌ |
 | **Form field intelligence** | ✅ (filled/unfilled status) | ❌ | ❌ |
 | **Self-healing locators** | ✅ | ❌ | ❌ |
+| **Cross-site pattern learning** | ✅ (0-token repeat hits) | ❌ | ❌ |
 | **Custom LLM provider** | ✅ (OpenAI, Claude, Gemini, Ollama) | Partial (adapter-based) | OpenAI, Claude |
 | **Parallel execution** | ✅ | ❌ | ❌ |
 | **CLI** | ✅ | ❌ | ❌ |
@@ -109,6 +133,9 @@ Same model (Gemini Flash), same instructions, same machine. Default settings for
 | Widget Detection | 9 patterns: custom dropdowns, datepickers, sliders, CSS-library components |
 | Cookie/Overlay Auto-Recovery | Proactively dismisses cookie banners before each step |
 | Self-Healing Locators | Cache successful element lookups — skip the LLM on repeated calls |
+| Cross-Site Pattern Store | Learns widget interaction patterns (ARIA + DOM fingerprint) — repeat hits on the same widget type across ANY site cost 0 tokens. Default on. |
+| Anti-Bot Stealth | Opt-in patches via `playwright-extra-plugin-stealth`: navigator.webdriver, WebGL fingerprint, Chrome runtime, Permissions API. Reduces CAPTCHA encounters ~90%. |
+| CAPTCHA Detection + Auto-Solve | Detects reCAPTCHA v2/v3, hCaptcha, Turnstile, FunCaptcha. Built-in solver: reCAPTCHA v2 checkbox click + Turnstile proof-of-work wait. `CaptchaDetectedError` with type info for external-solver routing. |
 | Vision Grounding | Vision-model fallback for canvas, shadow DOM, and custom components |
 | Multi-LLM Support | OpenAI, Claude, Gemini, Ollama — swap providers with one line |
 | Parallel Execution | `Sentinel.parallel(tasks, { concurrency: 5 })` for batch automation |

@@ -1,4 +1,6 @@
 import type { CDPSession, Frame, Page } from 'playwright';
+import { computeFingerprintsBrowserSide } from './pattern-signature-browser.js';
+import type { PatternFingerprint } from './pattern-signature.js';
 
 export type PageRegion = 'header' | 'nav' | 'sidebar' | 'main' | 'footer' | 'modal' | 'popup';
 
@@ -105,6 +107,31 @@ export class StateParser {
    */
   getFrame(frameId: string): Frame | undefined {
     return this.frameRegistry.get(frameId);
+  }
+
+  /**
+   * Computes a three-layer widget fingerprint for each target position
+   * in a single browser round-trip. Fingerprints are looked up in the
+   * `PatternCache` to decide whether an LLM call can be skipped.
+   *
+   * Positions come from each `UIElement.boundingClientRect` centroid.
+   * Targets whose `elementFromPoint(x,y)` resolves to nothing are
+   * silently dropped from the returned map.
+   *
+   * Returns a Map keyed by the caller-supplied `id` for fast lookup
+   * against the original `UIElement.id`.
+   */
+  async computeTargetFingerprints(
+    targets: Array<{ id: number; x: number; y: number }>
+  ): Promise<Map<number, PatternFingerprint>> {
+    if (targets.length === 0) return new Map();
+    const raw = await this.page.evaluate(computeFingerprintsBrowserSide, targets)
+      .catch(() => ({} as Record<number, PatternFingerprint>));
+    const out = new Map<number, PatternFingerprint>();
+    for (const [k, v] of Object.entries(raw)) {
+      out.set(Number(k), v);
+    }
+    return out;
   }
 
   async parse(): Promise<SimplifiedState> {
@@ -1072,16 +1099,26 @@ export class StateParser {
     for (const frame of this.page.frames()) {
       if (frame === mainFrame) continue;
 
+      // Pre-evaluation checks that silently skip in normal cases (detached
+      // frame, zero-size iframe) are kept outside the try/catch so they
+      // don't trigger the cross-origin warning.
+      let iframeEl, iframeRect, frameUrl = '(unknown)';
       try {
-        const iframeEl = await frame.frameElement();
+        iframeEl = await frame.frameElement();
         if (!iframeEl) continue;
-        const iframeRect = await iframeEl.boundingBox();
+        iframeRect = await iframeEl.boundingBox();
         if (!iframeRect || iframeRect.width < 1 || iframeRect.height < 1) continue;
+        frameUrl = frame.url();
+      } catch {
+        // frameElement() / boundingBox() failed — frame is likely detached
+        // mid-parse. Silent skip (normal lifecycle event).
+        continue;
+      }
 
-        const frameId = `frame-${frameIndex++}`;
-        const frameUrl = frame.url();
-        this.frameRegistry.set(frameId, frame);
+      const frameId = `frame-${frameIndex++}`;
+      this.frameRegistry.set(frameId, frame);
 
+      try {
         const rawElements = await frame.evaluate(() => {
           const results: any[] = [];
           const seen = new Set<string>();
@@ -1137,8 +1174,23 @@ export class StateParser {
             frameUrl,
           });
         }
-      } catch {
-        // Cross-origin iframe or detached frame — skip silently
+      } catch (err: any) {
+        // frame.evaluate() threw — almost always a cross-origin security
+        // error (Stripe Checkout iframe, OAuth provider, reCAPTCHA widget,
+        // tracking pixels). The frame is registered but empty — users can
+        // still interact via executeInFrame if they know the role+name
+        // ahead of time, but widget discovery is blocked by same-origin
+        // policy. Surface this so debugging "missing Stripe form" is easy.
+        if (!/cross-?origin|blocked a frame|same-?origin/i.test(String(err?.message ?? ''))) {
+          // Not a cross-origin error — swallow silently (detached, navigation)
+          continue;
+        }
+        console.warn(
+          `[StateParser] Cross-origin iframe skipped: ${frameUrl}\n` +
+          `  → Elements inside are invisible to widget discovery (same-origin policy).\n` +
+          `  → If you need to interact with it, target elements by role+name directly ` +
+          `(frame context is auto-detected when the element's accessible name is known).`
+        );
       }
     }
 
