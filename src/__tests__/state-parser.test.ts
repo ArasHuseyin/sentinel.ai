@@ -330,11 +330,12 @@ describe('StateParser', () => {
         evaluate: jest.fn(async () => []),
       };
 
-      const frames: any[] = [mainFrame, ...childFrames.map(cf => {
+      const frames: any[] = [mainFrame, ...childFrames.map((cf, idx) => {
         const frameEl = cf.iframeRect
           ? { boundingBox: jest.fn(async () => cf.iframeRect) }
           : null;
         return {
+          url: () => `https://example.com/frame-${idx}`,
           frameElement: jest.fn(async () => frameEl),
           evaluate: cf.evaluateThrows
             ? jest.fn(async () => { throw new Error('cross-origin'); })
@@ -473,6 +474,110 @@ describe('StateParser', () => {
       const frameSubmits = state.elements.filter(e => e.name === '[frame] Submit');
       // Position-aware dedup: different iframe positions = distinct elements
       expect(frameSubmits).toHaveLength(2);
+    });
+
+    it('populates frameId and frameUrl on frame elements', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+        elements: [{ role: 'button', name: 'Inner Button', x: 5, y: 5, width: 80, height: 30 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const frameEl = state.elements.find(e => e.name === '[frame] Inner Button')!;
+      expect(frameEl).toBeDefined();
+      expect(frameEl.frameId).toBe('frame-0');
+      expect(frameEl.frameUrl).toBe('https://example.com/frame-0');
+    });
+
+    it('main-frame elements do not carry frameId or frameUrl', async () => {
+      const nodes = [makeNode('button', 'Top Button', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeMockPage();
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const topEl = state.elements.find(e => e.name === 'Top Button')!;
+      expect(topEl).toBeDefined();
+      expect(topEl.frameId).toBeUndefined();
+      expect(topEl.frameUrl).toBeUndefined();
+    });
+
+    it('getFrame(frameId) resolves the Playwright Frame object after parse', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([{
+        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+        elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
+      }]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      await parser.parse();
+
+      const frame = parser.getFrame('frame-0');
+      expect(frame).toBeDefined();
+      // The second child frame in the page mock corresponds to frame-0 (mainFrame is first)
+      expect(page.frames()[1]).toBe(frame);
+    });
+
+    it('getFrame returns undefined for unknown frameId', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makeMockPage();
+
+      const parser = new StateParser(page as any, cdp as any);
+      await parser.parse();
+
+      expect(parser.getFrame('frame-99')).toBeUndefined();
+    });
+
+    it('assigns distinct frameIds to multiple child frames', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'A', x: 5, y: 5, width: 80, height: 30 }],
+        },
+        {
+          iframeRect: { x: 300, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'B', x: 5, y: 5, width: 80, height: 30 }],
+        },
+      ]);
+
+      const parser = new StateParser(page as any, cdp as any);
+      const state = await parser.parse();
+
+      const a = state.elements.find(e => e.name === '[frame] A')!;
+      const b = state.elements.find(e => e.name === '[frame] B')!;
+      expect(a.frameId).toBe('frame-0');
+      expect(b.frameId).toBe('frame-1');
+      expect(a.frameId).not.toBe(b.frameId);
+      expect(parser.getFrame(a.frameId!)).not.toBe(parser.getFrame(b.frameId!));
+    });
+
+    it('frame registry is cleared on each parse (stale frames do not linger)', async () => {
+      const nodes = [makeNode('button', 'Main', 1)];
+      const cdp = makeMockCDP(nodes, [makeBoxModel()]);
+      // First parse: one child frame
+      const pageWithFrame = makePageWithFrames([{
+        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+        elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
+      }]);
+
+      const parser = new StateParser(pageWithFrame as any, cdp as any);
+      await parser.parse();
+      expect(parser.getFrame('frame-0')).toBeDefined();
+
+      // Force re-parse by swapping to a page with no frames and invalidating cache
+      parser.invalidateCache();
+      (parser as any).page = makeMockPage();
+      await parser.parse();
+      expect(parser.getFrame('frame-0')).toBeUndefined();
     });
 
     it('collects elements from multiple child frames', async () => {
@@ -1097,6 +1202,54 @@ describe('StateParser', () => {
 
       // Only the 5 AOM elements
       expect(state.elements).toHaveLength(5);
+    });
+  });
+
+  // ─── computeTargetFingerprints ────────────────────────────────────────────
+
+  describe('computeTargetFingerprints', () => {
+    it('returns an empty Map when no targets are provided', async () => {
+      const cdp = makeMockCDP([], []);
+      const page = makeMockPage();
+      const parser = new StateParser(page as any, cdp as any);
+      const out = await parser.computeTargetFingerprints([]);
+      expect(out.size).toBe(0);
+    });
+
+    it('delegates to page.evaluate with the target list', async () => {
+      const cdp = makeMockCDP([], []);
+      const page = makeMockPage();
+      // Mock page.evaluate to simulate the browser-side output shape
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, targets?: any) => {
+        if (!targets) return [];
+        return (targets as { id: number }[]).reduce((acc, t) => {
+          acc[t.id] = { aria: `role-${t.id}||`, topology: `0:div-${t.id}` };
+          return acc;
+        }, {} as Record<number, unknown>);
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const out = await parser.computeTargetFingerprints([
+        { id: 7, x: 10, y: 20 },
+        { id: 42, x: 50, y: 60 },
+      ]);
+
+      expect(out.size).toBe(2);
+      expect(out.get(7)?.aria).toBe('role-7||');
+      expect(out.get(42)?.topology).toBe('0:div-42');
+    });
+
+    it('returns an empty Map when page.evaluate throws', async () => {
+      const cdp = makeMockCDP([], []);
+      const page = makeMockPage();
+      (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, targets?: any) => {
+        if (targets) throw new Error('detached');
+        return [];
+      });
+
+      const parser = new StateParser(page as any, cdp as any);
+      const out = await parser.computeTargetFingerprints([{ id: 1, x: 0, y: 0 }]);
+      expect(out.size).toBe(0);
     });
   });
 });

@@ -1,9 +1,11 @@
-import type { CDPSession, Page } from 'playwright';
+import type { CDPSession, Frame, Page } from 'playwright';
+import { computeFingerprintsBrowserSide } from './pattern-signature-browser.js';
+import type { PatternFingerprint } from './pattern-signature.js';
 
 export type PageRegion = 'header' | 'nav' | 'sidebar' | 'main' | 'footer' | 'modal' | 'popup';
 
 /** Roles whose current input value should be tracked. */
-const VALUE_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox']);
+const VALUE_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'slider']);
 
 export interface UIElement {
   id: number;
@@ -28,6 +30,15 @@ export interface UIElement {
     focused?: boolean;
     checked?: boolean | 'mixed';
   };
+  /**
+   * Opaque frame identifier. Present only when the element lives inside an
+   * iframe; absent for top-level document elements. Use
+   * `StateParser.getFrame(frameId)` to resolve the Playwright `Frame` object
+   * for cross-frame action routing.
+   */
+  frameId?: string;
+  /** URL of the frame's document. Diagnostic hint for the LLM / logs. */
+  frameUrl?: string;
 }
 
 export interface SimplifiedState {
@@ -72,12 +83,55 @@ const FORM_INPUT_ROLES = new Set(['textbox', 'combobox', 'spinbutton', 'searchbo
 export class StateParser {
   private cachedState: SimplifiedState | null = null;
   private cacheTimestamp = 0;
+  /**
+   * Frame registry populated during each `parse()` cycle. Maps opaque
+   * `frameId` strings to live Playwright `Frame` objects so that
+   * `ActionEngine` can route actions into the correct context when the
+   * selected element lives inside an `<iframe>`. The map is cleared and
+   * repopulated every parse — entries are short-lived and must be resolved
+   * immediately after parsing, not reused across navigations.
+   */
+  private frameRegistry = new Map<string, Frame>();
 
   constructor(private page: Page, private cdp: CDPSession) {}
 
   invalidateCache() {
     this.cachedState = null;
     this.cacheTimestamp = 0;
+  }
+
+  /**
+   * Resolves a `frameId` produced by the parser back to its Playwright
+   * `Frame` object. Returns `undefined` if the registry is stale or the
+   * frame has been detached since the last parse.
+   */
+  getFrame(frameId: string): Frame | undefined {
+    return this.frameRegistry.get(frameId);
+  }
+
+  /**
+   * Computes a three-layer widget fingerprint for each target position
+   * in a single browser round-trip. Fingerprints are looked up in the
+   * `PatternCache` to decide whether an LLM call can be skipped.
+   *
+   * Positions come from each `UIElement.boundingClientRect` centroid.
+   * Targets whose `elementFromPoint(x,y)` resolves to nothing are
+   * silently dropped from the returned map.
+   *
+   * Returns a Map keyed by the caller-supplied `id` for fast lookup
+   * against the original `UIElement.id`.
+   */
+  async computeTargetFingerprints(
+    targets: Array<{ id: number; x: number; y: number }>
+  ): Promise<Map<number, PatternFingerprint>> {
+    if (targets.length === 0) return new Map();
+    const raw = await this.page.evaluate(computeFingerprintsBrowserSide, targets)
+      .catch(() => ({} as Record<number, PatternFingerprint>));
+    const out = new Map<number, PatternFingerprint>();
+    for (const [k, v] of Object.entries(raw)) {
+      out.set(Number(k), v);
+    }
+    return out;
   }
 
   async parse(): Promise<SimplifiedState> {
@@ -450,6 +504,7 @@ export class StateParser {
           (inputType === 'radio' ? 'radio' :
            inputType === 'checkbox' ? 'checkbox' :
            inputType === 'range' ? 'slider' :
+           inputType === 'file' ? 'file' :
            inputType === 'email' || inputType === 'text' || inputType === 'password' || inputType === 'tel' ? 'textbox' :
            inputType === 'number' ? 'spinbutton' :
            inputType === 'search' ? 'searchbox' :
@@ -580,9 +635,31 @@ export class StateParser {
       const sx = window.scrollX;
       const sy = window.scrollY;
 
+      // Shadow DOM: pierce all shadow roots recursively so widgets rendered
+      // inside Web Components (Lit, Polymer, Stencil) are discovered too.
+      function queryShadowAll(selector: string, root: Document | ShadowRoot | Element): Element[] {
+        const found: Element[] = [];
+        // Only Document/Element have querySelectorAll on the root itself; all three have descendant query.
+        found.push(...Array.from((root as Element).querySelectorAll?.(selector) ?? []));
+        for (const el of Array.from((root as Element).querySelectorAll?.('*') ?? []) as Element[]) {
+          const sr = (el as HTMLElement & { shadowRoot: ShadowRoot | null }).shadowRoot;
+          if (sr) found.push(...queryShadowAll(selector, sr));
+        }
+        return found;
+      }
+      // label[for=ID] lookups must stay within the element's own tree scope —
+      // IDs are shadow-root-scoped, so a document-level lookup returns nothing
+      // (or the wrong label) for shadow-hosted inputs.
+      function findLabelFor(el: Element): HTMLElement | null {
+        const id = (el as HTMLElement).id;
+        if (!id) return null;
+        const root = el.getRootNode() as Document | ShadowRoot;
+        return (root.querySelector(`label[for="${CSS.escape(id)}"]`) as HTMLElement | null) ?? null;
+      }
+
       // Pattern 1: Container with button + combobox/listbox (custom dropdowns)
       // Look for containers that have both a trigger button and a combobox input
-      const comboboxInputs = document.querySelectorAll('input[role="combobox"], [role="listbox"]');
+      const comboboxInputs = queryShadowAll('input[role="combobox"], [role="listbox"]', document);
       for (const input of Array.from(comboboxInputs)) {
         const container = input.parentElement?.closest('div') ?? input.parentElement;
         if (!container) continue;
@@ -650,7 +727,7 @@ export class StateParser {
       }
 
       // Pattern 2: Buttons with aria-haspopup (menu/dropdown triggers)
-      const popupTriggers = document.querySelectorAll('button[aria-haspopup], [role="button"][aria-haspopup]');
+      const popupTriggers = queryShadowAll('button[aria-haspopup], [role="button"][aria-haspopup]', document);
       for (const trigger of Array.from(popupTriggers)) {
         const htmlEl = trigger as HTMLElement;
         const rect = htmlEl.getBoundingClientRect();
@@ -676,7 +753,7 @@ export class StateParser {
       }
 
       // Pattern 3: Labels with associated but hidden/custom inputs
-      const labels = document.querySelectorAll('label[for]');
+      const labels = queryShadowAll('label[for]', document);
       for (const label of Array.from(labels)) {
         const forId = label.getAttribute('for');
         if (!forId) continue;
@@ -719,7 +796,7 @@ export class StateParser {
       }
 
       // Pattern 4: input + datalist (native autocomplete)
-      const datalistInputs = document.querySelectorAll('input[list]');
+      const datalistInputs = queryShadowAll('input[list]', document);
       for (const input of Array.from(datalistInputs)) {
         const listId = input.getAttribute('list');
         if (!listId) continue;
@@ -752,7 +829,7 @@ export class StateParser {
       }
 
       // Pattern 5: [role="tablist"] (tab navigation as composite widget)
-      const tablists = document.querySelectorAll('[role="tablist"]');
+      const tablists = queryShadowAll('[role="tablist"]', document);
       for (const tablist of Array.from(tablists)) {
         const htmlEl = tablist as HTMLElement;
         const rect = htmlEl.getBoundingClientRect();
@@ -781,9 +858,10 @@ export class StateParser {
       }
 
       // Pattern 6: Date/time picker inputs
-      const dateInputs = document.querySelectorAll(
+      const dateInputs = queryShadowAll(
         'input[type="date"], input[type="time"], input[type="datetime-local"], ' +
-        'input[type="month"], input[type="week"]'
+        'input[type="month"], input[type="week"]',
+        document
       );
       for (const input of Array.from(dateInputs)) {
         const htmlEl = input as HTMLInputElement;
@@ -828,7 +906,7 @@ export class StateParser {
           '.vs__dropdown-toggle',
         ].join(',');
 
-        const libraryWidgets = document.querySelectorAll(librarySelector);
+        const libraryWidgets = queryShadowAll(librarySelector, document);
         for (const widget of Array.from(libraryWidgets)) {
           const htmlEl = widget as HTMLElement;
           const rect = htmlEl.getBoundingClientRect();
@@ -843,8 +921,8 @@ export class StateParser {
             // 1. Label via input id
             const inputEl = htmlEl.querySelector('input');
             if (inputEl?.id) {
-              const label = document.querySelector(`label[for="${inputEl.id}"]`);
-              if (label) return (label as HTMLElement).textContent?.trim();
+              const label = findLabelFor(inputEl);
+              if (label) return label.textContent?.trim();
             }
             // 2. aria-label on container or input
             const ariaLabel = htmlEl.getAttribute('aria-label') ||
@@ -903,7 +981,7 @@ export class StateParser {
 
       // Pattern 8: Hidden <select> with visible custom trigger
       // Many UI frameworks hide the native <select> and render a custom widget
-      const allSelects = document.querySelectorAll('select');
+      const allSelects = queryShadowAll('select', document) as HTMLSelectElement[];
       for (const select of Array.from(allSelects)) {
         const htmlEl = select as HTMLSelectElement;
         const rect = htmlEl.getBoundingClientRect();
@@ -959,7 +1037,7 @@ export class StateParser {
           'input[data-date]',
         ].join(',');
 
-        const datePickers = document.querySelectorAll(datePickerSelector);
+        const datePickers = queryShadowAll(datePickerSelector, document);
         for (const picker of Array.from(datePickers)) {
           const htmlEl = picker as HTMLElement;
           const rect = htmlEl.getBoundingClientRect();
@@ -969,8 +1047,8 @@ export class StateParser {
           const name = (() => {
             const inputEl = htmlEl.querySelector('input');
             if (inputEl?.id) {
-              const label = document.querySelector(`label[for="${inputEl.id}"]`);
-              if (label) return (label as HTMLElement).textContent?.trim();
+              const label = findLabelFor(inputEl);
+              if (label) return label.textContent?.trim();
             }
             return htmlEl.getAttribute('aria-label') ||
               htmlEl.querySelector('input')?.getAttribute('placeholder') ||
@@ -1013,16 +1091,34 @@ export class StateParser {
   private async parseFrameElements(counter: { n: number }): Promise<UIElement[]> {
     const mainFrame = this.page.mainFrame();
     const result: UIElement[] = [];
+    // Fresh registry per parse — stale Frame handles would risk routing
+    // actions into detached contexts after navigation.
+    this.frameRegistry.clear();
+    let frameIndex = 0;
 
     for (const frame of this.page.frames()) {
       if (frame === mainFrame) continue;
 
+      // Pre-evaluation checks that silently skip in normal cases (detached
+      // frame, zero-size iframe) are kept outside the try/catch so they
+      // don't trigger the cross-origin warning.
+      let iframeEl, iframeRect, frameUrl = '(unknown)';
       try {
-        const iframeEl = await frame.frameElement();
+        iframeEl = await frame.frameElement();
         if (!iframeEl) continue;
-        const iframeRect = await iframeEl.boundingBox();
+        iframeRect = await iframeEl.boundingBox();
         if (!iframeRect || iframeRect.width < 1 || iframeRect.height < 1) continue;
+        frameUrl = frame.url();
+      } catch {
+        // frameElement() / boundingBox() failed — frame is likely detached
+        // mid-parse. Silent skip (normal lifecycle event).
+        continue;
+      }
 
+      const frameId = `frame-${frameIndex++}`;
+      this.frameRegistry.set(frameId, frame);
+
+      try {
         const rawElements = await frame.evaluate(() => {
           const results: any[] = [];
           const seen = new Set<string>();
@@ -1074,10 +1170,27 @@ export class StateParser {
               width: el.width,
               height: el.height,
             },
+            frameId,
+            frameUrl,
           });
         }
-      } catch {
-        // Cross-origin iframe or detached frame — skip silently
+      } catch (err: any) {
+        // frame.evaluate() threw — almost always a cross-origin security
+        // error (Stripe Checkout iframe, OAuth provider, reCAPTCHA widget,
+        // tracking pixels). The frame is registered but empty — users can
+        // still interact via executeInFrame if they know the role+name
+        // ahead of time, but widget discovery is blocked by same-origin
+        // policy. Surface this so debugging "missing Stripe form" is easy.
+        if (!/cross-?origin|blocked a frame|same-?origin/i.test(String(err?.message ?? ''))) {
+          // Not a cross-origin error — swallow silently (detached, navigation)
+          continue;
+        }
+        console.warn(
+          `[StateParser] Cross-origin iframe skipped: ${frameUrl}\n` +
+          `  → Elements inside are invisible to widget discovery (same-origin policy).\n` +
+          `  → If you need to interact with it, target elements by role+name directly ` +
+          `(frame context is auto-detected when the element's accessible name is known).`
+        );
       }
     }
 

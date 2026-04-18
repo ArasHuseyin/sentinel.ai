@@ -56,6 +56,8 @@ function makeMockLocator() {
     pressSequentially: jest.fn(async () => {}),
     selectOption: jest.fn(async () => []),
     scrollIntoViewIfNeeded: jest.fn(async () => {}),
+    setInputFiles: jest.fn(async () => {}),
+    dragTo: jest.fn(async () => {}),
     evaluate: jest.fn(async () => {}),
     boundingBox: jest.fn(async () => ({ x: 10, y: 20, width: 80, height: 30 })),
     isVisible: jest.fn(async () => true),
@@ -93,6 +95,8 @@ function makeMockPage(viewportOverride?: { width: number; height: number }) {
     locator: jest.fn(() => locatorInstance),
     getByRole: jest.fn(() => locatorInstance),
     getByText: jest.fn(() => locatorInstance),
+    getByLabel: jest.fn(() => locatorInstance),
+    _locatorInstance: locatorInstance,
   };
 }
 
@@ -100,6 +104,7 @@ function makeMockLLM(decision: {
   elementId: number;
   action: string;
   value?: string;
+  targetElementId?: number;
   reasoning: string;
 }): LLMProvider {
   // Convert old single-elementId format to new candidates format
@@ -107,6 +112,7 @@ function makeMockLLM(decision: {
     candidates: [{ elementId: decision.elementId, confidence: 1.0 }],
     action: decision.action,
     value: decision.value,
+    targetElementId: decision.targetElementId,
     reasoning: decision.reasoning,
   };
   return {
@@ -1460,5 +1466,107 @@ describe('filterRelevantElements', () => {
     expect(result).toHaveLength(1);
     // Both score 0 → first element returned
     expect(result[0]!.id).toBe(0);
+  });
+});
+
+// ─── upload & drag action dispatch ──────────────────────────────────────────
+
+describe('ActionEngine — upload action', () => {
+  function stateWithFileInput(): SimplifiedState {
+    return {
+      url: 'https://example.com',
+      title: 'Upload',
+      elements: [
+        { id: 0, role: 'file', name: 'CV', boundingClientRect: { x: 10, y: 10, width: 200, height: 30 } },
+      ],
+    };
+  }
+
+  it('dispatches setInputFiles for upload with a single path', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(stateWithFileInput());
+    const llm = makeMockLLM({
+      elementId: 0, action: 'upload', value: '/tmp/cv.pdf', reasoning: 'upload CV',
+    });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Upload my CV');
+
+    expect(result.success).toBe(true);
+    expect((page as any)._locatorInstance.setInputFiles).toHaveBeenCalledWith(
+      ['/tmp/cv.pdf'],
+      expect.any(Object),
+    );
+  });
+
+  it('splits comma-separated paths for multi-file upload', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(stateWithFileInput());
+    const llm = makeMockLLM({
+      elementId: 0, action: 'upload', value: '/a.pdf, /b.pdf ,/c.pdf',
+      reasoning: 'upload multiple',
+    });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('Upload three PDFs');
+
+    expect((page as any)._locatorInstance.setInputFiles).toHaveBeenCalledWith(
+      ['/a.pdf', '/b.pdf', '/c.pdf'],
+      expect.any(Object),
+    );
+  });
+
+  it('returns failure when upload has no value', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(stateWithFileInput());
+    const llm = makeMockLLM({
+      elementId: 0, action: 'upload', reasoning: 'upload without path',
+    });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Upload');
+
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('ActionEngine — drag action', () => {
+  function stateWithDragSourceAndTarget(): SimplifiedState {
+    return {
+      url: 'https://example.com/kanban',
+      title: 'Kanban',
+      elements: [
+        { id: 0, role: 'listitem', name: 'Card A', boundingClientRect: { x: 10, y: 50, width: 200, height: 60 } },
+        { id: 1, role: 'list', name: 'Done', boundingClientRect: { x: 500, y: 50, width: 300, height: 400 } },
+      ],
+    };
+  }
+
+  it('dispatches dragTo between source and drop target', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(stateWithDragSourceAndTarget());
+    const llm = makeMockLLM({
+      elementId: 0, action: 'drag', targetElementId: 1,
+      reasoning: 'move Card A to Done',
+    });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Drag Card A to the Done column');
+
+    expect(result.success).toBe(true);
+    expect((page as any)._locatorInstance.dragTo).toHaveBeenCalled();
+  });
+
+  it('returns failure when drag has no targetElementId', async () => {
+    const page = makeMockPage();
+    const stateParser = makeMockStateParser(stateWithDragSourceAndTarget());
+    const llm = makeMockLLM({
+      elementId: 0, action: 'drag', reasoning: 'drag without target',
+    });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('Drag Card A');
+
+    expect(result.success).toBe(false);
   });
 });

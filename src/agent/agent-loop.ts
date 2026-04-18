@@ -1,7 +1,7 @@
 import type { Page } from 'playwright';
 import type { ActionEngine } from '../api/act.js';
 import type { ExtractionEngine } from '../api/extract.js';
-import type { StateParser } from '../core/state-parser.js';
+import type { StateParser, SimplifiedState } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import type { VisionGrounding } from '../core/vision-grounding.js';
 import { slugifyInstruction } from '../core/selector-generator.js';
@@ -9,6 +9,7 @@ import { AgentMemory } from './memory.js';
 import { Planner } from './planner.js';
 import { withSpan } from '../utils/telemetry.js';
 import { generateTOTP } from '../utils/totp.js';
+import { ConsoleLogger, type Logger } from '../utils/logger.js';
 
 /** Returns a key derived from `slug` that does not yet exist in `map`. */
 function uniqueKey(slug: string, map: Record<string, unknown>): string {
@@ -59,9 +60,34 @@ export interface AgentResult {
 /** Threshold above which the planner gets a visual page description. */
 const VISION_ELEMENT_THRESHOLD = 100;
 
+/**
+ * Keywords that identify cookie-consent / GDPR / privacy CTA elements.
+ * Used for fingerprinting blocker-recovery attempts (throttle). Multi-
+ * lingual on purpose — universal consent-banner vocabulary.
+ */
+const COOKIE_BLOCKER_PATTERN =
+  /cookie|consent|accept|akzeptieren|zustimmen|agree|got it|verstanden|gdpr|datenschutz|privacy/i;
+
+/**
+ * Strong accept-intent keywords — a CTA carrying one of these in a
+ * prominent (non-footer, non-nav) position is almost certainly a
+ * dismiss button for an overlay the state-parser didn't classify as
+ * modal. Narrower than COOKIE_BLOCKER_PATTERN: the latter matches
+ * "Hinweise zu Cookies" / "Privacy policy" footer links, which are
+ * navigation, not blockers.
+ */
+const ACCEPT_INTENT_PATTERN =
+  /akzeptieren|accept all|accept cookies|zustimmen|^i agree|got it|verstanden/i;
+
+/** Max `tryRecoverFromBlocker` calls per distinct blocker fingerprint. */
+const MAX_RECOVERY_ATTEMPTS_PER_STATE = 2;
+
 export class AgentLoop {
   private planner: Planner;
   private memory: AgentMemory;
+  private logger: Logger;
+  /** Per-run counter of recovery attempts keyed by blocker-state fingerprint. */
+  private recoveryAttempts = new Map<string, number>();
 
   private mfaConfig: { type: 'totp'; secret: string; digits?: number; period?: number } | undefined;
 
@@ -73,11 +99,64 @@ export class AgentLoop {
     private page?: Page,
     private visionGrounding?: VisionGrounding,
     plannerLLM?: LLMProvider,
-    mfaConfig?: { type: 'totp'; secret: string; digits?: number; period?: number }
+    mfaConfig?: { type: 'totp'; secret: string; digits?: number; period?: number },
+    logger?: Logger
   ) {
     this.planner = new Planner(plannerLLM ?? gemini);
     this.memory = new AgentMemory(20);
     this.mfaConfig = mfaConfig;
+    this.logger = (logger ?? new ConsoleLogger(1)).child('Agent');
+  }
+
+  /**
+   * Returns true if the current page state contains an actual blocking
+   * overlay (modal/popup) OR a prominent accept-style CTA outside the
+   * footer/nav.
+   *
+   * Why this is stricter than a plain cookie-keyword match: many sites
+   * — Amazon, most large shops, any GDPR-compliant site — carry a
+   * footer link like "Hinweise zu Cookies", "Privacy policy", or
+   * "Cookie preferences" that matches `/cookie|privacy|datenschutz/i`.
+   * The previous check treated these as blockers and ran recovery on
+   * every single step, even though no banner was present. That
+   * repeatedly triggered Pattern 2 (widget remover), which on Amazon
+   * wipes 17+ legitimate `a-overlay-*` framework nodes each step and
+   * destabilises the entire run.
+   *
+   * New rule:
+   *  1. A modal/popup region must exist (state-parser's classification
+   *     of overlays), OR
+   *  2. A button/link with strong accept-intent (`akzeptieren`,
+   *     `accept all`, `got it`, …) must exist outside the footer and
+   *     nav regions. Catches banners the parser didn't classify but
+   *     excludes footer cookie-policy links (their names rarely match
+   *     accept-intent).
+   */
+  private hasBlocker(state: SimplifiedState): boolean {
+    const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
+    if (hasModal) return true;
+    return state.elements.some(e =>
+      (e.role === 'button' || e.role === 'link') &&
+      ACCEPT_INTENT_PATTERN.test(e.name) &&
+      e.region !== 'footer' &&
+      e.region !== 'nav'
+    );
+  }
+
+  /**
+   * Stable fingerprint of the current blocker state. Identical fingerprints
+   * across two parses mean recovery did not clear the blocker — at which
+   * point further attempts are futile and we stop trying. Different
+   * fingerprints (e.g. after a navigation introduces a new consent banner)
+   * reset the attempt counter naturally.
+   */
+  private blockerFingerprint(state: SimplifiedState): string {
+    const names = state.elements
+      .filter(e => COOKIE_BLOCKER_PATTERN.test(e.name) || e.region === 'modal' || e.region === 'popup')
+      .map(e => `${e.role}:${e.name}`)
+      .sort()
+      .slice(0, 10);
+    return `${state.url}|${names.join('|')}`;
   }
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<AgentResult> {
@@ -85,8 +164,9 @@ export class AgentLoop {
     const stepEvents: AgentStepEvent[] = [];
     const collectedSelectors: Record<string, string> = {};
     this.memory.clear();
+    this.recoveryAttempts.clear();
 
-    console.log(`[Agent] 🎯 Goal: "${goal}" (max ${maxSteps} steps)`);
+    this.logger.info(`🎯 Goal: "${goal}" (max ${maxSteps} steps)`, { goal, maxSteps });
 
     let stepNumber = 0;
     let consecutiveFailures = 0;
@@ -94,25 +174,38 @@ export class AgentLoop {
 
     while (stepNumber < maxSteps) {
       stepNumber++;
-      console.log(`[Agent] 📍 Step ${stepNumber}/${maxSteps}`);
+      this.logger.info(`📍 Step ${stepNumber}/${maxSteps}`, { stepNumber, maxSteps });
 
       // 1. Parse current state
       this.stateParser.invalidateCache();
       let state = await this.stateParser.parse();
 
-      // 1b. Proactive blocker dismissal — dismiss cookie banners, overlays,
-      //     and other blockers BEFORE planning, so the planner never sees them.
-      //     Only on the first 3 steps to avoid infinite recovery loops.
-      if (stepNumber <= 3) {
-        const recovered = await this.actionEngine.tryRecoverFromBlocker(state);
-        if (recovered) {
-          // Scroll to top after blocker removal — the main content/form
-          // is almost always at the top of the page after overlays are gone.
-          if (this.page) {
-            await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      // 1b. Proactive blocker dismissal — state-based, not step-based.
+      //     Run whenever a cookie banner or modal is detected, but throttle
+      //     to MAX_RECOVERY_ATTEMPTS_PER_STATE per distinct blocker
+      //     fingerprint. This covers late-appearing banners (login walls,
+      //     dynamic GDPR popovers, step-N-triggered promos) while still
+      //     bounding the loop if a banner resists dismissal.
+      if (this.hasBlocker(state)) {
+        const fp = this.blockerFingerprint(state);
+        const attempts = this.recoveryAttempts.get(fp) ?? 0;
+        if (attempts < MAX_RECOVERY_ATTEMPTS_PER_STATE) {
+          this.recoveryAttempts.set(fp, attempts + 1);
+          const recovered = await this.actionEngine.tryRecoverFromBlocker(state);
+          if (recovered) {
+            // Scroll to top after blocker removal — the main content/form
+            // is almost always at the top of the page after overlays are gone.
+            if (this.page) {
+              await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+            }
+            this.stateParser.invalidateCache();
+            state = await this.stateParser.parse();
           }
-          this.stateParser.invalidateCache();
-          state = await this.stateParser.parse();
+        } else {
+          this.logger.debug(
+            `Skipping blocker recovery — already attempted ${attempts}× for this state`,
+            { fingerprint: fp, attempts }
+          );
         }
       }
 
@@ -138,11 +231,14 @@ export class AgentLoop {
       try {
         planned = await this.planner.planNextStep(effectiveGoal, state, this.memory, pageDescription);
       } catch (err: any) {
-        console.error(`[Agent] Planner error: ${err.message}`);
+        this.logger.warn(`Planner error: ${err.message}`, { error: err.message });
         break;
       }
 
-      console.log(`[Agent] 💭 Plan: "${planned.instruction}" — ${planned.reasoning}`);
+      this.logger.notice(`💭 Plan: "${planned.instruction}" — ${planned.reasoning}`, {
+        instruction: planned.instruction,
+        reasoning: planned.reasoning,
+      });
 
       // 3. Check if goal is already complete
       if (planned.isGoalComplete) {
@@ -151,21 +247,21 @@ export class AgentLoop {
         if (planned.type === 'extract') {
           if (extractedData !== undefined) {
             // Already extracted in a previous step — reuse, don't call LLM again
-            console.log(`[Agent] ✅ Goal complete (extraction already done).`);
+            this.logger.info(`✅ Goal complete (extraction already done).`);
           } else {
-            console.log(`[Agent] ✅ Goal complete — executing final extraction.`);
+            this.logger.info(`✅ Goal complete — executing final extraction.`);
             try {
               const extracted = await this.extractionEngine.extract(
                 planned.instruction, planned.extractionSchema as any
               );
               extractedData = extracted;
-              console.log(`[Agent] 📊 Extracted:`, JSON.stringify(extracted).slice(0, 500));
+              this.logger.info(`📊 Extracted: ${JSON.stringify(extracted).slice(0, 500)}`, { extracted });
             } catch (err: any) {
-              console.warn(`[Agent] ⚠️  Extraction failed: ${err.message}`);
+              this.logger.warn(`Extraction failed: ${err.message}`, { error: err.message });
             }
           }
         } else {
-          console.log(`[Agent] ✅ Goal marked complete by planner.`);
+          this.logger.info(`✅ Goal marked complete by planner.`);
         }
         const event: AgentStepEvent = {
           stepNumber,
@@ -207,7 +303,7 @@ export class AgentLoop {
             const extracted = await this.extractionEngine.extract(planned.instruction, schema);
             extractedData = extracted;
             stepData = extracted;
-            console.log(`[Agent] 📊 Extracted:`, JSON.stringify(extracted).slice(0, 500));
+            this.logger.info(`📊 Extracted: ${JSON.stringify(extracted).slice(0, 500)}`, { extracted });
             span.setAttributes({ 'sentinel.success': true });
             return { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
           } catch (err: any) {
@@ -239,7 +335,7 @@ export class AgentLoop {
                 const valuesBefore = state.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
                 const valuesAfter = stateAfter.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
                 if (valuesBefore === valuesAfter) {
-                  console.warn(`[Agent] ⚠️  Fill/select action reported success but no input values changed — treating as failed`);
+                  this.logger.warn(`Fill/select action reported success but no input values changed — treating as failed`);
                   span.setAttributes({ 'sentinel.success': false });
                   return { success: false, message: `${r.message} (but no input values changed)`, action: r.action ?? planned.instruction };
                 }
@@ -261,7 +357,7 @@ export class AgentLoop {
                   fingerprint(state.elements) === fingerprint(stateAfter.elements);
 
                 if (unchanged) {
-                  console.warn(`[Agent] ⚠️  Action reported success but page state unchanged — treating as failed`);
+                  this.logger.warn(`Action reported success but page state unchanged — treating as failed`);
                   span.setAttributes({ 'sentinel.success': false });
                   return { success: false, message: `${r.message} (but page state unchanged)`, action: r.action ?? planned.instruction };
                 }
@@ -311,9 +407,11 @@ export class AgentLoop {
 
       if (!result.success) {
         consecutiveFailures++;
-        console.warn(`[Agent] ⚠️  Step failed (${consecutiveFailures} consecutive): ${result.message}`);
+        this.logger.warn(`Step failed (${consecutiveFailures} consecutive): ${result.message}`, {
+          consecutiveFailures, message: result.message,
+        });
         if (consecutiveFailures >= 3) {
-          console.error(`[Agent] ❌ Aborting: 3 consecutive failures.`);
+          this.logger.warn(`❌ Aborting: 3 consecutive failures.`);
           break;
         }
       } else {
@@ -344,9 +442,9 @@ export class AgentLoop {
         const exactLoop = new Set(recentHistory.map(s => s.instruction)).size === 1;
 
         if (exactLoop || targetLoop) {
-          console.error(
-            `[Agent] ❌ Aborting: instruction loop detected — ` +
-            `"${recentHistory[0]?.instruction}" repeated 3 times without progress.`
+          this.logger.warn(
+            `❌ Aborting: instruction loop detected — "${recentHistory[0]?.instruction}" repeated 3 times without progress.`,
+            { loopInstruction: recentHistory[0]?.instruction }
           );
           break;
         }
@@ -367,7 +465,7 @@ export class AgentLoop {
       ? `Goal achieved in ${stepNumber} step(s).`
       : `Agent stopped after ${stepNumber} step(s) without fully achieving the goal.`;
 
-    console.log(`[Agent] ${goalAchieved ? '✅' : '⚠️ '} ${message}`);
+    this.logger.info(`${goalAchieved ? '✅' : '⚠️ '} ${message}`, { goalAchieved });
 
     return {
       success: goalAchieved,
