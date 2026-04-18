@@ -202,21 +202,21 @@ function buildFailureMessage(
 
   let tip = '';
   if (allErrors.includes('outside viewport') || allErrors.includes('scroll')) {
-    tip = `Tipp: Element könnte außerhalb des sichtbaren Bereichs sein. Versuche zuerst:\n  sentinel.act('scroll to ${elementName}')`;
+    tip = `Tip: element may be outside the visible area. Try first:\n  sentinel.act('scroll to ${elementName}')`;
   } else if (allErrors.includes('timeout') || allErrors.includes('detached') || allErrors.includes('hidden')) {
-    tip = `Tipp: Element könnte von einem Modal, Overlay oder Popover verdeckt sein. Schließe überlagernde Elemente zuerst.`;
+    tip = `Tip: element may be covered by a modal, overlay, or popover. Dismiss overlapping elements first.`;
   } else if (allErrors.includes('no target') || allErrors.includes('not found') || allErrors.includes('could not find')) {
-    tip = `Tipp: Element "${instruction}" wurde im DOM nicht gefunden. Möglicherweise in Shadow DOM, iframe oder noch nicht gerendert.`;
+    tip = `Tip: element "${instruction}" was not found in the DOM. It may live in a shadow DOM, iframe, or not be rendered yet.`;
   } else if (attempts.length >= 2) {
-    tip = `Tipp: Alle Fallback-Pfade erschöpft. Versuche die Instruktion präziser zu formulieren oder aktiviere Vision-Grounding: { visionFallback: true }.`;
+    tip = `Tip: all fallback paths exhausted. Reformulate the instruction more precisely or enable vision grounding: { visionFallback: true }.`;
   }
 
   const attemptSummary = attempts.length === 1
-    ? `Pfad versucht: ${attempts[0]!.path}`
-    : `${attempts.length} Pfade versucht`;
+    ? `Path tried: ${attempts[0]!.path}`
+    : `${attempts.length} paths tried`;
 
   return [
-    `Action fehlgeschlagen: "${instruction}" auf ${elementName}`,
+    `Action failed: "${instruction}" on ${elementName}`,
     `${attemptSummary}:\n${errors}`,
     tip,
   ].filter(Boolean).join('\n');

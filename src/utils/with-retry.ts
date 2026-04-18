@@ -27,7 +27,7 @@ export async function withRetry<T>(
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
-  // Logisch unerreichbar (Schleife wirft immer beim letzten Versuch),
-  // aber TypeScript benötigt diese Zeile für die Rückgabetyp-Analyse.
+  // Logically unreachable (the loop always throws on the last attempt),
+  // but TypeScript needs this line for return-type analysis.
   throw lastError;
 }

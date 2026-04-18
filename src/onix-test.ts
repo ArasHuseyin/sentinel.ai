@@ -1,13 +1,13 @@
 /**
- * Onix Connect – Automatisierungstest
+ * Onix Connect – automation test
  *
  * Flow:
- *   Login → Tarifrechner ausfüllen → Kelag-Tarif auswählen → Kundendaten eingeben
+ *   Login → fill tariff calculator → select Kelag tariff → enter customer data
  *
- * Auführen (nach npm run build):
+ * Run (after npm run build):
  *   npx ts-node --esm src/onix-test.ts
  *
- * Oder kompiliert:
+ * Or compiled:
  *   node dist/onix-test.js
  */
 
@@ -17,12 +17,12 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
-// Gemini-Modell – kann per .env überschrieben werden
+// Gemini model – can be overridden via .env
 process.env.GEMINI_VERSION ??= 'gemini-3-flash-preview';
 
 import { Sentinel, z } from './index.js';
 
-// ─── Pfade ────────────────────────────────────────────────────────────────────
+// ─── Paths ────────────────────────────────────────────────────────────────────
 
 const SESSION_PATH    = path.join(process.cwd(), 'sessions', 'onix-session.json');
 const SCREENSHOTS_DIR = path.join(process.cwd(), 'screenshots');
@@ -33,7 +33,7 @@ function log(msg: string)  { console.log(`[${ts()}] ${msg}`); }
 function err(msg: string)  { console.error(`[${ts()}] ❌  ${msg}`); }
 function ts()              { return new Date().toISOString().slice(11, 19); }
 
-// ─── Hauptfunktion ────────────────────────────────────────────────────────────
+// ─── Main function ────────────────────────────────────────────────────────────
 
 async function runOnixAutomation() {
   log('========================================');
@@ -41,13 +41,13 @@ async function runOnixAutomation() {
   log('========================================');
 
   const sessionExists = fs.existsSync(SESSION_PATH);
-  log(`Sitzungsdatei: ${sessionExists ? SESSION_PATH : '(keine – Erstanmeldung)'}`);
+  log(`Session file: ${sessionExists ? SESSION_PATH : '(none – first login)'}`);
 
   const sentinel = new Sentinel({
     apiKey:            process.env.GEMINI_API_KEY!,
     headless:          false,
     verbose:           2,
-    visionFallback:    true,   // Onix ist eine komplexe SPA – Vision Grounding aktiviert
+    visionFallback:    true,   // Onix is a complex SPA – vision grounding enabled
     humanLike:         true,
     domSettleTimeoutMs: 4000,
     viewport:          { width: 1920, height: 1080 },
@@ -55,12 +55,12 @@ async function runOnixAutomation() {
   });
 
   await sentinel.init();
-  log('Sentinel initialisiert.');
+  log('Sentinel initialized.');
 
   try {
 
-    // ── 1. Navigation & Login ───────────────────────────────────────────────
-    log('(1) Navigiere zu Onix Connect...');
+    // ── 1. Navigation & login ───────────────────────────────────────────────
+    log('(1) Navigating to Onix Connect...');
     await sentinel.goto('https://vp.onix-connect.com/');
 
     log('(2) Login...');
@@ -68,24 +68,24 @@ async function runOnixAutomation() {
     await sentinel.act('Gib das Passwort "odkPLlGAwz" in das Passwort-Feld ein',             { retries: 0 });
     await sentinel.act('Klicke auf den Anmelden-Button',                                     { retries: 0 });
 
-    log('Warte auf Dashboard...');
+    log('Waiting for dashboard...');
     await delay(3500);
 
-    // ── 2. Navigation zum Tarifrechner ──────────────────────────────────────
-    log('(3) Prüfe ob Tarifrechner / Auftragsanlage sichtbar...');
+    // ── 2. Navigate to tariff calculator ────────────────────────────────────
+    log('(3) Checking whether tariff calculator / order form is visible...');
     const dashboardCheck = await sentinel.extract<{ visible: boolean }>(
       'Ist der Tarifrechner oder die Auftragsanlage direkt sichtbar auf dieser Seite?',
       z.object({ visible: z.boolean() })
     );
 
     if (!dashboardCheck.visible) {
-      log('Tarifrechner nicht direkt sichtbar – navigiere über Menü...');
+      log('Tariff calculator not directly visible – navigating via menu...');
       await sentinel.act('Klicke im linken Menü auf "Auftragsverwaltung" oder den Tarifrechner-Button');
       await delay(3000);
     }
 
-    // ── 3. Tarifrechner ausfüllen ───────────────────────────────────────────
-    log('(4) Fülle den Tarifrechner aus...');
+    // ── 3. Fill out tariff calculator ───────────────────────────────────────
+    log('(4) Filling out the tariff calculator...');
     await sentinel.act('Wähle den Radiobutton "Strom"',                                      { retries: 1 });
     await sentinel.act('Wähle den Radiobutton "Privatkunde"',                                { retries: 1 });
     await sentinel.act('Trage die Postleitzahl "1110" ein',                                  { retries: 0 });
@@ -95,13 +95,13 @@ async function runOnixAutomation() {
     await sentinel.act('Trage "1222" in das Feld für den Gesamtverbrauch (kWh) ein',         { retries: 0 });
     await sentinel.act('Drücke Enter um das Formular abzusenden',                            { retries: 1 });
 
-    log('Warte auf Tarif-Ergebnisse...');
+    log('Waiting for tariff results...');
     await delay(2500);
 
-    // ── 4. Kelag-Tarif auswählen ────────────────────────────────────────────
-    log('(5) Suche und wähle Kelag-Tarif...');
+    // ── 4. Select Kelag tariff ──────────────────────────────────────────────
+    log('(5) Searching and selecting Kelag tariff...');
 
-    // Etwas nach unten scrollen damit alle Angebote sichtbar sind
+    // Scroll down a bit so all offers are visible
     await sentinel.page.evaluate(() => window.scrollBy(0, 400));
     await delay(1500);
 
@@ -112,53 +112,53 @@ async function runOnixAutomation() {
       { retries: 2 }
     );
 
-    log('Warte auf Kundendaten-Formular...');
+    log('Waiting for customer data form...');
     await delay(6000);
 
-    // ── 5. Kundendaten ──────────────────────────────────────────────────────
-    log('(6) Kundendaten eingeben... [SICHERHEITSSTOP aktiv – kein Absenden]');
+    // ── 5. Customer data ────────────────────────────────────────────────────
+    log('(6) Entering customer data... [SAFETY STOP active – no submission]');
     await sentinel.act('Gib als Vorname "Samil" ein',                                        { retries: 0 });
     await sentinel.act('Gib als Nachname "Andak" ein',                                       { retries: 0 });
     await sentinel.act('Gib als Geburtsdatum "30.06.2000" ein',                              { retries: 0 });
     await sentinel.act('Gib als E-Mail "andak-test@example.com" ein',                        { retries: 0 });
     await sentinel.act('Gib als Telefonnummer "06601234567" ein',                            { retries: 0 });
     await sentinel.act('Gib bei IBAN die Kontonummer "AT331200000000123456" ein',            { retries: 0 });
-    log('(Sicherheitsstop erreicht – Auftrag wird NICHT abgesendet)');
+    log('(Safety stop reached – order will NOT be submitted)');
 
-    // ── 6. Screenshot & Session speichern ───────────────────────────────────
-    log('(7) Erstelle Abschluss-Screenshot...');
+    // ── 6. Screenshot & save session ────────────────────────────────────────
+    log('(7) Creating final screenshot...');
     ensureDir(SCREENSHOTS_DIR);
     const screenshotPath = path.join(SCREENSHOTS_DIR, 'onix_check_final.png');
     await sentinel.page.screenshot({ path: screenshotPath, fullPage: true });
 
-    // Session für Folgeläufe speichern
+    // Save session for subsequent runs
     ensureDir(path.dirname(SESSION_PATH));
     await sentinel.saveSession(SESSION_PATH);
 
-    // Token-Verbrauch
+    // Token usage
     const usage = sentinel.getTokenUsage();
-    log(`Token-Verbrauch: ${usage.totalTokens} Tokens | ~$${usage.estimatedCostUsd.toFixed(5)}`);
-    log(`ERFOLG ✅  Screenshot: ${screenshotPath}`);
+    log(`Token usage: ${usage.totalTokens} tokens | ~$${usage.estimatedCostUsd.toFixed(5)}`);
+    log(`SUCCESS ✅  Screenshot: ${screenshotPath}`);
 
   } catch (error: any) {
     err(error.message ?? String(error));
 
-    // Fehler-Screenshot
+    // Error screenshot
     try {
       ensureDir(SCREENSHOTS_DIR);
       const errPath = path.join(SCREENSHOTS_DIR, 'onix_error.png');
       await sentinel.page.screenshot({ path: errPath, fullPage: true });
-      log(`Fehler-Screenshot gespeichert: ${errPath}`);
-    } catch { /* Screenshot selbst fehlgeschlagen – ignorieren */ }
+      log(`Error screenshot saved: ${errPath}`);
+    } catch { /* screenshot itself failed – ignore */ }
 
   } finally {
-    log('Schließe Browser in 10 Sekunden...');
+    log('Closing browser in 10 seconds...');
     await delay(20000);
     await sentinel.close();
   }
 }
 
-// ─── Hilfsfunktionen ─────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function delay(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 

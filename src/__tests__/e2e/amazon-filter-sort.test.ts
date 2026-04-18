@@ -1,9 +1,9 @@
 /**
- * E2E Test — Amazon: Search + Filter + Sort.
+ * E2E test — Amazon: search + filter + sort.
  *
- * Reales Szenario: Nutzer sucht ein bestimmtes Produkt und muss
- * Filter (Marke, Preis) und Sortierung (Kundenbewertung) kombinieren,
- * um es in den Ergebnissen zu finden.
+ * Real-world scenario: user searches for a specific product and must
+ * combine filter (brand, price) and sort (customer rating) to find it
+ * in the results.
  *
  * Run:  GEMINI_API_KEY=... npx jest src/__tests__/e2e/amazon-filter-sort.test.ts --no-coverage
  */
