@@ -10,13 +10,13 @@ async function whatsappTest() {
   const sentinel = new Sentinel({
     apiKey: API_KEY,
     headless: false,
-    humanLike: true,           // v2: menschliche Verzögerungen zwischen Aktionen
-    sessionPath: SESSION_PATH, // v2: Session persistieren – QR-Code nur einmal scannen
+    humanLike: true,           // v2: human-like delays between actions
+    sessionPath: SESSION_PATH, // v2: persist session – scan QR code only once
     verbose: 1,
-    visionFallback: true,      // WhatsApp Web hat keinen sauberen AOM – Vision als Fallback
+    visionFallback: true,      // WhatsApp Web has no clean AOM – vision as fallback
   });
 
-  // v2: Events für Observability
+  // v2: events for observability
   sentinel.on('action', (event) => {
     console.log(`[Event] action: "${event.instruction}" → ${event.result.success ? '✅' : '❌'} ${event.result.message}`);
   });
@@ -35,16 +35,16 @@ async function whatsappTest() {
     console.log('PLEASE SCAN THE QR CODE MANUALLY (only needed on first run – session will be saved).');
     console.log('Waiting for WhatsApp to fully load...');
 
-    // Warten bis Sentinel Chat-Einträge in der Sidebar erkennt (kein Selektor nötig)
-    // Warten bis Sentinel mindestens 3 Chat-Eintraege in der Sidebar erkennt
-    // (verhindert false-positive wenn nur QR-Code-Elemente sichtbar sind)
+    // Wait until Sentinel detects chat entries in the sidebar (no selector needed).
+    // Require at least 3 chat entries to prevent false-positives when only
+    // QR-code elements are visible.
     let sidebarReady = false;
     const deadline = Date.now() + 180000;
     while (!sidebarReady && Date.now() < deadline) {
       const elements = await sentinel.observe('Find actual chat conversation entries (contact names, group names) in the left sidebar – NOT the QR code, NOT login buttons');
       if (elements.length >= 3) {
         sidebarReady = true;
-        // Kurze Pause damit WhatsApp die Chat-Liste vollstaendig rendert
+        // Short pause so WhatsApp fully renders the chat list
         await new Promise(r => setTimeout(r, 2000));
       } else {
         await new Promise(r => setTimeout(r, 3000));
@@ -52,7 +52,7 @@ async function whatsappTest() {
     }
     if (!sidebarReady) throw new Error('WhatsApp sidebar did not load in time');
 
-    // v2: Session nach erfolgreichem Login speichern
+    // v2: persist session after successful login
     await sentinel.saveSession(SESSION_PATH);
     console.log(`✅ Session saved to ${SESSION_PATH}`);
 
@@ -71,7 +71,7 @@ async function whatsappTest() {
 
     console.log(`Found chats: ${chats.map((c: { name: string }) => `"${c.name}"`).join(', ')}`);
 
-    // v2: observe() nutzen um verfügbare Aktionen zu prüfen
+    // v2: use observe() to probe available actions
     const observedElements = await sentinel.observe('Find chat entries in the left sidebar');
     console.log(`\n[v2 observe] Found ${observedElements.length} interactive elements in sidebar`);
 
@@ -89,7 +89,7 @@ async function whatsappTest() {
         continue;
       }
 
-      // Sentinel beobachtet selbst ob der Chat geladen ist – kein Selektor nötig
+      // Sentinel detects on its own whether the chat loaded – no selector needed
       const chatElements = await sentinel.observe(`Find messages and conversation content in the currently open chat "${chat.name}" on the right side`);
       console.log(`[Observe] ${chatElements.length} elements found in chat area`);
 
@@ -112,7 +112,7 @@ async function whatsappTest() {
       msgs.forEach(m => console.log(`  [${m.sender}] ${m.text}`));
     }
 
-    // v2: Token-Verbrauch ausgeben
+    // v2: report token usage
     const usage = sentinel.getTokenUsage();
     console.log(`\n📊 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(4)})`);
 

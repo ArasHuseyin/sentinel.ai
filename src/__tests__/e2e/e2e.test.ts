@@ -475,7 +475,7 @@ describeE2E('E2E: Real Browser Tests', () => {
     }, 300_000);
   });
 
-  // ─── 12. Onix VP: Login + Tarifrechner + günstigsten Tarif wählen ───────────
+  // ─── 12. Onix VP: login + tariff calculator + select cheapest tariff ────────
 
   describe('Onix VP Tarifrechner', () => {
     it('logs in, fills the tariff calculator with fake data, and selects the cheapest tariff', async () => {
