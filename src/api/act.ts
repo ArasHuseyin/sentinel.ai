@@ -1139,10 +1139,21 @@ export class ActionEngine {
 
       decision = await this.gemini.generateStructuredData<typeof decision>(prompt, schema);
 
-      // Normalize: support old single-elementId responses gracefully
-      candidateIds = decision.candidates?.length
-        ? decision.candidates.map(c => c.elementId)
-        : [(decision as any).elementId ?? 0];
+      // Normalize: support old single-elementId responses gracefully. If the LLM
+      // returns empty candidates AND no legacy elementId, treat it as notFound
+      // so we retry (or fail cleanly) instead of silently clicking element 0.
+      const legacyElementId = (decision as any).elementId;
+      if (decision.candidates?.length) {
+        candidateIds = decision.candidates.map(c => c.elementId);
+      } else if (typeof legacyElementId === 'number') {
+        candidateIds = [legacyElementId];
+      } else {
+        candidateIds = [];
+        if (!decision.notFound) {
+          this.log(2, `[Act] LLM returned empty candidates without notFound — treating as notFound`);
+          decision.notFound = true;
+        }
+      }
 
       if (decision.notFound && attempt < MAX_NOT_FOUND_SCROLL_RETRIES) {
         this.log(2, `[Act] LLM: target not in current view — scrolling ${Math.round(NOT_FOUND_SCROLL_FRACTION * 100)}% viewport and re-asking`);
@@ -1302,7 +1313,8 @@ export class ActionEngine {
                 'getsitecontrol-widget, [class*="popup"], [class*="overlay"], [id*="widget"], [class*="chat-widget"], [class*="intercom"]'
               ).forEach(el => {
                 const s = window.getComputedStyle(el);
-                if (s.position === 'fixed' || s.position === 'absolute' || s.zIndex > '999') el.remove();
+                const z = parseInt(s.zIndex, 10);
+                if (s.position === 'fixed' || s.position === 'absolute' || (Number.isFinite(z) && z > 999)) el.remove();
               });
             });
             // Retry the same candidate after removing the blocker
