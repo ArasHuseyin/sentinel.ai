@@ -6,6 +6,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.1.2] - 2026-04-19
+
+### Fixed
+
+- **Vision Grounding — HiDPI coordinate mismatch** — `VisionGrounding.findElement()` now reads the screenshot's native pixel dimensions from the PNG header and rescales the model's response to CSS pixels before handing them to `page.mouse.click`. On displays with `deviceScaleFactor > 1` the screenshot is larger than the CSS viewport; previously the LLM received viewport dimensions but returned coordinates in the screenshot's pixel space, causing clicks to land in the wrong quadrant.
+- **Vision Grounding — silent (0, 0) click on incomplete responses** — when the LLM returned `found: true` without coordinate fields, the old code silently defaulted to `{ x: 0, y: 0, width: 50, height: 30 }` and clicked the top-left corner. `findElement()` now returns `null` when any of `x`, `y`, `width`, `height` is missing or non-finite, or when width/height are zero or negative.
+- **Vision Grounding — out-of-bounds bboxes** — the computed click center is validated against the viewport; if the model returns coordinates whose center falls outside the viewport, `findElement()` returns `null` instead of issuing an off-screen click.
+- **Vision Grounding — low-confidence responses** — the prompt now asks for a `confidence` field (0.0 to 1.0); responses below 0.5 are rejected. Reduces false clicks on ambiguous pages.
+- **Vision Grounding — prompt ambiguity** — the prompt explicitly specifies top-left origin, positive-Y-down, and "absolute image pixels (NOT normalized, NOT percentages, NOT thousandths)" to prevent providers that default to normalized coordinate systems (notably Claude's computer-use convention) from silently returning wrong units.
+- **Vision Grounding — ignored verbose level** — per-call info and warning logs now respect the `verbose` level passed from `SentinelOptions`. `verbose: 0` fully silences vision fallback; `verbose >= 2` surfaces find-element diagnostics.
+
+### Changed
+
+- **Removed keyword-based pre-scroll discovery** — previously `act()` pre-scrolled up to 3600px (2 batches × 3 × 600px) whenever no element's `role + name` contained an instruction token. This caused phantom scrolling on pages where target labels differ from the instruction vocabulary (e.g. Amazon German filter labels vs. English brand names like "Sony", sort options, localized value text). Over a multi-step `run()` the page could drift 10k–30k pixels downward before any meaningful action was taken.
+- **LLM-driven `notFound` retry** — the action-decision schema now includes a `notFound: boolean` field. When no listed element is plausibly the target, the LLM sets `notFound: true` and the engine performs a single ~80%-viewport scroll, re-parses, and re-asks. Capped at one retry per `act()` call. Replaces the old heuristic pre-scroll with an explicit semantic signal.
+
+---
+
+## [4.1.1] - 2026-04-19
+
+### Added
+
+- **Pattern cache** — selector patterns discovered during `act()` are cached per-site and reused on subsequent runs, skipping LLM calls entirely when the cache hits.
+- **CAPTCHA detection + solving hooks** — detects common CAPTCHA widgets (reCAPTCHA, hCaptcha) and exposes a pluggable solver interface.
+- **MUI benchmark test suite** — 12 E2E tests against Material UI documentation components (slider, datepicker, autocomplete, etc.) to validate widget coverage.
+- **Pattern-signature utilities** — browser-side signature generation for deterministic element fingerprinting.
+- **CAPTCHA solver stub** — `src/reliability/captcha-solver.ts` for integration with external CAPTCHA services.
+
+### Fixed
+
+- **Slider handle type annotation** — `page.evaluate()` callback now correctly types `ElementHandle` as `Node | null` (was `HTMLElement | null`), fixing a TypeScript overload resolution error.
+- **Error messages translated to English** — internal error/tip messages in `buildFailureMessage()` now use English instead of German for consistency with public-facing API.
+
+### Changed
+
+- **Slimmed README** — moved detailed API documentation to [isoldex.ai/docs](https://isoldex.ai/docs). README now focuses on hero demo, quick start, and feature overview.
+- **Demo GIFs added to README** — GitHub trending extraction and Amazon.de multi-step automation shown visually.
+- **Removed internal tooling files** from the npm package (`CLAUDE.md`, `task.md`) to keep the published tarball lean.
+
+### Documentation
+
+- Added `demo.mjs` — runnable demo script showing GitHub trending extraction.
+- Session notes moved out of the published package.
+
+---
+
+## [4.1.0] - 2026-04-11
+
+### Added
+
+- **`sentinel.fillForm(json)`** — declarative form filling with a single JSON object. Sentinel maps keys to form fields via LLM and fills them automatically, top-to-bottom, validating field population after each fill.
+- **`sentinel.intercept(urlPattern, trigger)`** — network interception: capture raw API responses (JSON) during browser actions instead of scraping the DOM. Returns parsed response bodies that match the URL pattern.
+- **TOTP/MFA automation** — `mfa: { type: 'totp', secret: '...' }` option on `Sentinel`. The agent auto-generates RFC 6238 TOTP codes during login flows. Zero-dependency implementation via Node's `crypto` module. `generateTOTP()` also exported for standalone use.
+- **`plannerModel` / `plannerProvider`** — use a stronger model for planning decisions (e.g. Gemini 3.1 Pro) while keeping a cheap model (Flash) for action execution. Reduces cost while preserving decision quality.
+- **`mode: 'aom' | 'hybrid' | 'vision'`** — configurable element detection strategy. `aom` uses the accessibility tree only (fast, cheap), `hybrid` adds vision fallback on coordinate mismatch, `vision` uses vision grounding primarily (slowest, most robust).
+- **Click-target verification** — before every click/fill, the engine verifies via `elementFromPoint()` that the element at the target coordinates actually matches the intended target. Falls back to Playwright's `getByRole` locator on mismatch.
+- **Playwright locator fallback** — on coordinate mismatch (common with dynamic dropdowns), the engine automatically switches to `page.getByRole(role, { name })` to locate and click the correct element. Tries multiple name variants (e.g. "Info: Weiter" tries "Weiter" after the colon).
+- **Impossible coordinates detection** — elements with clearly invalid AOM coordinates (y < -500) skip scroll attempts and go directly to the locator fallback.
+- **Widget pattern detection** — 9 structural DOM patterns for detecting custom widgets: button+combobox, `aria-haspopup`, label+hidden-input, `<input>`+datalist, tablist, date/time pickers, CSS-library dropdowns (React Select, Ant Design, MUI, ng-select, Select2, Chosen), hidden `<select>`+custom trigger, and compound datepickers.
+- **Universal slider-fill** — 3-strategy cascade for `role="slider"` elements: (1) native `<input type="range">` value assignment, (2) sibling text-input fallback for container-paired numeric inputs (Amazon/idealo/Zalando price filters), (3) keyboard simulation via `aria-valuemin/max/now` with Arrow keys.
+- **Validation error detection** — reads form error messages via `aria-invalid`, `role="alert"`, `class*="error"` and passes them to the planner as an `error` field on the form element.
+- **Form field/button separation** — planner prompt structurally separates form fields from buttons. Fields shown first with filled/unfilled status indicators (●/○). Prevents premature form submission.
+- **Proactive blocker dismissal** — `tryRecoverFromBlocker()` runs at the start of each agent step (first 3 steps), not only after failures. Cookie banners and modals are dismissed before the planner analyzes the page.
+- **Cookie recovery improvements** — prioritizes accept buttons over settings buttons. Filters out cookie policy links that would navigate away. Ignores technical container IDs in mismatch checks (e.g., `auto.fahrzeug.erstbesitzv-radiogroup`).
+- **State fingerprint verification** — after each action, computes a compact fingerprint (role + name + region + value + error + state) to detect actual state changes. Catches false-success reports and prevents infinite retry loops.
+- **Semantic loop detection** — compares action+target across steps instead of raw instruction text. `fill:Marke` and `fill:Modell` are correctly identified as different actions even if the planner rephrases.
+- **Action-level retry** — 2 retries with 200ms/500ms backoff for transient failures (timeout, detached, disposed). Non-transient errors go directly to fallback.
+- **Typing delay tuning** — 150ms settle before first keystroke, 90ms between characters (humanLike: 90–130ms random). Prevents dropped characters on reactive inputs.
+- **Unicode tokenizer** — text normalization uses `\p{L}\p{N}` (Unicode categories) instead of `[a-z0-9]`. Supports all Latin-script languages (German umlauts, Turkish dotted-i, Czech diacritics).
+- **Scroll discovery guardrails** — only triggers when page has fewer than 10 elements AND no keyword matches. Prevents unnecessary scrolling on content-rich pages.
+- **Extract on goalComplete** — when the planner marks goal complete and plans an extraction simultaneously, the extraction now executes before stopping. Prevents lost data in single-turn workflows.
+- **Extract deduplication** — if extraction already ran in a previous step, the goalComplete extraction reuses the existing data instead of making a duplicate LLM call.
+- **Coordinate system fixes** — all `getBoundingClientRect()` calls in state parser add `scrollX/scrollY` for consistent document-space coordinates (prevents click mismatches on scrolled pages).
+- **Zero-size element filter** — elements with width or height < 2px are excluded from the element set.
+- **Locator name variants** — semantic fallback tries multiple name variants including short names after `:` prefix (e.g. "Info: Weiter" tries "Weiter").
+- **Always-keep form fields** — form role elements (textbox, combobox, listbox, slider, etc.) are always kept in `filterRelevantElements()` regardless of keyword score.
+- **Nearby buttons preservation** — buttons positionally near form fields (submit/proceed) are always kept regardless of keyword score.
+- **Y-position sorting** — elements presented to the planner sorted top-to-bottom by visual position for deterministic output.
+
+### Performance
+
+- **Impossible coordinates → direct locator** saves ~700ms per element by skipping futile scroll attempts.
+- **Network interception** uses `waitForLoadState('networkidle')` instead of fixed timeout for reliable response capture.
+- **Extract dedup** saves one LLM call per agent run when goal-complete and extract coincide.
+
+### Fixed
+
+- Click-target verification on pages with dynamic dropdowns (durchblicker, Booking) — coordinates frequently pointed to wrong element after dropdown animation.
+- Typing delay too short for reactive inputs (React Select, Ant Design) causing dropped characters.
+- Wikipedia cookie recovery infinite loop — cookie-policy links were clicked repeatedly instead of accept buttons.
+
 ## [4.0.0] - 2026-04-11
 
 ### Breaking Changes

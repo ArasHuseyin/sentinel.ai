@@ -27,6 +27,20 @@ function makeProviderWithoutVision(): LLMProvider {
 
 const FAKE_PNG = Buffer.from('fakepng');
 
+/** Builds a minimal buffer that starts with a valid PNG signature + IHDR chunk declaring the given size. */
+function makePngWithDimensions(width: number, height: number): Buffer {
+  const buf = Buffer.alloc(24);
+  // PNG signature
+  buf.writeUInt8(0x89, 0); buf.writeUInt8(0x50, 1); buf.writeUInt8(0x4e, 2); buf.writeUInt8(0x47, 3);
+  buf.writeUInt8(0x0d, 4); buf.writeUInt8(0x0a, 5); buf.writeUInt8(0x1a, 6); buf.writeUInt8(0x0a, 7);
+  // IHDR chunk: length(4) + type(4) + width(4) + height(4)
+  buf.writeUInt32BE(13, 8);           // IHDR data length
+  buf.write('IHDR', 12, 'ascii');
+  buf.writeUInt32BE(width, 16);
+  buf.writeUInt32BE(height, 20);
+  return buf;
+}
+
 // ─── VisionGrounding ──────────────────────────────────────────────────────────
 
 describe('VisionGrounding', () => {
@@ -80,14 +94,76 @@ describe('VisionGrounding', () => {
       expect(result).toEqual({ x: 100, y: 200, width: 80, height: 30 });
     });
 
-    it('uses fallback values when x/y/width/height are missing', async () => {
+    it('returns null when x/y/width/height are missing (incomplete bbox)', async () => {
       const response = JSON.stringify({ found: true, reasoning: 'Found but no coords' });
       const provider = makeProvider(response);
       const vg = new VisionGrounding(provider);
 
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       const result = await vg.findElement('Click submit', FAKE_PNG, 1280, 720);
+      warnSpy.mockRestore();
 
-      expect(result).toEqual({ x: 0, y: 0, width: 50, height: 30 });
+      expect(result).toBeNull();
+    });
+
+    it('returns null when width or height is zero/negative', async () => {
+      const response = JSON.stringify({ found: true, x: 100, y: 200, width: 0, height: 30 });
+      const provider = makeProvider(response);
+      const vg = new VisionGrounding(provider);
+
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await vg.findElement('Click submit', FAKE_PNG, 1280, 720);
+      warnSpy.mockRestore();
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when bbox center falls outside the viewport', async () => {
+      const response = JSON.stringify({ found: true, x: 5000, y: 200, width: 80, height: 30 });
+      const provider = makeProvider(response);
+      const vg = new VisionGrounding(provider);
+
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await vg.findElement('Click submit', FAKE_PNG, 1280, 720);
+      warnSpy.mockRestore();
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when confidence is below threshold', async () => {
+      const response = JSON.stringify({ found: true, x: 100, y: 200, width: 80, height: 30, confidence: 0.3 });
+      const provider = makeProvider(response);
+      const vg = new VisionGrounding(provider);
+
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await vg.findElement('Click submit', FAKE_PNG, 1280, 720);
+      warnSpy.mockRestore();
+
+      expect(result).toBeNull();
+    });
+
+    it('rescales image-pixel coordinates to CSS pixels for HiDPI screenshots', async () => {
+      // Build a real PNG header declaring 2560x1440 (deviceScaleFactor=2 on a 1280x720 viewport).
+      const png = makePngWithDimensions(2560, 1440);
+      const response = JSON.stringify({ found: true, x: 200, y: 400, width: 160, height: 60, confidence: 0.9 });
+      const provider = makeProvider(response);
+      const vg = new VisionGrounding(provider);
+
+      const result = await vg.findElement('Click submit', png, 1280, 720);
+
+      // 2x scaling → coordinates halve back to CSS pixels.
+      expect(result).toEqual({ x: 100, y: 200, width: 80, height: 30 });
+    });
+
+    it('respects verbose=0 by suppressing info/warn logs', async () => {
+      const response = JSON.stringify({ found: false, reasoning: 'not visible' });
+      const provider = makeProvider(response);
+      const vg = new VisionGrounding(provider, 0);
+
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      await vg.findElement('Click submit', FAKE_PNG, 1280, 720);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
 
     it('returns null when LLM says found: false', async () => {

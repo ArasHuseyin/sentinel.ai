@@ -14,6 +14,8 @@ export interface VisionElement {
   confidence: number;
 }
 
+const MIN_CONFIDENCE = 0.5;
+
 /**
  * Vision-based element grounding using any vision-capable LLMProvider.
  * Used as a fallback when the AOM (Accessibility Tree) cannot find an element.
@@ -22,8 +24,8 @@ export interface VisionElement {
  * OllamaProvider (with a vision model such as llava or bakllava).
  */
 export class VisionGrounding {
-  constructor(private provider: LLMProvider) {
-    if (!provider.analyzeImage) {
+  constructor(private provider: LLMProvider, private verbose: number = 1) {
+    if (!provider.analyzeImage && this.verbose >= 1) {
       console.warn(
         '[VisionGrounding] The configured LLM provider does not implement analyzeImage. ' +
         'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
@@ -39,8 +41,12 @@ export class VisionGrounding {
   }
 
   /**
-   * Asks the vision-capable LLM to find an element matching the instruction and return its bounding box.
-   * Returns null if the element cannot be found or the provider does not support vision.
+   * Asks the vision-capable LLM to find an element matching the instruction and return its bounding box
+   * in CSS pixels (ready to hand to `page.mouse.click`). Handles HiDPI/deviceScaleFactor by reading the
+   * screenshot's native dimensions from the PNG header and rescaling the model's answer.
+   *
+   * Returns null if the element cannot be found, the provider lacks vision, the response is incomplete,
+   * confidence is below threshold, or the computed bbox falls outside the viewport.
    */
   async findElement(
     instruction: string,
@@ -50,6 +56,12 @@ export class VisionGrounding {
   ): Promise<BoundingBox | null> {
     if (!this.provider.analyzeImage) return null;
 
+    const imageSize = readPngDimensions(screenshot);
+    const imgW = imageSize?.width ?? viewportWidth;
+    const imgH = imageSize?.height ?? viewportHeight;
+    const scaleX = imgW / viewportWidth;
+    const scaleY = imgH / viewportHeight;
+
     const base64 = screenshot.toString('base64');
 
     const prompt = `
@@ -57,19 +69,20 @@ You are a browser automation assistant analyzing a screenshot.
 
 Task: Find the UI element that matches this instruction: "${instruction}"
 
-The screenshot is ${viewportWidth}x${viewportHeight} pixels.
+The image is ${imgW}x${imgH} pixels. Use the image's absolute pixel coordinate system with origin (0,0) at the TOP-LEFT corner and the positive Y axis pointing DOWN. All coordinates must be absolute image pixels — NOT normalized, NOT percentages, NOT thousandths.
 
 Return ONLY a JSON object with these fields (no markdown, no explanation):
 {
   "found": true or false,
-  "x": left edge in pixels,
-  "y": top edge in pixels,
-  "width": element width in pixels,
-  "height": element height in pixels,
+  "x": left edge in image pixels,
+  "y": top edge in image pixels,
+  "width": element width in image pixels,
+  "height": element height in image pixels,
+  "confidence": number between 0.0 and 1.0,
   "reasoning": "brief explanation"
 }
 
-If the element is not visible, set found to false and omit x/y/width/height.
+If you cannot confidently locate the element, set found to false and omit the coordinate fields.
     `.trim();
 
     try {
@@ -77,17 +90,45 @@ If the element is not visible, set found to false and omit x/y/width/height.
       const parsed = extractJSON(raw);
 
       if (!parsed?.found) {
-        console.warn(`[Vision] Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`);
+        this.warnMsg(1, `[Vision] Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`);
         return null;
       }
 
-      console.log(`[Vision] Found element: "${instruction}" at (${parsed.x}, ${parsed.y}) — ${parsed.reasoning}`);
-      return {
-        x: parsed.x ?? 0,
-        y: parsed.y ?? 0,
-        width: parsed.width ?? 50,
-        height: parsed.height ?? 30,
-      };
+      if (
+        !Number.isFinite(parsed.x) ||
+        !Number.isFinite(parsed.y) ||
+        !Number.isFinite(parsed.width) ||
+        !Number.isFinite(parsed.height) ||
+        parsed.width <= 0 ||
+        parsed.height <= 0
+      ) {
+        this.warnMsg(1, `[Vision] Incomplete bbox for "${instruction}" — missing or invalid coordinates`);
+        return null;
+      }
+
+      const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 1;
+      if (confidence < MIN_CONFIDENCE) {
+        this.warnMsg(1, `[Vision] Low confidence (${confidence.toFixed(2)}) for "${instruction}" — rejecting`);
+        return null;
+      }
+
+      const cssX = parsed.x / scaleX;
+      const cssY = parsed.y / scaleY;
+      const cssW = parsed.width / scaleX;
+      const cssH = parsed.height / scaleY;
+
+      const cx = cssX + cssW / 2;
+      const cy = cssY + cssH / 2;
+      if (cx < 0 || cy < 0 || cx > viewportWidth || cy > viewportHeight) {
+        this.warnMsg(
+          1,
+          `[Vision] Out-of-bounds bbox for "${instruction}": center (${cx.toFixed(0)},${cy.toFixed(0)}) outside viewport ${viewportWidth}x${viewportHeight}`
+        );
+        return null;
+      }
+
+      this.log(2, `[Vision] Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`);
+      return { x: cssX, y: cssY, width: cssW, height: cssH };
     } catch (err: any) {
       console.error(`[Vision] findElement failed: ${err.message}`);
       return null;
@@ -113,6 +154,27 @@ If the element is not visible, set found to false and omit x/y/width/height.
       return 'Could not describe screen.';
     }
   }
+
+  private log(level: number, msg: string): void {
+    if (this.verbose >= level) console.log(msg);
+  }
+
+  private warnMsg(level: number, msg: string): void {
+    if (this.verbose >= level) console.warn(msg);
+  }
+}
+
+/**
+ * Reads width/height from a PNG buffer's IHDR chunk.
+ * Returns null if the buffer is not a valid PNG (e.g. in tests with fake buffers).
+ */
+function readPngDimensions(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 24) return null;
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  for (let i = 0; i < 8; i++) {
+    if (buf[i] !== sig[i]) return null;
+  }
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
 /**

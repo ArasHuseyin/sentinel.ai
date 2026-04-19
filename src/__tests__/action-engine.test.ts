@@ -729,17 +729,15 @@ describe('ActionEngine', () => {
     expect(result.success).toBe(true);
   });
 
-  // ─── Scroll Discovery ──────────────────────────────────────────────────────────
+  // ─── LLM-driven notFound scroll retry ──────────────────────────────────────────
 
-  it('scroll discovery scrolls and re-parses when no relevant elements found', async () => {
+  it('scrolls one viewport and re-asks the LLM when first call returns notFound: true', async () => {
     const page = makeMockPage();
-    // First parse: elements don't match instruction
     const noMatchState = makeState({
       elements: [
         { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
       ],
     });
-    // Second parse (after scroll): elements match
     const matchState = makeState({
       elements: [
         { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
@@ -748,28 +746,31 @@ describe('ActionEngine', () => {
     });
     const stateParser = {
       parse: jest.fn<() => Promise<SimplifiedState>>()
-        .mockResolvedValueOnce(noMatchState)   // initial parse
-        .mockResolvedValue(matchState),        // all subsequent parses
+        .mockResolvedValueOnce(noMatchState)
+        .mockResolvedValue(matchState),
       invalidateCache: jest.fn(),
     };
-    const llm = makeMockLLM({ elementId: 1, action: 'click', reasoning: 'Click John Chat' });
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn<() => Promise<any>>()
+        .mockResolvedValueOnce({ candidates: [], action: 'click', reasoning: 'not visible', notFound: true })
+        .mockResolvedValueOnce({ candidates: [{ elementId: 1, confidence: 1 }], action: 'click', reasoning: 'found it' }) as any,
+      generateText: jest.fn(async () => ''),
+    };
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Click on John Chat');
 
     expect(result.success).toBe(true);
-    // mouse.wheel should have been called for scroll discovery
-    expect(page.mouse.wheel).toHaveBeenCalled();
-    // stateParser.parse should have been called at least twice (initial + after scroll)
+    // Exactly one scroll event on the retry path.
+    expect((page.mouse.wheel as jest.Mock).mock.calls).toHaveLength(1);
+    // LLM asked twice: initial + one retry.
+    expect((llm.generateStructuredData as jest.Mock).mock.calls).toHaveLength(2);
+    // stateParser.parse called at least twice (initial + after scroll).
     expect(stateParser.parse.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('scroll discovery stops after MAX_SCROLL_DISCOVERY_BATCHES (6 scrolls: 2 batches × 3)', async () => {
+  it('scrolls at most once even if the LLM persistently returns notFound: true', async () => {
     const page = makeMockPage();
-    // Elements that do NOT match the instruction keywords.
-    // The element has role "link" and name "Sidebar Nav" — tokens: ["sidebar", "nav"].
-    // Instruction "navigate profile settings" — tokens: ["navigate", "profile", "settings"].
-    // No overlap → hasRelevantElements returns false → scroll discovery triggers.
     const irrelevantState = makeState({
       elements: [
         { id: 0, role: 'link', name: 'Sidebar Nav', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
@@ -779,19 +780,27 @@ describe('ActionEngine', () => {
       parse: jest.fn(async () => irrelevantState),
       invalidateCache: jest.fn(),
     };
-    const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Clicking fallback' });
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn(async () => ({
+        candidates: [],
+        action: 'click',
+        reasoning: 'never found',
+        notFound: true,
+      })) as any,
+      generateText: jest.fn(async () => ''),
+    };
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('navigate profile settings');
 
-    // Should have scrolled exactly 6 times (2 batches × 3 scrolls per batch)
-    const wheelCalls = (page.mouse.wheel as jest.Mock).mock.calls;
-    expect(wheelCalls).toHaveLength(6);
+    // MAX_NOT_FOUND_SCROLL_RETRIES = 1 → exactly one scroll.
+    expect((page.mouse.wheel as jest.Mock).mock.calls).toHaveLength(1);
+    // LLM called exactly twice (initial + one retry).
+    expect((llm.generateStructuredData as jest.Mock).mock.calls).toHaveLength(2);
   });
 
-  it('scroll discovery does not scroll when relevant elements already exist', async () => {
+  it('does not scroll when the LLM returns a valid candidate without notFound', async () => {
     const page = makeMockPage();
-    // State already has elements matching the instruction
     const relevantState = makeState({
       elements: [
         { id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
@@ -803,11 +812,11 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click the login button');
 
-    // mouse.wheel should NOT have been called for scroll discovery
+    // No scroll — LLM found the target on the first ask.
     expect((page.mouse.wheel as jest.Mock).mock.calls).toHaveLength(0);
   });
 
-  it('scroll discovery skips when elements list is empty', async () => {
+  it('parses state only once when the LLM returns a non-scroll action on an empty page', async () => {
     const page = makeMockPage();
     const emptyState = makeState({ elements: [] });
     const stateParser = makeMockStateParser(emptyState);
@@ -816,8 +825,7 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click John Chat');
 
-    // mouse.wheel should NOT have been called for scroll discovery (empty page)
-    // It may be called for the scroll-down action itself
+    // Exactly one parse: initial state. No notFound retry triggered.
     expect(stateParser.parse).toHaveBeenCalledTimes(1);
   });
 

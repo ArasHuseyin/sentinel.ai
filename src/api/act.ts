@@ -318,17 +318,11 @@ export function filterRelevantElements(
   return [...alwaysKeep, ...scored.slice(0, Math.max(0, remaining)).map(s => s.el)];
 }
 
-/**
- * Returns true if at least one element has a relevance score > 0 for the instruction.
- */
-function hasRelevantElements(elements: UIElement[], instruction: string): boolean {
-  const tokens = tokenize(instruction);
-  if (tokens.length === 0) return true;
-  return elements.some(el => {
-    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
-    return tokens.some(token => text.includes(token));
-  });
-}
+/** Max retries after the LLM signals `notFound: true` (one scroll + re-ask per retry). */
+const MAX_NOT_FOUND_SCROLL_RETRIES = 1;
+
+/** Scroll step used when the LLM signals the target is not visible, as a fraction of viewport height. */
+const NOT_FOUND_SCROLL_FRACTION = 0.8;
 
 // ─── Datepicker / Timepicker helpers ─────────────────────────────────────────
 
@@ -585,8 +579,6 @@ async function pickDateFromPopup(page: Page, parts: DateParts): Promise<boolean>
   return false;
 }
 
-/** Max batch-scroll iterations when looking for not-yet-rendered elements. */
-const MAX_SCROLL_DISCOVERY_BATCHES = 2;
 
 export class ActionEngine {
   constructor(
@@ -1044,47 +1036,42 @@ export class ActionEngine {
       }
     }
 
-    // ── Scroll-Discovery: find not-yet-rendered elements ──────────────────────
-    // Only scroll when the page has very few elements (likely a loading/empty state)
-    // AND no keyword matches exist. When the page has many elements, the LLM can
-    // pick the right one even without keyword overlap — scrolling is wasteful.
+    // ── LLM decision loop ─────────────────────────────────────────────────────
+    // Ask the LLM first. If it signals `notFound: true` (target is not in the
+    // current element list), scroll one viewport-height once and re-ask. No
+    // blind pre-scrolling on keyword mismatch — that caused phantom scrolling
+    // on pages where instruction tokens (brand names, sort values, etc.) don't
+    // literally appear in role+name.
     let currentState = state;
-    const fewButSomeElements = currentState.elements.length > 0 && currentState.elements.length < 10;
-    if (fewButSomeElements && !hasRelevantElements(currentState.elements, resolvedInstruction)) {
-      this.log(2, `[Act] No relevant elements for "${resolvedInstruction}" — trying scroll discovery`);
-      for (let batch = 0; batch < MAX_SCROLL_DISCOVERY_BATCHES; batch++) {
-        // Batch: scroll 3 times quickly with short pauses between
-        for (let i = 0; i < 3; i++) {
-          await this.page.mouse.wheel(0, 600);
-          await this.page.waitForTimeout(200);
-        }
-        await waitForPageSettle(this.page, 500); // Shorter settle for scrolls
-        this.stateParser.invalidateCache();
-        currentState = await this.stateParser.parse();
-        if (hasRelevantElements(currentState.elements, resolvedInstruction)) {
-          this.log(2, `[Act] Found relevant element after batch ${batch + 1} scroll`);
-          break;
-        }
+    let decision!: {
+      candidates: { elementId: number; confidence?: number }[];
+      action: ActionType;
+      value?: string;
+      targetElementId?: number;
+      reasoning: string;
+      notFound?: boolean;
+    };
+    let candidateIds: number[] = [];
+    let preActionFingerprints: Map<number, PatternFingerprint> = new Map();
+
+    for (let attempt = 0; attempt <= MAX_NOT_FOUND_SCROLL_RETRIES; attempt++) {
+      const visibleElements = filterRelevantElements(currentState.elements, resolvedInstruction, this.maxElements);
+
+      if (currentState.elements.length > visibleElements.length) {
+        this.log(3, `[Act] chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
       }
-    }
 
-    const visibleElements = filterRelevantElements(currentState.elements, resolvedInstruction, this.maxElements);
+      // ── Pattern cache: cross-site learned widget interactions ───────────────
+      // Fingerprint the top relevant candidates ONCE, pre-action. The same
+      // fingerprint map feeds both lookup and post-success recording, so
+      // the key written on run N matches the key probed on run N+1 — state
+      // classes added by the action (e.g. focus indicators) don't drift
+      // the hash.
+      preActionFingerprints = await this.fingerprintTopCandidates(visibleElements);
+      const patternResult = await this.tryPatternCache(visibleElements, preActionFingerprints, resolvedInstruction);
+      if (patternResult) return patternResult;
 
-    if (currentState.elements.length > visibleElements.length) {
-      this.log(3, `[Act] chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
-    }
-
-    // ── Pattern cache: cross-site learned widget interactions ───────────────
-    // Fingerprint the top relevant candidates ONCE, pre-action. The same
-    // fingerprint map feeds both lookup and post-success recording, so
-    // the key written on run N matches the key probed on run N+1 — state
-    // classes added by the action (e.g. focus indicators) don't drift
-    // the hash.
-    const preActionFingerprints = await this.fingerprintTopCandidates(visibleElements);
-    const patternResult = await this.tryPatternCache(visibleElements, preActionFingerprints, resolvedInstruction);
-    if (patternResult) return patternResult;
-
-    const prompt = `
+      const prompt = `
       Current Page URL: ${currentState.url}
       Page Title: ${currentState.title}
       Instruction: "${resolvedInstruction}"
@@ -1112,50 +1099,64 @@ export class ActionEngine {
       If the action is "fill", "append", "press", "select", or "upload", provide the "value" field.
       If the action is "drag", provide the "targetElementId" field (the id of the drop target).
       For scroll actions without a target element, set elementId to 0 in the first candidate.
+
+      If NONE of the listed elements is plausibly the target of the instruction
+      (e.g. the target is likely off-screen, inside a collapsed section, or not
+      yet rendered), set "notFound": true and leave candidates empty. Do NOT
+      invent element IDs. The system will scroll once and re-ask.
     `;
 
-    const schema = {
-      type: 'object',
-      properties: {
-        candidates: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              elementId: { type: 'number' },
-              confidence: { type: 'number' },
+      const schema = {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                elementId: { type: 'number' },
+                confidence: { type: 'number' },
+              },
+              required: ['elementId'],
             },
-            required: ['elementId'],
           },
+          action: {
+            type: 'string',
+            enum: [
+              'click', 'double-click', 'right-click',
+              'fill', 'append', 'hover', 'press', 'select',
+              'upload', 'drag',
+              'scroll-down', 'scroll-up', 'scroll-to',
+            ],
+          },
+          value: { type: 'string' },
+          targetElementId: { type: 'number' },
+          reasoning: { type: 'string' },
+          notFound: { type: 'boolean' },
         },
-        action: {
-          type: 'string',
-          enum: [
-            'click', 'double-click', 'right-click',
-            'fill', 'append', 'hover', 'press', 'select',
-            'upload', 'drag',
-            'scroll-down', 'scroll-up', 'scroll-to',
-          ],
-        },
-        value: { type: 'string' },
-        targetElementId: { type: 'number' },
-        reasoning: { type: 'string' },
-      },
-      required: ['candidates', 'action', 'reasoning'],
-    };
+        required: ['candidates', 'action', 'reasoning'],
+      };
 
-    const decision = await this.gemini.generateStructuredData<{
-      candidates: { elementId: number; confidence?: number }[];
-      action: ActionType;
-      value?: string;
-      targetElementId?: number;
-      reasoning: string;
-    }>(prompt, schema);
+      decision = await this.gemini.generateStructuredData<typeof decision>(prompt, schema);
 
-    // Normalize: support old single-elementId responses gracefully
-    const candidateIds = decision.candidates?.length
-      ? decision.candidates.map(c => c.elementId)
-      : [(decision as any).elementId ?? 0];
+      // Normalize: support old single-elementId responses gracefully
+      candidateIds = decision.candidates?.length
+        ? decision.candidates.map(c => c.elementId)
+        : [(decision as any).elementId ?? 0];
+
+      if (decision.notFound && attempt < MAX_NOT_FOUND_SCROLL_RETRIES) {
+        this.log(2, `[Act] LLM: target not in current view — scrolling ${Math.round(NOT_FOUND_SCROLL_FRACTION * 100)}% viewport and re-asking`);
+        const vpHeight = await this.page.evaluate(() => window.innerHeight).catch(() => 720);
+        await this.page.mouse.wheel(0, Math.floor(vpHeight * NOT_FOUND_SCROLL_FRACTION));
+        await waitForPageSettle(this.page, 500);
+        this.stateParser.invalidateCache();
+        currentState = await this.stateParser.parse();
+        continue;
+      }
+      break;
+    }
+
+
 
     // Scroll actions without a target element are valid with elementId = 0
     const isScrollWithoutTarget =
