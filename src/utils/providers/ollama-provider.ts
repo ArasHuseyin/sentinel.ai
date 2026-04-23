@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -39,9 +39,19 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
+  async generateStructuredData<T>(
+    prompt: string,
+    schema: SchemaInput<T>,
+    options?: GenerateOptions
+  ): Promise<T> {
     return withRetry(async () => {
-      const systemPrompt = `You are a JSON API. Always respond with valid JSON that matches this schema: ${JSON.stringify(schema)}. No markdown, no explanation, only raw JSON.`;
+      // Ollama has no prompt-caching; we merge systemInstruction into the system
+      // message so the model still sees the agent rules alongside the JSON-format
+      // guidance. Token cost is unchanged — this keeps API parity with other providers.
+      const jsonGuide = `You are a JSON API. Always respond with valid JSON that matches this schema: ${JSON.stringify(schema)}. No markdown, no explanation, only raw JSON.`;
+      const systemPrompt = options?.systemInstruction
+        ? `${options.systemInstruction}\n\n${jsonGuide}`
+        : jsonGuide;
 
       const response = await fetch(`${this.baseURL}/api/chat`, {
         method: 'POST',

@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { LLMProvider, SchemaInput } from '../utils/llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput } from '../utils/llm-provider.js';
 
 // ─── Interface ────────────────────────────────────────────────────────────────
 
@@ -155,11 +155,17 @@ export function createCachingProvider(
       ? { analyzeImage: provider.analyzeImage.bind(provider) }
       : {}),
 
-    async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
-      const key = buildPromptCacheKey(prompt, schema);
+    async generateStructuredData<T>(
+      prompt: string,
+      schema: SchemaInput<T>,
+      options?: GenerateOptions
+    ): Promise<T> {
+      // Include systemInstruction in the cache key so two callers that share
+      // the same user prompt but different system prefixes don't collide.
+      const key = buildPromptCacheKey(prompt, { schema, sys: options?.systemInstruction ?? '' });
       const cached = cache.get(key);
       if (cached !== undefined) return cached as T;
-      const result = await provider.generateStructuredData<T>(prompt, schema);
+      const result = await provider.generateStructuredData<T>(prompt, schema, options);
       cache.set(key, result);
       return result;
     },

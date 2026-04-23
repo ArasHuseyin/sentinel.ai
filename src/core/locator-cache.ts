@@ -15,6 +15,10 @@ export interface ILocatorCache {
   get(url: string, instruction: string): CachedLocator | undefined;
   set(url: string, instruction: string, entry: CachedLocator): void;
   invalidate(url: string, instruction: string): void;
+  /** Forces any pending writes to disk and waits for completion. No-op for in-memory caches. */
+  flush?(): Promise<void>;
+  /** Releases resources (timers, exit handlers) and performs a final sync flush. */
+  close?(): void;
 }
 
 // ─── Key helpers ──────────────────────────────────────────────────────────────
@@ -79,13 +83,36 @@ export class InMemoryLocatorCache implements ILocatorCache {
 
 // ─── File-persisted implementation ───────────────────────────────────────────
 
+export interface FileLocatorCacheOptions {
+  /** Debounce window in ms for coalescing rapid set/invalidate into a single disk write. Default 150. */
+  debounceMs?: number;
+}
+
+/**
+ * Disk-backed cache with debounced, atomic writes.
+ *
+ * `set()` / `invalidate()` return immediately and schedule a write `debounceMs` later
+ * (150ms default). Writes go to `<filePath>.<pid>.tmp` and are then `rename`d into
+ * place — the rename is atomic on POSIX and NTFS, so readers never see a partial file.
+ * A `beforeExit` handler performs a final sync flush so debounced writes aren't lost
+ * when the process terminates normally. Call `flush()` to wait for pending writes,
+ * or `close()` to perform a final sync flush and detach the exit handler.
+ */
 export class FileLocatorCache implements ILocatorCache {
   private store = new Map<string, CachedLocator>();
   private readonly filePath: string;
+  private readonly debounceMs: number;
+  private writeTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingFlush: Promise<void> = Promise.resolve();
+  private closed = false;
+  private exitHandler: (() => void) | null = null;
 
-  constructor(filePath: string) {
+  constructor(filePath: string, options: FileLocatorCacheOptions = {}) {
     this.filePath = filePath;
+    this.debounceMs = options.debounceMs ?? 150;
     this.load();
+    this.exitHandler = () => { this.flushSync(); };
+    process.once('beforeExit', this.exitHandler);
   }
 
   private load(): void {
@@ -100,10 +127,68 @@ export class FileLocatorCache implements ILocatorCache {
     }
   }
 
-  private flush(): void {
+  private schedule(): void {
+    if (this.closed) return;
+    if (this.writeTimer) clearTimeout(this.writeTimer);
+    this.writeTimer = setTimeout(() => {
+      this.writeTimer = null;
+      this.pendingFlush = this.pendingFlush
+        .catch(() => { /* reset chain; next write starts fresh */ })
+        .then(() => this.writeAtomic());
+    }, this.debounceMs);
+    // Don't keep the event loop alive just to flush the cache — the exit hook handles it.
+    this.writeTimer.unref?.();
+  }
+
+  private async writeAtomic(): Promise<void> {
     const dir = path.dirname(this.filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.filePath, JSON.stringify(Object.fromEntries(this.store), null, 2), 'utf-8');
+    const tmpPath = `${this.filePath}.${process.pid}.tmp`;
+    const payload = JSON.stringify(Object.fromEntries(this.store), null, 2);
+    try {
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(tmpPath, payload, 'utf-8');
+      await fs.promises.rename(tmpPath, this.filePath);
+    } catch (err) {
+      try { await fs.promises.unlink(tmpPath); } catch { /* stale tmp already gone */ }
+      throw err;
+    }
+  }
+
+  private flushSync(): void {
+    if (this.writeTimer) {
+      clearTimeout(this.writeTimer);
+      this.writeTimer = null;
+    }
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const tmpPath = `${this.filePath}.${process.pid}.sync.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(Object.fromEntries(this.store), null, 2), 'utf-8');
+      fs.renameSync(tmpPath, this.filePath);
+    } catch {
+      // Best-effort; final-flush errors are swallowed to avoid blocking process exit
+    }
+  }
+
+  async flush(): Promise<void> {
+    if (this.writeTimer) {
+      clearTimeout(this.writeTimer);
+      this.writeTimer = null;
+    }
+    this.pendingFlush = this.pendingFlush
+      .catch(() => { /* reset */ })
+      .then(() => this.writeAtomic());
+    return this.pendingFlush;
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.exitHandler) {
+      process.removeListener('beforeExit', this.exitHandler);
+      this.exitHandler = null;
+    }
+    this.flushSync();
   }
 
   get(url: string, instruction: string): CachedLocator | undefined {
@@ -112,12 +197,12 @@ export class FileLocatorCache implements ILocatorCache {
 
   set(url: string, instruction: string, entry: CachedLocator): void {
     this.store.set(buildCacheKey(url, instruction), entry);
-    this.flush();
+    this.schedule();
   }
 
   invalidate(url: string, instruction: string): void {
     this.store.delete(buildCacheKey(url, instruction));
-    this.flush();
+    this.schedule();
   }
 }
 

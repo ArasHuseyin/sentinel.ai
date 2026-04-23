@@ -8,6 +8,20 @@ import { z } from 'zod';
 export type SchemaInput<T> = z.ZodType<T> | Record<string, any>;
 
 /**
+ * Optional per-call options accepted by `generateStructuredData`.
+ *
+ * `systemInstruction`: static guidance (agent rules, response format, action catalog)
+ * that's identical across calls within a session. Keeping this stable enables
+ * provider-side prompt caching: Gemini's implicit caching, OpenAI's automatic
+ * prompt caching (prompts >= 1024 tokens, 50% discount on hits), and Anthropic's
+ * `cache_control`. Callers should put everything that *doesn't* change with the
+ * current page state here.
+ */
+export interface GenerateOptions {
+  systemInstruction?: string;
+}
+
+/**
  * Unified interface for all LLM providers.
  * Implement this to add support for any LLM backend.
  */
@@ -15,7 +29,11 @@ export interface LLMProvider {
   /**
    * Generate structured JSON data conforming to the given schema.
    */
-  generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T>;
+  generateStructuredData<T>(
+    prompt: string,
+    schema: SchemaInput<T>,
+    options?: GenerateOptions
+  ): Promise<T>;
 
   /**
    * Generate a plain text response.

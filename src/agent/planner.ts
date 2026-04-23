@@ -12,6 +12,40 @@ export interface PlannedStep {
 }
 
 /**
+ * Stable system instruction for the planner. Extracted as a module-level constant
+ * so every `planNextStep` call sends the identical text as the system prefix —
+ * this is what enables Gemini's implicit prompt caching (and OpenAI's automatic
+ * prompt caching, Anthropic's `cache_control`) to discount the shared prefix on
+ * subsequent calls. Keep this block free of per-call variables.
+ */
+const PLANNER_SYSTEM_INSTRUCTION = `
+You are an autonomous browser agent. Decide the SINGLE next step that brings the user closer to their goal.
+
+Rules:
+- If the current URL already matches the goal topic (e.g. you're on an insurance page and the goal is insurance), you are already on the right page — do NOT click navigation links. Instead, interact with the form/content directly.
+- If form fields are listed in the "Form fields" section, fill the ones relevant to the goal BEFORE clicking any buttons. Fill top-to-bottom, one at a time. Skip optional or irrelevant fields.
+- Buttons that display a current value (like a brand name, category, or date) next to a label are dropdown selectors — click them to open the dropdown and change the value.
+- Many forms are multi-step: after filling all visible fields, click the submit/next/proceed button to advance. The remaining fields will appear on the next page.
+- Date pickers: click the date input to open the calendar, then navigate months with prev/next arrows if needed, then click the target day. Do NOT try to type dates into date picker fields — always use the calendar UI.
+- Sliders (role=slider): use the fill action with a numeric value to set the slider position. Do NOT try to drag sliders.
+- If a form field is optional and not mentioned in the goal, skip it and click the submit/next button.
+- Never type URLs into search fields. You are already on the correct page — use the search and form fields for their intended purpose.
+- If a previous step failed or had no effect, try a completely different approach — do NOT repeat the same action.
+- If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.
+
+Respond with:
+- type: "act" for browser actions (click, fill, scroll, etc.), "extract" for extracting structured data from the current page
+- instruction: a clear natural language instruction for the next action (e.g. "Click the search button", "Fill 'laptop' into the search field") or extraction (e.g. "Get all product names and prices")
+- reasoning: why this is the right next step
+- isGoalComplete: true only if the goal has been fully achieved
+- extractionSchema: (optional, only when type is "extract") a JSON schema object describing the structure of data to extract
+`.trim();
+
+const REFLECT_SYSTEM_INSTRUCTION = `
+You are an autonomous browser agent evaluating whether a goal has been achieved. Answer with a single boolean and a short reason.
+`.trim();
+
+/**
  * Uses Gemini to plan the next action step based on the current page state and history.
  */
 export class Planner {
@@ -24,7 +58,7 @@ export class Planner {
     pageDescription?: string
   ): Promise<PlannedStep> {
     const prompt = `
-You are an autonomous browser agent. Your goal is: "${goal}"
+Goal: "${goal}"
 
 Current page:
 - URL: ${state.url}
@@ -45,7 +79,6 @@ ${(() => {
     const isUnfilled = (e: typeof formFields[0]) =>
       e.value === undefined || e.value === '' ||
       /auswählen|select|choose|bitte|please|suchen|search/i.test(e.value);
-    const firstUnfilledIdx = formFields.findIndex(isUnfilled);
     const fieldLines = formFields.map((e) => {
       return isUnfilled(e) ? fmtEl(e, '○ ') : fmtEl(e, '● ');
     });
@@ -71,28 +104,7 @@ ${(() => {
 
 Steps taken so far:
 ${memory.getSummary()}
-
-Rules:
-- If the current URL already matches the goal topic (e.g. you're on an insurance page and the goal is insurance), you are already on the right page — do NOT click navigation links. Instead, interact with the form/content directly.
-- If form fields are listed in the "Form fields" section above, fill the ones relevant to the goal BEFORE clicking any buttons. Fill top-to-bottom, one at a time. Skip optional or irrelevant fields.
-- Buttons that display a current value (like a brand name, category, or date) next to a label are dropdown selectors — click them to open the dropdown and change the value.
-- Many forms are multi-step: after filling all visible fields, click the submit/next/proceed button to advance. The remaining fields will appear on the next page.
-- Date pickers: click the date input to open the calendar, then navigate months with prev/next arrows if needed, then click the target day. Do NOT try to type dates into date picker fields — always use the calendar UI.
-- Sliders (role=slider): use the fill action with a numeric value to set the slider position. Do NOT try to drag sliders.
-- If a form field is optional and not mentioned in the goal, skip it and click the submit/next button.
-- Never type URLs into search fields. You are already on the correct page — use the search and form fields for their intended purpose.
-- If a previous step failed or had no effect, try a completely different approach — do NOT repeat the same action.
-- If the goal is already fully achieved based on the history and current page, set isGoalComplete to true.
-
-Decide the SINGLE next step to take.
-
-Respond with:
-- type: "act" for browser actions (click, fill, scroll, etc.), "extract" for extracting structured data from the current page
-- instruction: a clear natural language instruction for the next action (e.g. "Click the search button", "Fill 'laptop' into the search field") or extraction (e.g. "Get all product names and prices")
-- reasoning: why this is the right next step
-- isGoalComplete: true only if the goal has been fully achieved
-- extractionSchema: (optional, only when type is "extract") a JSON schema object describing the structure of data to extract
-    `;
+    `.trim();
 
     const schema = {
       type: 'object',
@@ -106,13 +118,13 @@ Respond with:
       required: ['type', 'instruction', 'reasoning', 'isGoalComplete'],
     };
 
-    return await this.gemini.generateStructuredData<PlannedStep>(prompt, schema);
+    return await this.gemini.generateStructuredData<PlannedStep>(prompt, schema, {
+      systemInstruction: PLANNER_SYSTEM_INSTRUCTION,
+    });
   }
 
   async reflect(goal: string, memory: AgentMemory, finalState: SimplifiedState): Promise<boolean> {
     const prompt = `
-You are an autonomous browser agent evaluating whether a goal has been achieved.
-
 Goal: "${goal}"
 
 Current page:
@@ -122,8 +134,8 @@ Current page:
 Steps taken:
 ${memory.getSummary()}
 
-Has the goal been fully and successfully achieved? Answer with a single boolean.
-    `;
+Has the goal been fully and successfully achieved?
+    `.trim();
 
     const schema = {
       type: 'object',
@@ -137,7 +149,7 @@ Has the goal been fully and successfully achieved? Answer with a single boolean.
     const result = await this.gemini.generateStructuredData<{
       goalAchieved: boolean;
       reason: string;
-    }>(prompt, schema);
+    }>(prompt, schema, { systemInstruction: REFLECT_SYSTEM_INSTRUCTION });
 
     return result.goalAchieved;
   }

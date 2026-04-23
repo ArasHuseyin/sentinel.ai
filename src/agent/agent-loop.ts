@@ -22,6 +22,13 @@ function uniqueKey(slug: string, map: Record<string, unknown>): string {
 export interface AgentRunOptions {
   maxSteps?: number;
   onStep?: (step: AgentStepEvent) => void;
+  /**
+   * Hard wall-clock cap in milliseconds. Checked at the start of each step; if
+   * exceeded the loop exits cleanly with whatever progress was made rather than
+   * pushing past an external deadline and logging contradictory "Goal achieved"
+   * messages. When omitted, only `maxSteps` bounds the run.
+   */
+  timeoutMs?: number;
 }
 
 export interface AgentStepEvent {
@@ -133,8 +140,33 @@ export class AgentLoop {
    *     accept-intent).
    */
   private hasBlocker(state: SimplifiedState): boolean {
-    const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
-    if (hasModal) return true;
+    // Don't treat an intentionally-opened listbox/menu popover as a blocker —
+    // it's the user's own interaction state (the planner just clicked a
+    // combobox to see options). Running recovery on it would dismiss the
+    // popover right before the next step tries to pick an option from it.
+    const hasOpenListbox = state.elements.some(e =>
+      (e.role === 'listbox' || e.role === 'option' || e.role === 'menuitem') &&
+      (e.region === 'popup' || e.region === 'modal')
+    );
+    if (hasOpenListbox) return false;
+
+    // A popup/modal region only counts as a blocker when it contains at
+    // least one interactive control. Purely informational banners (delivery
+    // toasts, "we ship to X" notices, status indicators) have no buttons or
+    // inputs and cannot be dismissed — pressing Escape or removing the
+    // widget would only close OUR own popovers on subsequent steps.
+    const INTERACTIVE_ROLES = new Set([
+      'button', 'link', 'textbox', 'combobox', 'searchbox',
+      'checkbox', 'radio', 'switch', 'menuitem', 'tab',
+    ]);
+    const hasInteractiveModal = state.elements.some(e =>
+      (e.region === 'modal' || e.region === 'popup') &&
+      INTERACTIVE_ROLES.has(e.role)
+    );
+    if (hasInteractiveModal) return true;
+
+    // Standalone accept/consent control — cookie banners sometimes aren't
+    // regioned as modal but their accept button is still prominent.
     return state.elements.some(e =>
       (e.role === 'button' || e.role === 'link') &&
       ACCEPT_INTENT_PATTERN.test(e.name) &&
@@ -161,23 +193,45 @@ export class AgentLoop {
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<AgentResult> {
     const maxSteps = options.maxSteps ?? 15;
+    const timeoutMs = options.timeoutMs;
+    const startTime = Date.now();
     const stepEvents: AgentStepEvent[] = [];
     const collectedSelectors: Record<string, string> = {};
+    let timedOut = false;
     this.memory.clear();
     this.recoveryAttempts.clear();
 
-    this.logger.info(`🎯 Goal: "${goal}" (max ${maxSteps} steps)`, { goal, maxSteps });
+    this.logger.info(
+      `🎯 Goal: "${goal}" (max ${maxSteps} steps${timeoutMs ? `, ${Math.round(timeoutMs / 1000)}s budget` : ''})`,
+      { goal, maxSteps, ...(timeoutMs ? { timeoutMs } : {}) }
+    );
 
     let stepNumber = 0;
     let consecutiveFailures = 0;
     let extractedData: any = undefined;
 
     while (stepNumber < maxSteps) {
+      // Timeout guard: check before each step. Exits cleanly so the caller gets
+      // an honest "stopped due to timeout" message instead of a late "Goal
+      // achieved" log racing with an external wrapper's FAIL.
+      if (timeoutMs !== undefined && Date.now() - startTime >= timeoutMs) {
+        this.logger.warn(
+          `⏱️  Timeout budget exceeded (${Math.round(timeoutMs / 1000)}s) — aborting after ${stepNumber} step(s).`,
+          { elapsedMs: Date.now() - startTime, timeoutMs, stepNumber }
+        );
+        timedOut = true;
+        break;
+      }
       stepNumber++;
       this.logger.info(`📍 Step ${stepNumber}/${maxSteps}`, { stepNumber, maxSteps });
 
-      // 1. Parse current state
-      this.stateParser.invalidateCache();
+      // 1. Parse current state. Don't force-invalidate the cache here — the
+      //    state-parser's 2s TTL already guards freshness, and any DOM-mutating
+      //    action in act.ts explicitly invalidates post-action. Skipping the
+      //    invalidate lets consecutive fast steps reuse the post-verification
+      //    parse (~50–150ms saved per step). If the previous parse is older
+      //    than the TTL the parser re-fetches automatically, so correctness
+      //    is preserved.
       let state = await this.stateParser.parse();
 
       // 1b. Proactive blocker dismissal — state-based, not step-based.
@@ -193,10 +247,28 @@ export class AgentLoop {
           this.recoveryAttempts.set(fp, attempts + 1);
           const recovered = await this.actionEngine.tryRecoverFromBlocker(state);
           if (recovered) {
-            // Scroll to top after blocker removal — the main content/form
-            // is almost always at the top of the page after overlays are gone.
+            // Scroll to top after blocker removal — the main content/form is
+            // almost always at the top of the page after overlays are gone.
+            // Guard: skip if a listbox/menu popover is currently visible.
+            // Scrolling closes most custom dropdowns (position-recalc or
+            // explicit `window.scroll` listeners), and the next step's
+            // interaction needs the popover to stay open.
             if (this.page) {
-              await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+              const popoverOpen = await this.page.evaluate(() => {
+                const nodes = document.querySelectorAll(
+                  '[role="option"], [role="listbox"], [role="menu"]'
+                );
+                for (const n of Array.from(nodes) as HTMLElement[]) {
+                  if (n.offsetParent !== null) {
+                    const r = n.getBoundingClientRect();
+                    if (r.width >= 1 && r.height >= 1) return true;
+                  }
+                }
+                return false;
+              }).catch(() => false);
+              if (!popoverOpen) {
+                await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+              }
             }
             this.stateParser.invalidateCache();
             state = await this.stateParser.parse();
@@ -330,33 +402,62 @@ export class AgentLoop {
 
               const isFillLike = /fill|append|press|type|select/i.test(r.action ?? '');
 
+              // Structural progress signals — shared by click AND fill/select.
+              // Computing these unconditionally lets fill/select accept any
+              // observable change (navigation, list refresh, focus shift) as
+              // success, not only a value-diff. Crucial for selects that trigger
+              // page transitions or AJAX list updates without writing back to
+              // the bound input element.
+              const urlChanged = state.url !== stateAfter.url;
+              const titleChanged = state.title !== stateAfter.title;
+              const countChanged = state.elements.length !== stateAfter.elements.length;
+
+              const fingerprintLine = (e: typeof state.elements[number]) =>
+                `${e.role}|${e.name}|${e.region ?? ''}|${e.value ?? ''}|${e.error ?? ''}|${e.state?.focused ? 'F' : ''}${e.state?.checked ?? ''}${e.state?.disabled ? 'D' : ''}`;
+
+              // Count element-level fingerprint diffs by index. A single diff is
+              // usually incidental noise (ad re-render, live counter, animated label);
+              // a real click typically moves focus AND toggles target state, or opens
+              // a menu that adds rows — both produce ≥2 diffs (or trigger count change).
+              const beforeLines = state.elements.map(fingerprintLine);
+              const afterLines = stateAfter.elements.map(fingerprintLine);
+              let diffCount = 0;
+              const maxLen = Math.max(beforeLines.length, afterLines.length);
+              for (let i = 0; i < maxLen; i++) {
+                if (beforeLines[i] !== afterLines[i]) diffCount++;
+              }
+
+              // Also accept interactive-state flips regardless of count — those are
+              // direct interaction signals (focus move, checkbox toggle, disable).
+              let interactionFlip = false;
+              const minLen = Math.min(state.elements.length, stateAfter.elements.length);
+              for (let i = 0; i < minLen; i++) {
+                const b = state.elements[i]?.state;
+                const a = stateAfter.elements[i]?.state;
+                if (b?.focused !== a?.focused || b?.checked !== a?.checked || b?.disabled !== a?.disabled) {
+                  interactionFlip = true;
+                  break;
+                }
+              }
+
+              const structuralChange = urlChanged || titleChanged || countChanged || interactionFlip || diffCount >= 2;
+
               if (isFillLike) {
-                // For fill/select actions: check if any element value changed
+                // Value-diff is the strongest signal for fill/select, but not the
+                // only one: selects that submit a form or trigger AJAX may leave
+                // the input value unchanged while still producing real progress.
+                // Accept either signal.
                 const valuesBefore = state.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
                 const valuesAfter = stateAfter.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
-                if (valuesBefore === valuesAfter) {
-                  this.logger.warn(`Fill/select action reported success but no input values changed — treating as failed`);
+                const valueChanged = valuesBefore !== valuesAfter;
+                if (!valueChanged && !structuralChange) {
+                  this.logger.warn(`Fill/select action reported success but page state and input values unchanged — treating as failed`);
                   span.setAttributes({ 'sentinel.success': false });
-                  return { success: false, message: `${r.message} (but no input values changed)`, action: r.action ?? planned.instruction };
+                  return { success: false, message: `${r.message} (but page state and input values unchanged)`, action: r.action ?? planned.instruction };
                 }
               } else {
-                // For click actions: check multiple signals for state change.
-                // The old check was too strict (exact element-name match) and
-                // missed visual-only changes like focus shifts, tab selections,
-                // and attribute changes that don't alter element names.
-                const urlChanged = state.url !== stateAfter.url;
-                const titleChanged = state.title !== stateAfter.title;
-                const countChanged = state.elements.length !== stateAfter.elements.length;
-
-                // Build compact fingerprints of both states for comparison.
-                // Includes name, role, region, value, and key state flags.
-                const fingerprint = (els: typeof state.elements) =>
-                  els.map(e => `${e.role}|${e.name}|${e.region ?? ''}|${e.value ?? ''}|${e.error ?? ''}|${e.state?.focused ? 'F' : ''}${e.state?.checked ?? ''}${e.state?.disabled ? 'D' : ''}`).join('\n');
-
-                const unchanged = !urlChanged && !titleChanged && !countChanged &&
-                  fingerprint(state.elements) === fingerprint(stateAfter.elements);
-
-                if (unchanged) {
+                // Click: structural change is the only signal available.
+                if (!structuralChange) {
                   this.logger.warn(`Action reported success but page state unchanged — treating as failed`);
                   span.setAttributes({ 'sentinel.success': false });
                   return { success: false, message: `${r.message} (but page state unchanged)`, action: r.action ?? planned.instruction };
@@ -394,7 +495,9 @@ export class AgentLoop {
       stepEvents.push(event);
       options.onStep?.(event);
 
-      // 5. Record in memory
+      // 5. Record in memory. For extract steps, include the extracted data so
+      // the planner can see what's already known and mark the goal complete
+      // instead of re-extracting the same content under varying field names.
       this.memory.add({
         stepNumber,
         instruction: planned.instruction,
@@ -403,6 +506,7 @@ export class AgentLoop {
         pageUrl: state.url,
         pageTitle: state.title,
         timestamp: Date.now(),
+        ...(stepType === 'extract' && stepData !== undefined ? { data: stepData } : {}),
       });
 
       if (!result.success) {
@@ -438,34 +542,84 @@ export class AgentLoop {
         const actionTargets = recentHistory.map(s => `${extractAction(s.action)}:${extractTarget(s.action)}`);
         const targetLoop = actionTargets[0] !== ':' && new Set(actionTargets).size === 1;
 
+        // Same TARGET 3 times regardless of action alternation. Catches the
+        // click→select→click→select… pattern on a stuck dropdown that `targetLoop`
+        // misses (its Set has size > 1 because actions differ). We additionally
+        // require at least one failed step in the window so genuine multi-step
+        // interactions on the same element (focus + fill + press) aren't blocked.
+        const targetsOnly = recentHistory.map(s => extractTarget(s.action));
+        const anyFailed = recentHistory.some(s => !s.success);
+        const stuckOnTarget =
+          targetsOnly[0] !== '' &&
+          new Set(targetsOnly).size === 1 &&
+          anyFailed;
+
         // Exact instruction match = loop (regardless of target)
         const exactLoop = new Set(recentHistory.map(s => s.instruction)).size === 1;
 
-        if (exactLoop || targetLoop) {
-          this.logger.warn(
-            `❌ Aborting: instruction loop detected — "${recentHistory[0]?.instruction}" repeated 3 times without progress.`,
-            { loopInstruction: recentHistory[0]?.instruction }
-          );
+        // Extract-loop: three consecutive extract steps returning semantically
+        // identical data. The planner tends to rephrase the schema with new
+        // field names (`confirmation_message` → `confirmation_text` → …) which
+        // defeats `exactLoop`, but the payload text stays the same. Compare the
+        // concatenated string values of each object to catch this class of loop.
+        const extractDataFingerprint = (data: unknown): string | null => {
+          if (data === undefined || data === null) return null;
+          if (typeof data === 'string') return data.trim().toLowerCase();
+          if (typeof data === 'object') {
+            // Concatenate the *values* (not keys) so differently-named fields
+            // with the same content produce the same fingerprint.
+            const values = Object.values(data as Record<string, unknown>)
+              .map(v => (typeof v === 'string' ? v : JSON.stringify(v)))
+              .join('|')
+              .trim()
+              .toLowerCase();
+            return values.length > 0 ? values : null;
+          }
+          return JSON.stringify(data).trim().toLowerCase();
+        };
+        const extractFingerprints = recentHistory.map(s => extractDataFingerprint(s.data));
+        const extractLoop =
+          extractFingerprints.every(fp => fp !== null) &&
+          new Set(extractFingerprints).size === 1;
+
+        if (exactLoop || targetLoop || extractLoop || stuckOnTarget) {
+          const reason = extractLoop
+            ? 'extract loop detected — same data returned 3 times under varying schemas'
+            : stuckOnTarget
+              ? `stuck on target "${targetsOnly[0]}" — 3 actions on same element with at least one failure`
+              : `instruction loop detected — "${recentHistory[0]?.instruction}" repeated 3 times without progress`;
+          this.logger.warn(`❌ Aborting: ${reason}.`, {
+            loopInstruction: recentHistory[0]?.instruction,
+            extractLoop,
+            stuckOnTarget,
+          });
           break;
         }
       }
     }
 
-    // 6. Final reflection – did we actually achieve the goal?
-    this.stateParser.invalidateCache();
-    const finalState = await this.stateParser.parse();
+    // 6. Final reflection – did we actually achieve the goal? Skip the reflect
+    // LLM call entirely on timeout: reflect needs a real signal to be meaningful,
+    // and logging a late "Goal achieved" after an external wrapper has already
+    // reported FAIL is worse than a clean timeout message.
     let goalAchieved = false;
-    try {
-      goalAchieved = await this.planner.reflect(goal, this.memory, finalState);
-    } catch {
-      goalAchieved = false;
+    if (!timedOut) {
+      this.stateParser.invalidateCache();
+      const finalState = await this.stateParser.parse();
+      try {
+        goalAchieved = await this.planner.reflect(goal, this.memory, finalState);
+      } catch {
+        goalAchieved = false;
+      }
     }
 
-    const message = goalAchieved
-      ? `Goal achieved in ${stepNumber} step(s).`
-      : `Agent stopped after ${stepNumber} step(s) without fully achieving the goal.`;
+    const message = timedOut
+      ? `Agent stopped after ${stepNumber} step(s) due to timeout.`
+      : goalAchieved
+        ? `Goal achieved in ${stepNumber} step(s).`
+        : `Agent stopped after ${stepNumber} step(s) without fully achieving the goal.`;
 
-    this.logger.info(`${goalAchieved ? '✅' : '⚠️ '} ${message}`, { goalAchieved });
+    this.logger.info(`${goalAchieved ? '✅' : '⚠️ '} ${message}`, { goalAchieved, ...(timedOut ? { timedOut: true } : {}) });
 
     return {
       success: goalAchieved,

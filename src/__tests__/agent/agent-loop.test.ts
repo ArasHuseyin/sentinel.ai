@@ -78,6 +78,210 @@ function makePlannerLLM(overrides: {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('AgentLoop', () => {
+  describe('post-action verification noise threshold', () => {
+    // These tests verify the new diff-count threshold: a single element-fingerprint
+    // diff without an interactive-state flip is treated as incidental noise
+    // (ad re-render, live counter, etc.) and the action is marked as failed.
+    // Multi-diff changes or any focused/checked/disabled flip pass through.
+
+    const el = (id: number, name: string, extra: any = {}) => ({
+      id, role: 'button', name, boundingClientRect: { x: 0, y: 0, width: 10, height: 10 }, ...extra,
+    });
+
+    function makePostActVerificationParser(before: SimplifiedState, after: SimplifiedState) {
+      let call = 0;
+      return {
+        parse: jest.fn(async () => {
+          // Agent loop: 1st call = pre-step read, 2nd call = post-action verification.
+          // From 3rd call onward (next step's pre-read), keep returning "after" so
+          // the loop can progress to goal-complete and terminate.
+          call++;
+          if (call === 1) return before;
+          return after;
+        }),
+        invalidateCache: jest.fn(),
+      };
+    }
+
+    it('treats a single-element name change as noise and marks action as failed', async () => {
+      const before = makeState({ elements: [el(0, 'Submit'), el(1, 'Ad: Buy now')] });
+      const after = makeState({
+        elements: [el(0, 'Submit'), el(1, 'Ad: Flash sale ends soon')], // only id 1's name drifted
+      });
+      const llm = makePlannerLLM({ instruction: 'click submit' });
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makePostActVerificationParser(before, after);
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('test', { maxSteps: 1 });
+
+      // Action reported success but only 1 element diff + no interaction flip → unchanged.
+      expect(result.history.some(s => !s.success)).toBe(true);
+    });
+
+    it('passes when two or more element fingerprints differ', async () => {
+      const before = makeState({ elements: [el(0, 'Submit'), el(1, 'Cancel'), el(2, 'Help')] });
+      const after = makeState({
+        elements: [el(0, 'Submit', { state: { focused: true } }), el(1, 'Cancel (loading)'), el(2, 'Help')],
+      });
+      const llm = makePlannerLLM({ instruction: 'click submit' });
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makePostActVerificationParser(before, after);
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('test', { maxSteps: 1 });
+
+      // Two diffs (focus on 0, name drift on 1) → real change, action passes.
+      expect(result.history.every(s => s.success)).toBe(true);
+    });
+
+    it('passes on a single focus flip even without other diffs', async () => {
+      const before = makeState({ elements: [el(0, 'Submit'), el(1, 'Cancel')] });
+      const after = makeState({
+        elements: [el(0, 'Submit', { state: { focused: true } }), el(1, 'Cancel')],
+      });
+      const llm = makePlannerLLM({ instruction: 'click submit' });
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makePostActVerificationParser(before, after);
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('test', { maxSteps: 1 });
+
+      // Interaction flip (focused true→false or false→true) is always a real signal.
+      expect(result.history.every(s => s.success)).toBe(true);
+    });
+
+    it('accepts URL change as success signal for select/fill actions (navigation-triggering dropdowns)', async () => {
+      // Scenario: `<select>` on a page whose onchange triggers navigation to a
+      // sorted/filtered URL. The select's value may not appear in the post-parse
+      // AOM the same way — new page, new element IDs — but the URL change is a
+      // clear signal the select had effect. Old behaviour only checked value
+      // diffs → flagged this as "no input values changed" falsely.
+      const before = makeState({ url: 'https://shop.example/list', elements: [el(0, 'Sort by')] });
+      const after = makeState({
+        url: 'https://shop.example/list?sort=rating',
+        elements: [el(0, 'Sort by')],
+      });
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async () => ({
+          type: 'act',
+          instruction: "Select 'Rating' from the sort dropdown",
+          reasoning: '',
+          isGoalComplete: false,
+        })) as any,
+        generateText: jest.fn(async () => ''),
+      };
+      // Action engine returns an action string starting with "select" so the
+      // isFillLike branch runs.
+      const actionEngine = {
+        act: jest.fn(async () => ({ success: true, message: 'done', action: 'select on "Sort by"' })),
+        tryRecoverFromBlocker: jest.fn(async () => false),
+      };
+      const stateParser = makePostActVerificationParser(before, after);
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('sort list', { maxSteps: 1 });
+
+      // URL changed → select action counts as successful.
+      expect(result.history.every(s => s.success)).toBe(true);
+    });
+
+    it('still fails select when neither value nor any structural signal changed', async () => {
+      // The safety net must remain: if `select` really did nothing (no value
+      // diff, no URL/title/count change, no fingerprint diff, no interaction
+      // flip), the step is correctly marked as failed.
+      const before = makeState({ elements: [el(0, 'Sort by'), el(1, 'Unrelated')] });
+      const after = makeState({ elements: [el(0, 'Sort by'), el(1, 'Unrelated')] });
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async () => ({
+          type: 'act',
+          instruction: "Select 'Rating' from the sort dropdown",
+          reasoning: '',
+          isGoalComplete: false,
+        })) as any,
+        generateText: jest.fn(async () => ''),
+      };
+      const actionEngine = {
+        act: jest.fn(async () => ({ success: true, message: 'done', action: 'select on "Sort by"' })),
+        tryRecoverFromBlocker: jest.fn(async () => false),
+      };
+      const stateParser = makePostActVerificationParser(before, after);
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('sort list', { maxSteps: 1 });
+
+      expect(result.history.some(s => !s.success)).toBe(true);
+    });
+  });
+
+  describe('internal timeout', () => {
+    it('exits cleanly before maxSteps when timeoutMs is exceeded', async () => {
+      // Vary the instruction per call so instruction-loop detection doesn't mask
+      // the timeout by aborting earlier. Planner sleeps 150ms so only 1–2 iterations
+      // fit within a 250ms budget.
+      let call = 0;
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async () => {
+          call++;
+          await new Promise(resolve => setTimeout(resolve, 150));
+          return {
+            type: 'act',
+            instruction: `step ${call}`,
+            reasoning: '',
+            isGoalComplete: false,
+            goalAchieved: false,
+            reason: '',
+          };
+        }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makeAlternatingStateParser();
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('long goal', { maxSteps: 50, timeoutMs: 250 });
+
+      // Timeout fires before maxSteps and before any loop-detection can kick in.
+      expect(result.totalSteps).toBeLessThan(10);
+      expect(result.goalAchieved).toBe(false);
+      expect(result.message).toContain('timeout');
+    });
+
+    it('does not invoke planner.reflect on timeout (no phantom "Goal achieved")', async () => {
+      const reflectCalled = { count: 0 };
+      let call = 0;
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async (prompt: string) => {
+          // Reflect prompt contains this marker; planner prompt does not.
+          if (/Has the goal been fully and successfully achieved/i.test(prompt)) {
+            reflectCalled.count++;
+            return { goalAchieved: true, reason: 'lie' };
+          }
+          call++;
+          await new Promise(resolve => setTimeout(resolve, 150));
+          return {
+            type: 'act',
+            instruction: `step ${call}`,
+            reasoning: '',
+            isGoalComplete: false,
+          };
+        }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makeAlternatingStateParser();
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('timeout goal', { maxSteps: 50, timeoutMs: 250 });
+
+      // On timeout, reflect must be skipped so it can't contradict the FAIL by
+      // saying `goalAchieved: true` after the external wrapper already reported.
+      expect(reflectCalled.count).toBe(0);
+      expect(result.goalAchieved).toBe(false);
+      expect(result.message).toContain('timeout');
+    });
+  });
+
   describe('instruction-loop detection', () => {
     it('aborts after the same instruction repeats 3 times in a row', async () => {
       const llm = makePlannerLLM({ instruction: 'click the button' });
@@ -92,6 +296,100 @@ describe('AgentLoop', () => {
       expect(result.totalSteps).toBe(3);
       expect(result.goalAchieved).toBe(false);
       expect(actionEngine.act).toHaveBeenCalledTimes(3);
+    });
+
+    it('aborts when stuck on the same target across alternating actions (click→select→click loop)', async () => {
+      // Reproduction of the real-world dropdown-loop bug: planner keeps
+      // alternating between clicking the combobox and calling select on it,
+      // never making progress. Each attempt fails (verifier says no change).
+      // Existing `exactLoop` misses because instructions vary, `targetLoop`
+      // misses because actions alternate. `stuckOnTarget` catches this:
+      // same TARGET in 3-step window + at least one failed step → abort.
+      let call = 0;
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async () => {
+          call++;
+          // Alternate action type so neither exactLoop nor targetLoop fires.
+          const action = call % 2 === 1 ? 'click' : 'select';
+          return {
+            type: 'act',
+            instruction: `${action} variant #${call} on sort dropdown`,
+            reasoning: '',
+            isGoalComplete: false,
+          };
+        }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+      // Action engine always returns success on a fixed target name, but the
+      // post-action state doesn't change → outer verifier marks each step as
+      // failed (success=false in memory).
+      let actCall = 0;
+      const actionEngine = {
+        act: jest.fn(async () => {
+          actCall++;
+          const action = actCall % 2 === 1 ? 'click' : 'select';
+          return { success: true, message: 'done', action: `${action} on "Sort by"` };
+        }),
+        tryRecoverFromBlocker: jest.fn(async () => false),
+      };
+      // Unchanged state across calls → verifier marks each step as failed.
+      const stableState = makeState({ elements: [{ id: 0, role: 'combobox', name: 'Sort by', boundingClientRect: { x: 0, y: 0, width: 10, height: 10 } }] });
+      const stateParser = {
+        parse: jest.fn(async () => stableState),
+        invalidateCache: jest.fn(),
+      };
+
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
+      const result = await loop.run('sort results', { maxSteps: 15 });
+
+      // stuckOnTarget fires after 3 same-target-with-failure steps.
+      expect(result.totalSteps).toBe(3);
+    });
+
+    it('aborts on extract-loop (3 extracts returning same data under varying field names)', async () => {
+      // Planner keeps extracting with different field names (confirmation_message →
+      // selected_plan → full_text) but the underlying data is identical. The old
+      // exactLoop/targetLoop checks miss this because instructions differ and
+      // the action string is `extract: ...` which doesn't fit the "on <name>"
+      // pattern. The new extractLoop check catches it via value fingerprint.
+      let call = 0;
+      const fieldNames = ['confirmation_message', 'selected_plan', 'full_text', 'bottom_text'];
+      const llm: LLMProvider = {
+        generateStructuredData: jest.fn(async () => {
+          const field = fieldNames[call % fieldNames.length] ?? 'x';
+          call++;
+          return {
+            type: 'extract',
+            instruction: `Extract ${field}`,
+            reasoning: '',
+            isGoalComplete: false,
+            extractionSchema: { type: 'object' },
+            goalAchieved: false,
+            reason: '',
+          };
+        }) as any,
+        generateText: jest.fn(async () => ''),
+      };
+
+      // ExtractionEngine always returns the same data under varying keys.
+      let exCall = 0;
+      const extractionEngine = {
+        extract: jest.fn(async () => {
+          const field = fieldNames[exCall % fieldNames.length] ?? 'x';
+          exCall++;
+          return { [field]: 'You selected the Pro plan. Continue to billing.' };
+        }),
+      };
+
+      const actionEngine = makeActionEngine(true);
+      const stateParser = makeAlternatingStateParser();
+
+      const loop = new AgentLoop(actionEngine as any, extractionEngine as any, stateParser as any, llm);
+      const result = await loop.run('extract the plan confirmation', { maxSteps: 15 });
+
+      // Loop detection on extract values should fire after 3 identical-payload extracts.
+      expect(result.totalSteps).toBe(3);
+      expect(extractionEngine.extract).toHaveBeenCalledTimes(3);
     });
 
     it('does not abort if different instructions are used', async () => {

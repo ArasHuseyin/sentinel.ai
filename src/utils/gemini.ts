@@ -3,7 +3,7 @@
  * Internally delegates to GeminiProvider.
  */
 import { GeminiProvider } from './providers/gemini-provider.js';
-import type { SchemaInput, TokenUsage } from './llm-provider.js';
+import type { GenerateOptions, SchemaInput, TokenUsage } from './llm-provider.js';
 
 export type { SchemaInput };
 
@@ -23,9 +23,13 @@ export class GeminiService {
     }
   }
 
-  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
+  async generateStructuredData<T>(
+    prompt: string,
+    schema: SchemaInput<T>,
+    options?: GenerateOptions
+  ): Promise<T> {
     this.syncTokenUsage();
-    return this.provider.generateStructuredData<T>(prompt, schema);
+    return this.provider.generateStructuredData<T>(prompt, schema, options);
   }
 
   async generateText(prompt: string, systemInstruction?: string): Promise<string> {

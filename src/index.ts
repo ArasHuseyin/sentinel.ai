@@ -509,6 +509,12 @@ export class Sentinel extends EventEmitter {
       provider.onTokenUsage = undefined;
       this._tokenUsageCallback = undefined;
     }
+    // Flush any pending locator-cache writes before releasing the browser, so
+    // debounced entries make it to disk even on short-lived runs.
+    if (this.locatorCacheInstance?.flush) {
+      await this.locatorCacheInstance.flush().catch(() => { /* best-effort */ });
+    }
+    this.locatorCacheInstance?.close?.();
     await this.driver.close();
     this.emit('close');
     this.log(1, '🔒 Sentinel closed');
@@ -588,7 +594,18 @@ export class Sentinel extends EventEmitter {
           error: msg,
         };
       } finally {
-        await sentinel?.close().catch(() => {});
+        if (sentinel) {
+          try {
+            await sentinel.close();
+          } catch (closeErr: any) {
+            // Don't let a close failure propagate — we still want the other tasks to finish
+            // and the caller to see the task result. But surface it so zombie browsers
+            // don't stay silently undetected.
+            if ((options.verbose ?? 1) >= 1) {
+              console.warn(`[Sentinel.parallel] close() failed for task ${index} (${task.url}): ${closeErr?.message ?? closeErr}`);
+            }
+          }
+        }
         completed++;
         options.onProgress?.(completed, tasks.length, results[index]!);
       }
@@ -952,7 +969,15 @@ export class Sentinel extends EventEmitter {
   async extend(page: Page): Promise<ExtendedPage> {
     // Detach any previous CDP session for this page to prevent leaks
     const prev = this.extendedPages.get(page);
-    if (prev) await prev.detach().catch(() => {});
+    if (prev) {
+      try {
+        await prev.detach();
+      } catch (err: any) {
+        // Session may already be stale (page closed, target detached upstream).
+        // Log at verbose >= 2 so we see it during debugging but don't spam prod.
+        this.log(2, `[Sentinel.extend] Previous CDP session detach failed: ${err?.message ?? err}`);
+      }
+    }
 
     const cdp = await page.context().newCDPSession(page);
     this.extendedPages.set(page, cdp);

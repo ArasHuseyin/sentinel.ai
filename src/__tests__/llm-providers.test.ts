@@ -1,14 +1,39 @@
-import { jest, describe, it, expect } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 // ─── Mock @google/generative-ai before importing GeminiProvider ───────────────
+//
+// Shared, resettable mocks at module scope so tests can inspect call history
+// and reconfigure per-test without the jest.resetModules + dynamic-import dance
+// (which is flaky across Jest versions / module-cache states).
+
+const mockGenerateContent = jest.fn<any>();
+const mockGetGenerativeModel = jest.fn<any>();
 
 jest.mock('@google/generative-ai', () => ({
   GoogleGenerativeAI: jest.fn().mockImplementation(() => ({
-    getGenerativeModel: jest.fn().mockReturnValue({}),
+    getGenerativeModel: mockGetGenerativeModel,
   })),
 }));
 
 import { GeminiProvider } from '../utils/providers/gemini-provider.js';
+
+beforeEach(() => {
+  // Reset every mock so call history doesn't leak between tests. Default impl:
+  // getGenerativeModel returns a stub model whose generateContent resolves to
+  // a minimal valid JSON response — enough for any test that actually invokes
+  // generateStructuredData without hitting the real Google SDK.
+  mockGetGenerativeModel.mockReset();
+  mockGenerateContent.mockReset();
+  mockGenerateContent.mockResolvedValue({
+    response: {
+      text: () => '{"ok": true}',
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+    },
+  });
+  mockGetGenerativeModel.mockImplementation(() => ({
+    generateContent: mockGenerateContent,
+  }));
+});
 
 // ─── Documented models (must match README Supported Models table) ─────────────
 
@@ -79,6 +104,44 @@ describe('LLM Providers – documented models', () => {
     it('uses GEMINI_VERSION env var as default model', () => {
       process.env.GEMINI_VERSION = 'gemini-3-flash-preview';
       expect(() => new GeminiProvider({ apiKey: 'test-key' })).not.toThrow();
+    });
+
+    // These tests verify the per-systemInstruction model caching (prompt-cache
+    // hit continuity) directly against `getModelFor`, without going through
+    // `generateStructuredData`. We monkey-patch the `genAI` instance on the
+    // provider after construction so the test doesn't depend on `jest.mock`
+    // hoisting (which is flaky with ts-jest + ESM + injectGlobals: false) and
+    // never touches the real Google SDK.
+    it('reuses a single model instance per systemInstruction for prompt-cache hit continuity', () => {
+      const provider = new GeminiProvider({ apiKey: 'test-key', model: 'gemini-3-flash-preview' }) as any;
+      const spy = jest.fn<any>().mockImplementation((args: any) => ({ _marker: args?.systemInstruction?.parts?.[0]?.text ?? 'no-sys' }));
+      provider.genAI.getGenerativeModel = spy;
+
+      const sys = 'You are an autonomous browser agent. [... stable rules ...]';
+
+      // First call with `sys` builds a model, second call hits the cache.
+      provider.getModelFor(sys);
+      provider.getModelFor(sys);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect((spy.mock.calls as any[][])[0]?.[0]?.systemInstruction?.parts?.[0]?.text).toBe(sys);
+
+      // A different systemInstruction produces its own cached instance.
+      provider.getModelFor('different text');
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect((spy.mock.calls as any[][])[1]?.[0]?.systemInstruction?.parts?.[0]?.text).toBe('different text');
+    });
+
+    it('returns the pre-built structuredModel when options.systemInstruction is undefined', () => {
+      const provider = new GeminiProvider({ apiKey: 'test-key', model: 'gemini-3-flash-preview' }) as any;
+      const spy = jest.fn<any>().mockReturnValue({});
+      provider.genAI.getGenerativeModel = spy;
+
+      // getModelFor(undefined) must short-circuit to the constructor-built
+      // structuredModel — it must NOT call getGenerativeModel again (that
+      // would waste a model instance and defeat connection reuse).
+      const model = provider.getModelFor(undefined);
+      expect(spy).not.toHaveBeenCalled();
+      expect(model).toBe(provider.structuredModel);
     });
   });
 

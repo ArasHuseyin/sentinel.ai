@@ -1,6 +1,6 @@
 import { trace, metrics, context, SpanStatusCode } from '@opentelemetry/api';
 import type { Span, Attributes } from '@opentelemetry/api';
-import type { LLMProvider, SchemaInput, TokenUsage } from './llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from './llm-provider.js';
 
 const TRACER_NAME = '@isoldex/sentinel';
 const VERSION = '3.9.0';
@@ -100,8 +100,8 @@ export function createTracingProvider(provider: LLMProvider, modelName: string):
   // Build the traced wrapper. Use Object.defineProperty for onTokenUsage so the
   // get/set types don't run into exactOptionalPropertyTypes conflicts.
   const traced = {
-    generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
-      return wrap('generateStructuredData', () => provider.generateStructuredData<T>(prompt, schema));
+    generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
+      return wrap('generateStructuredData', () => provider.generateStructuredData<T>(prompt, schema, options));
     },
     generateText(prompt: string, systemInstruction?: string): Promise<string> {
       return wrap('generateText', () => provider.generateText(prompt, systemInstruction));

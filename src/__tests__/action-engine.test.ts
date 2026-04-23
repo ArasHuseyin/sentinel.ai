@@ -343,6 +343,39 @@ describe('ActionEngine', () => {
     expect(wheelCalls.some(args => args[1] < 0)).toBe(true);
   });
 
+  it('select skips the opening click when a listbox popover is already visible', async () => {
+    // When the planner already clicked the combobox in a prior step to inspect
+    // options, the popover is open on entry to `select`. Clicking the trigger
+    // coords again would TOGGLE the popover closed and destroy the options. The
+    // fix detects the visible [role="option"] and skips the opening click.
+    const page = makeMockPage();
+    const openPopoverEvaluate = jest.fn(async (fn: any, args?: any) => {
+      if (args === undefined) {
+        // Match the isListboxPopoverVisible helper by function source signature.
+        const src = String(fn);
+        if (src.includes('[role="option"]')) return true;
+        return { x: 0, y: 0 };
+      }
+      return null;
+    });
+    page.evaluate = openPopoverEvaluate as any;
+
+    const state = makeState({
+      elements: [
+        { id: 2, role: 'combobox', name: 'Country', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+      ],
+    });
+    const stateParser = makeMockStateParser(state);
+    const llm = makeMockLLM({ elementId: 2, action: 'select', value: 'Germany', reasoning: 'Select country' });
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    await engine.act('Select Germany from country dropdown');
+
+    // Popover was already open → opening click must be skipped. Any remaining
+    // mouse.click calls come from other paths (none should fire here).
+    expect(page.mouse.click).not.toHaveBeenCalled();
+  });
+
   it('select calls page.mouse.click then page.evaluate to set value', async () => {
     const page = makeMockPage();
     // Use elementId: 2 (role: 'combobox') — elementId 0/1 are reserved for scroll-without-target check
@@ -816,6 +849,39 @@ describe('ActionEngine', () => {
     expect((page.mouse.wheel as jest.Mock).mock.calls).toHaveLength(0);
   });
 
+  it('treats empty candidates without notFound as notFound (scroll retry, then clean failure)', async () => {
+    const page = makeMockPage();
+    const state = makeState({
+      elements: [
+        { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+      ],
+    });
+    const stateParser = {
+      parse: jest.fn(async () => state),
+      invalidateCache: jest.fn(),
+    };
+    // LLM persistently returns empty candidates, notFound is never set.
+    const llm: LLMProvider = {
+      generateStructuredData: jest.fn<() => Promise<any>>().mockResolvedValue({
+        candidates: [],
+        action: 'click',
+        reasoning: 'confused',
+      }) as any,
+      generateText: jest.fn(async () => ''),
+    };
+
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+    const result = await engine.act('click something specific');
+
+    // Should NOT silently click element 0 — should trigger one scroll retry, then fail cleanly.
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('Could not find any candidate element');
+    // Exactly one scroll (the retry triggered by the synthesized notFound).
+    expect((page.mouse.wheel as jest.Mock).mock.calls).toHaveLength(1);
+    // No click should have happened on element 0.
+    expect((page.mouse.click as jest.Mock).mock.calls).toHaveLength(0);
+  });
+
   it('parses state only once when the LLM returns a non-scroll action on an empty page', async () => {
     const page = makeMockPage();
     const emptyState = makeState({ elements: [] });
@@ -993,15 +1059,65 @@ describe('ActionEngine', () => {
 
   // ─── Smart Error Recovery ─────────────────────────────────────────────────────
 
-  it('auto-recovery dismisses cookie banner and retries action', async () => {
-    const cookieButton = { id: 0, role: 'button', name: 'Accept all', boundingClientRect: { x: 10, y: 20, width: 100, height: 30 } };
-    const targetButton = { id: 1, role: 'button', name: 'Sign in', boundingClientRect: { x: 10, y: 200, width: 80, height: 30 } };
+  it('auto-recovery does NOT dismiss product links whose names contain "accepted" or "alle"', async () => {
+    // Regression guard: prior version's cookie-detection matched `accept` as a
+    // substring in product names like "Eczema Association Accepted" (a skincare
+    // product description), and the German token "alle " matched "Alle 3 in
+    // den Einkaufswagen" (add to cart). That caused the agent to add random
+    // products to the cart while thinking it was dismissing a banner.
+    const productLink = {
+      id: 0,
+      role: 'link',
+      name: 'Clean Skin Club Clean Towels XL, Eczema Association Accepted, Makeup Remover',
+      boundingClientRect: { x: 10, y: 20, width: 400, height: 30 },
+    };
+    const cartButton = {
+      id: 1,
+      role: 'button',
+      name: 'Alle 3 in den Einkaufswagen',
+      boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+    };
+    const productHeading = {
+      id: 2,
+      role: 'heading',
+      name: 'Related products for face care',
+      boundingClientRect: { x: 10, y: 0, width: 400, height: 30 },
+    };
+    const state: SimplifiedState = {
+      url: 'https://example.com/product',
+      title: 'Product Page',
+      elements: [productHeading, productLink, cartButton],
+    };
 
-    // Initial state: both cookie button and actual target present
+    const page = makeMockPage();
+    const stateParser = {
+      parse: jest.fn(async () => state),
+      invalidateCache: jest.fn(),
+    };
+    const llm = makeMockLLM({ elementId: 2, action: 'click', reasoning: 'ignored' });
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
+
+    const recovered = await engine.tryRecoverFromBlocker(state);
+
+    // No consent context on this page (no "cookie"/"consent"/"gdpr"/etc. in any
+    // element name) AND the button names are long product descriptions that
+    // don't match the anchored accept-pattern → recovery must bail out cleanly.
+    expect(recovered).toBe(false);
+    expect(page.mouse.click).not.toHaveBeenCalled();
+  });
+
+  it('auto-recovery dismisses cookie banner and retries action', async () => {
+    const cookieBanner = { id: 0, role: 'heading', name: 'We use cookies to improve your experience', boundingClientRect: { x: 10, y: 10, width: 400, height: 40 } };
+    const cookieButton = { id: 1, role: 'button', name: 'Accept all', boundingClientRect: { x: 10, y: 20, width: 100, height: 30 } };
+    const targetButton = { id: 2, role: 'button', name: 'Sign in', boundingClientRect: { x: 10, y: 200, width: 80, height: 30 } };
+
+    // Initial state: cookie banner heading (consent context), accept button, and the actual target.
+    // The heading provides the consent-context signal that tryRecoverFromBlocker now requires —
+    // prevents false-positive dismissals of e.g. "Accept Terms" buttons on unrelated pages.
     const initialState: SimplifiedState = {
       url: 'https://example.com',
       title: 'Example',
-      elements: [cookieButton, targetButton],
+      elements: [cookieBanner, cookieButton, targetButton],
     };
     // State after recovery: only the target remains
     const cleanState: SimplifiedState = {
@@ -1018,10 +1134,10 @@ describe('ActionEngine', () => {
       invalidateCache: jest.fn(),
     };
 
-    // LLM targets the Sign In button (id=1)
+    // LLM targets the Sign In button (id=2)
     const llm: LLMProvider = {
       generateStructuredData: jest.fn(async () => ({
-        candidates: [{ elementId: 1, confidence: 0.9 }],
+        candidates: [{ elementId: 2, confidence: 0.9 }],
         action: 'click',
         reasoning: 'Sign in button',
       })) as any,

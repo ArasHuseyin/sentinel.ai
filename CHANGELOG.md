@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.1.3] - 2026-04-23
+
+### Added
+
+- **`systemInstruction` across all LLM providers** — static prompt prefixes (act decision rules, planner rules, reflect rules, extract format) are now passed separately from dynamic per-call content. Gemini caches the `GenerativeModel` instance per `systemInstruction` text so identical prefixes hit the implicit prompt cache; Claude marks the system block with `cache_control: { type: 'ephemeral' }`; OpenAI sends a dedicated `system` message; Ollama prepends. Reduces input-token cost on repeated calls and measurably cuts latency on the Gemini path.
+- **`run({ timeoutMs })` budget** — the agent loop now supports a wall-clock timeout. When the budget is exhausted the current step completes, the reflect call is skipped, and the run returns with `timedOut: true` instead of an open-ended retry storm.
+- **`stuckOnTarget` loop detection** — when the planner picks the same action+target three times and at least one attempt has already failed, the agent breaks out with a structured failure instead of grinding against the same element.
+- **`extractLoop` detection** — extract calls are fingerprinted by their returned data; identical fingerprints in back-to-back steps short-circuit instead of redoing the LLM call.
+- **Step memory carries extraction payloads** — `StepRecord` now has a `data` field and `getSummary()` appends a truncated JSON snippet (300-char cap). The planner sees what was already extracted and can decide to finish instead of re-extracting.
+
+### Fixed
+
+- **Cookie-banner recovery no longer dismisses product links** — the accept-button matcher picked up substrings like `"Accepted"` inside `"Eczema Association Accepted"` and `"alle "` inside `"Alle 3 in den Einkaufswagen"`, occasionally clicking an Amazon product card while trying to close a consent banner. Fix stacks three guards: a page-level consent-context check (`/\b(cookies?|consent|gdpr|dsgvo|datenschutz|privacy|privatsph[aä]re)\b/i`), a 50-character cap on candidate button labels, and an anchored pattern (`/^\s*(akzeptieren|accept( all| cookies)?|zustimmen|i ?agree|got it|verstanden|alle[s]? (akzeptieren|cookies?|annehmen)|allow all)\s*$/i`).
+- **Select/listbox popovers stayed closed on second pick** — when a custom `<select>` widget used a hidden native element plus a separately-rendered popover (Amazon sort, MUI Select, headless UI comboboxes), subsequent `select` calls kept re-clicking the trigger instead of picking from the already-open popover. `act()` now checks a visible `role="listbox" + role="option"` popover first via `clickBestMatchingOption`, then tries `trySetNativeSelectValue`, and only opens the trigger as a last resort. The coordinate-mismatch check is bypassed while a popover is open (`skipCoordCheckForOpenSelect`).
+- **Locator cache corruption on crash / concurrent processes** — `FileLocatorCache` writes are now debounced (150 ms) and go through a temp-file-plus-atomic-rename path. `flush()` is called from `Sentinel.close()` and a `beforeExit` handler, so pending writes always drain before the process exits. Prior code wrote the JSON synchronously inline, blocking the event loop on every hit and risking half-written files on forced shutdown.
+- **Agent step verification was click-only** — `fill` and `select` now use the same structural verification signals as `click` (URL change, title change, element-count delta, state fingerprint, interaction-flip). Silent no-op fills stop reporting success.
+- **`hasBlocker` tripped on open listbox/menu popovers** — the blocker check now ignores regions whose only interactive descendants are `role="option"` / `role="menuitem"` and requires an actual interactive role inside the modal region before treating it as a blocker. Prevents the recovery pathway from firing Escape against a just-opened select.
+- **Post-recovery ScrollTo closed Amazon's open popover** — the fallback `scrollTo(target)` after recovery now skips when a `[role="option"]` / `[role="listbox"]` / `[role="menu"]` is visible.
+- **Empty LLM candidate lists silently became "no target"** — when the provider returned `{ candidates: [] }` without setting `notFound: true`, `act()` treated it as "element exists but unreachable" and looped. The engine now synthesises `notFound = true` on empty candidates so the scroll-and-retry path engages.
+- **z-index popup removal compared strings** — `parseInt(s.zIndex, 10) > 999` replaces `s.zIndex > "999"`, which evaluated `"1000" > "999"` as `false` and left tall overlays on the page.
+- **`with-retry` log lost the failure cause** — the warning line now includes the HTTP status (when present) and the first line of the error message (capped at 160 chars), so rate-limit vs. network vs. server-overload is distinguishable from the log alone.
+
+### Changed
+
+- **Planner prompts split into system + user parts** — `PLANNER_SYSTEM_INSTRUCTION` and `REFLECT_SYSTEM_INSTRUCTION` are now module-level constants passed via `GenerateOptions.systemInstruction`. No behavior change beyond the cache-hit improvement described above.
+- **Removed redundant `invalidateCache()` at step start** — the AOM cache's 2 s TTL already covers the step boundary; the forced invalidation added a full re-parse per step with no correctness benefit.
+
+---
+
 ## [4.1.2] - 2026-04-19
 
 ### Fixed

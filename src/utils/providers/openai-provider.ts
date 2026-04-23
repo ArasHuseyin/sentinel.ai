@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -49,11 +49,22 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
+  async generateStructuredData<T>(
+    prompt: string,
+    schema: SchemaInput<T>,
+    options?: GenerateOptions
+  ): Promise<T> {
     return withRetry(async () => {
+      const messages: Array<{ role: string; content: string }> = [];
+      // A stable leading system message enables OpenAI's automatic prompt caching
+      // (prompts ≥1024 tokens get a 50% discount on the cached prefix).
+      if (options?.systemInstruction) {
+        messages.push({ role: 'system', content: options.systemInstruction });
+      }
+      messages.push({ role: 'user', content: prompt });
       const response = await this.client.chat.completions.create({
         model: this.model,
-        messages: [{ role: 'user', content: prompt }],
+        messages,
         response_format: {
           type: 'json_schema',
           json_schema: {

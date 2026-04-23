@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -44,10 +44,17 @@ export class ClaudeProvider implements LLMProvider {
     }
   }
 
-  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
+  async generateStructuredData<T>(
+    prompt: string,
+    schema: SchemaInput<T>,
+    options?: GenerateOptions
+  ): Promise<T> {
     return withRetry(async () => {
-      // Claude uses tool_use for structured output
-      const response = await this.client.messages.create({
+      // Claude uses tool_use for structured output.
+      // systemInstruction is passed as the `system` param with cache_control so
+      // Anthropic prompt caching (90% discount on cache hits) applies to the
+      // stable prefix across calls.
+      const request: any = {
         model: this.model,
         max_tokens: 4096,
         tools: [
@@ -59,7 +66,15 @@ export class ClaudeProvider implements LLMProvider {
         ],
         tool_choice: { type: 'tool', name: 'structured_output' },
         messages: [{ role: 'user', content: prompt }],
-      });
+      };
+      if (options?.systemInstruction) {
+        request.system = [{
+          type: 'text',
+          text: options.systemInstruction,
+          cache_control: { type: 'ephemeral' },
+        }];
+      }
+      const response = await this.client.messages.create(request);
 
       this.reportUsage(response);
       const toolUse = (response.content as any[])?.find((c: any) => c.type === 'tool_use');

@@ -118,6 +118,23 @@ describe('VisionGrounding', () => {
       expect(result).toBeNull();
     });
 
+    it('returns null early when viewport is zero or invalid', async () => {
+      const provider = makeProvider(JSON.stringify({ found: true, x: 10, y: 10, width: 20, height: 20 }));
+      const vg = new VisionGrounding(provider);
+
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // Zero height
+      expect(await vg.findElement('Click', FAKE_PNG, 1280, 0)).toBeNull();
+      // Zero width
+      expect(await vg.findElement('Click', FAKE_PNG, 0, 720)).toBeNull();
+      // NaN
+      expect(await vg.findElement('Click', FAKE_PNG, Number.NaN, 720)).toBeNull();
+      warnSpy.mockRestore();
+
+      // Provider must never be called for invalid viewports — guard bails out first.
+      expect(provider.analyzeImage).not.toHaveBeenCalled();
+    });
+
     it('returns null when bbox center falls outside the viewport', async () => {
       const response = JSON.stringify({ found: true, x: 5000, y: 200, width: 80, height: 30 });
       const provider = makeProvider(response);

@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { z } from 'zod';
-import type { LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -43,6 +43,12 @@ export class GeminiProvider implements LLMProvider {
   private genAI: GoogleGenerativeAI;
   private structuredModel: any;
   private textModel: any;
+  /**
+   * Cache of GenerativeModel instances keyed by systemInstruction text. Keeping a
+   * stable model instance per system text means Gemini's implicit caching sees
+   * identical request prefixes across calls and returns its cache hit discount.
+   */
+  private readonly systemModelCache = new Map<string, any>();
   private readonly modelName: string;
   onTokenUsage?: (usage: TokenUsage) => void;
 
@@ -55,10 +61,27 @@ export class GeminiProvider implements LLMProvider {
     this.textModel = this.genAI.getGenerativeModel({ model: modelName });
   }
 
-  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>): Promise<T> {
+  private getModelFor(systemInstruction?: string): any {
+    if (!systemInstruction) return this.structuredModel;
+    const cached = this.systemModelCache.get(systemInstruction);
+    if (cached) return cached;
+    const model = this.genAI.getGenerativeModel({
+      model: this.modelName,
+      systemInstruction: { role: 'system', parts: [{ text: systemInstruction }] },
+    });
+    this.systemModelCache.set(systemInstruction, model);
+    return model;
+  }
+
+  async generateStructuredData<T>(
+    prompt: string,
+    schema: SchemaInput<T>,
+    options?: GenerateOptions
+  ): Promise<T> {
     const jsonSchema = resolveJsonSchema(schema);
+    const model = this.getModelFor(options?.systemInstruction);
     return withRetry(async () => {
-      const result = await this.structuredModel.generateContent({
+      const result = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: 'application/json',

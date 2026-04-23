@@ -324,6 +324,40 @@ const MAX_NOT_FOUND_SCROLL_RETRIES = 1;
 /** Scroll step used when the LLM signals the target is not visible, as a fraction of viewport height. */
 const NOT_FOUND_SCROLL_FRACTION = 0.8;
 
+/**
+ * Stable system instruction for action-decision LLM calls. Extracted to a module
+ * constant so every act() in a session ships the exact same system text — that's
+ * what lets Gemini's implicit caching, OpenAI's auto prompt cache, and Anthropic's
+ * cache_control reuse the prefix and discount it on hits. Per-call variables
+ * (URL, title, instruction, elements) stay in the user prompt.
+ */
+const ACT_SYSTEM_INSTRUCTION = `
+You are a browser-automation action planner. Given a user instruction and the list of interactive elements on the current page, decide which element(s) to interact with and how.
+
+Return up to 3 candidate elements ranked by confidence (best first).
+
+Available actions:
+- "click": single click on an element
+- "double-click": double click on an element
+- "right-click": right-click (context menu) on an element
+- "fill": type text into an input field (requires "value")
+- "append": add text to the end of an input field without clearing existing content (requires "value")
+- "hover": move mouse over an element
+- "press": press a keyboard key or shortcut (requires "value", e.g. "Enter", "Escape", "Tab", "Control+a")
+- "select": pick an option from ANY dropdown — native <select> OR any element whose role is combobox/listbox (requires "value" = option text). This is a one-shot that opens the dropdown, filters to the option, and commits the selection. ALWAYS prefer "select" over "click" when the target is a dropdown and you know which option to pick — "click" only opens the dropdown and leaves you mid-flow.
+- "upload": upload file(s) to an <input type="file"> (requires "value" = absolute path; for multiple files comma-separate: "/a.pdf,/b.pdf"). Prefer this over "click" for elements with role="file".
+- "drag": drag one element onto another (requires "targetElementId" = the drop-target element id). Use for reorderable lists, kanban boards, file-manager style drops.
+- "scroll-down": scroll the page down (elementId optional, use 0 if no specific element)
+- "scroll-up": scroll the page up (elementId optional, use 0 if no specific element)
+- "scroll-to": scroll to bring a specific element into view (requires elementId)
+
+If the action is "fill", "append", "press", "select", or "upload", provide the "value" field.
+If the action is "drag", provide the "targetElementId" field (the id of the drop target).
+For scroll actions without a target element, set elementId to 0 in the first candidate.
+
+If NONE of the listed elements is plausibly the target of the instruction (e.g. the target is likely off-screen, inside a collapsed section, or not yet rendered), set "notFound": true and leave candidates empty. Do NOT invent element IDs. The system will scroll once and re-ask.
+`.trim();
+
 // ─── Datepicker / Timepicker helpers ─────────────────────────────────────────
 
 export interface DateParts {
@@ -1072,39 +1106,13 @@ export class ActionEngine {
       if (patternResult) return patternResult;
 
       const prompt = `
-      Current Page URL: ${currentState.url}
-      Page Title: ${currentState.title}
-      Instruction: "${resolvedInstruction}"
+Current Page URL: ${currentState.url}
+Page Title: ${currentState.title}
+Instruction: "${resolvedInstruction}"
 
-      Elements on page (id | role | name | region):
-      ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
-
-      Select the element to interact with and the action to perform.
-      Return up to 3 candidate elements ranked by confidence (best first).
-      Available actions:
-      - "click": single click on an element
-      - "double-click": double click on an element
-      - "right-click": right-click (context menu) on an element
-      - "fill": type text into an input field (requires "value")
-      - "append": add text to the end of an input field without clearing existing content (requires "value")
-      - "hover": move mouse over an element
-      - "press": press a keyboard key or shortcut (requires "value", e.g. "Enter", "Escape", "Tab", "Control+a")
-      - "select": pick an option from ANY dropdown — native <select> OR any element whose role is combobox/listbox (requires "value" = option text). This is a one-shot that opens the dropdown, filters to the option, and commits the selection. ALWAYS prefer "select" over "click" when the target is a dropdown and you know which option to pick — "click" only opens the dropdown and leaves you mid-flow.
-      - "upload": upload file(s) to an <input type="file"> (requires "value" = absolute path; for multiple files comma-separate: "/a.pdf,/b.pdf"). Prefer this over "click" for elements with role="file".
-      - "drag": drag one element onto another (requires "targetElementId" = the drop-target element id). Use for reorderable lists, kanban boards, file-manager style drops.
-      - "scroll-down": scroll the page down (elementId optional, use 0 if no specific element)
-      - "scroll-up": scroll the page up (elementId optional, use 0 if no specific element)
-      - "scroll-to": scroll to bring a specific element into view (requires elementId)
-
-      If the action is "fill", "append", "press", "select", or "upload", provide the "value" field.
-      If the action is "drag", provide the "targetElementId" field (the id of the drop target).
-      For scroll actions without a target element, set elementId to 0 in the first candidate.
-
-      If NONE of the listed elements is plausibly the target of the instruction
-      (e.g. the target is likely off-screen, inside a collapsed section, or not
-      yet rendered), set "notFound": true and leave candidates empty. Do NOT
-      invent element IDs. The system will scroll once and re-ask.
-    `;
+Elements on page (id | role | name | region):
+${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
+      `.trim();
 
       const schema = {
         type: 'object',
@@ -1137,7 +1145,9 @@ export class ActionEngine {
         required: ['candidates', 'action', 'reasoning'],
       };
 
-      decision = await this.gemini.generateStructuredData<typeof decision>(prompt, schema);
+      decision = await this.gemini.generateStructuredData<typeof decision>(prompt, schema, {
+        systemInstruction: ACT_SYSTEM_INSTRUCTION,
+      });
 
       // Normalize: support old single-elementId responses gracefully. If the LLM
       // returns empty candidates AND no legacy elementId, treat it as notFound
@@ -1644,7 +1654,17 @@ export class ActionEngine {
     // locator-based element lookup with 3 fallback strategies.
     const isSliderFill = target?.role === 'slider' && action === 'fill';
     const isDatepickerFill = (target?.role === 'datepicker' || target?.role === 'timepicker') && action === 'fill';
-    if (target && !isSliderFill && !isDatepickerFill && (action === 'fill' || action === 'click' || action === 'select')) {
+
+    // For `select` with a visible listbox popover: skip the coord-mismatch
+    // check. The popover structurally covers the trigger area with its first
+    // option, so `elementFromPoint(triggerX, triggerY)` legitimately returns
+    // an option element — not a real target mismatch. The switch-case below
+    // handles this via `isListboxPopoverVisible` → `clickBestMatchingOption`.
+    const skipCoordCheckForOpenSelect =
+      action === 'select' && await this.isListboxPopoverVisible();
+
+    if (target && !isSliderFill && !isDatepickerFill && !skipCoordCheckForOpenSelect &&
+        (action === 'fill' || action === 'click' || action === 'select')) {
       const hitName = await this.page.evaluate(
         ({ x, y }: { x: number; y: number }) => {
           const el = document.elementFromPoint(x, y) as HTMLElement | null;
@@ -2095,6 +2115,26 @@ export class ActionEngine {
         break;
 
       case 'select': {
+        // If a listbox popover is ALREADY visible, the planner opened it in a
+        // prior step — go straight to clicking the matching option. We skip
+        // both the native <select>.value setter AND the opening click here:
+        //   - The setter-shortcut is wrong for sites that surface options via
+        //     custom anchor widgets backed by a hidden <select>: Amazon-style
+        //     dropdowns route user intent through anchor clicks, not through
+        //     programmatic change events on the underlying <select>, so
+        //     setting the value silently succeeds but the UI never reacts.
+        //   - Clicking the trigger would TOGGLE the popover closed.
+        // Matches real-user behaviour: dropdown is open, pick the visible option.
+        const popoverAlreadyOpen = await this.isListboxPopoverVisible();
+        if (popoverAlreadyOpen && value) {
+          const clicked = await this.clickBestMatchingOption(value).catch(() => false);
+          if (clicked) {
+            await this.ensurePopoverClosed(clickX, clickY);
+            break;
+          }
+          // Match failed — fall through to fresh open+select.
+        }
+
         // Native <select> first. AOM reports native selects as `combobox`,
         // which previously routed them through the custom-dropdown flow
         // (click → search-input walk → type → option-click). That path is
@@ -2107,7 +2147,9 @@ export class ActionEngine {
           break;
         }
 
-        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
+        if (!popoverAlreadyOpen) {
+          await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
+        }
 
         if (target.role === 'combobox' || target.role === 'listbox') {
           // Custom dropdown: open → focus popup-scoped input → type → click option.
@@ -2116,13 +2158,26 @@ export class ActionEngine {
             return active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
           }).catch(() => false);
 
-          if (!activeIsInput) {
+          // Only type the value when we actually focused a search input inside
+          // the popover. Listboxes WITHOUT a search input (plain <li>/<a
+          // role="option"> lists) would otherwise receive keystrokes into the
+          // document body, which on many sites closes the popover or shifts
+          // focus to an unrelated global search bar — destroying the options
+          // before we can match+click them.
+          let hasInput = activeIsInput;
+          if (!hasInput) {
             await this.page.waitForTimeout(300);
-            await this.focusDropdownPopupInput(clickX, clickY);
+            hasInput = await this.focusDropdownPopupInput(clickX, clickY);
           }
 
-          await this.page.keyboard.type(value || '');
-          await this.page.waitForTimeout(500);
+          if (hasInput) {
+            await this.page.keyboard.type(value || '');
+            await this.page.waitForTimeout(500);
+          } else {
+            // No search input — give the popover a beat to finish rendering
+            // its options, then go straight to match-and-click.
+            await this.page.waitForTimeout(200);
+          }
 
           const clicked = await this.clickBestMatchingOption(value || '').catch(() => false);
 
@@ -2498,6 +2553,33 @@ export class ActionEngine {
    * from dismissing unrelated expanded widgets elsewhere on the page
    * (e.g. a sidebar accordion that legitimately stays open).
    */
+  /**
+   * Returns true if a listbox/menu popover with at least one visible
+   * `[role="option"]` is currently rendered anywhere on the page.
+   *
+   * Used by the `select` action to avoid clicking the combobox trigger when
+   * the popover is already open — that would toggle it shut and wipe the
+   * options before we can pick one. Works universally for any WAI-ARIA
+   * combobox pattern; widgets that don't mark their options with `role`
+   * fall back to the unconditional open-click path.
+   */
+  private async isListboxPopoverVisible(): Promise<boolean> {
+    const result = await this.page.evaluate(() => {
+      const options = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
+      for (const opt of options) {
+        if (opt.getAttribute('aria-hidden') === 'true') continue;
+        if (opt.offsetParent === null) continue;
+        const r = opt.getBoundingClientRect();
+        if (r.width >= 1 && r.height >= 1) return true;
+      }
+      return false;
+    }).catch(() => false);
+    // Strict boolean — page.evaluate may return unexpected shapes in edge
+    // cases (test mocks, weird serialization). Anything non-true means
+    // "don't skip the open-click".
+    return result === true;
+  }
+
   private async ensurePopoverClosed(clickX: number, clickY: number): Promise<void> {
     await this.page.waitForTimeout(150);
     const stuck = await this.page.evaluate(
@@ -2630,26 +2712,51 @@ export class ActionEngine {
    * Returns true if a recovery action was performed.
    */
   async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
-    // Pattern 1: Cookie/consent banner — prefer accept/agree buttons over settings buttons
-    const cookieCandidates = state.elements.filter(e =>
-      (e.role === 'button' || e.role === 'link') &&
-      /cookie|consent|accept|akzeptieren|zustimmen|accept all|got it|verstanden|i agree/i.test(e.name)
+    // Pattern 1: Cookie/consent banner dismissal.
+    //
+    // Historical footguns that this version guards against:
+    //  - Substring matching of "accept" in product names ("Eczema Association
+    //    Accepted" is NOT a cookie control).
+    //  - German `"alle "` as an accept token matched "Alle 3 in den Einkauf" —
+    //    the agent was actually adding items to the cart.
+    //  - A loose fallback picked any button whose name vaguely matched the
+    //    candidate regex, clicking e.g. "Continue shopping" interstitials.
+    //
+    // Three stacked constraints make false positives effectively impossible
+    // while keeping real cookie banners matchable:
+    //   1. Page-level CONTEXT: at least one element must mention cookies /
+    //      consent / GDPR / privacy / Datenschutz. A product page for face
+    //      towels has no such element, so Pattern 1 never fires there.
+    //   2. LENGTH cap: consent-dismiss labels are always short
+    //      ("Accept all", "Alle akzeptieren"). 50-char ceiling excludes
+    //      every product name and every compound cart button.
+    //   3. ANCHORED accept regex with word boundaries: must START with the
+    //      accept intent so "Accepted" (inside "Eczema Association
+    //      Accepted") can't match, and "alle" alone does not match (the
+    //      keyword requires "alle akzeptieren" / "alle cookies").
+    const hasConsentContext = state.elements.some(e =>
+      /\b(cookies?|consent|gdpr|dsgvo|datenschutz|privacy|datenverarbeitung|privatsph[aä]re)\b/i.test(e.name)
     );
-    // Prioritize buttons that actually ACCEPT (not "settings", "einstellungen", "manage")
-    const acceptPattern = /akzeptieren|accept|zustimmen|agree|got it|verstanden|alle /i;
-    const settingsPattern = /einstell|manage|settings|preferences|verwalten|anpassen/i;
-    // Only click accept-type elements. For links: require accept keywords (links without
-    // them are usually navigation to cookie policy pages, not dismiss actions).
-    // For buttons without accept keywords: only click if they don't match settings pattern.
-    const cookieElement = cookieCandidates.find(e => acceptPattern.test(e.name) && !settingsPattern.test(e.name))
-      ?? cookieCandidates.find(e => e.role === 'button' && !settingsPattern.test(e.name));
-    if (cookieElement) {
-      this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
-      try {
-        await this.performAction('click', cookieElement);
-        await waitForPageSettle(this.page, this.domSettleTimeoutMs);
-        return true;
-      } catch { /* recovery failed, continue */ }
+    if (hasConsentContext) {
+      const MAX_CONSENT_BUTTON_LEN = 50;
+      const acceptPattern =
+        /^\s*(akzeptieren|accept( all| cookies)?|zustimmen|i ?agree|got it|verstanden|alle[s]? (akzeptieren|cookies? (akzeptieren|zulassen)?|annehmen)|allow all)\s*$/i;
+      const settingsPattern =
+        /einstell|manage|settings|preferences|verwalten|anpassen|nur (erforderlich|notwendig)|only (essential|necessary)|mehr (erfahren|infos?)|learn more/i;
+      const cookieElement = state.elements.find(e =>
+        (e.role === 'button' || e.role === 'link') &&
+        e.name.trim().length <= MAX_CONSENT_BUTTON_LEN &&
+        acceptPattern.test(e.name) &&
+        !settingsPattern.test(e.name)
+      );
+      if (cookieElement) {
+        this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
+        try {
+          await this.performAction('click', cookieElement);
+          await waitForPageSettle(this.page, this.domSettleTimeoutMs);
+          return true;
+        } catch { /* recovery failed, continue */ }
+      }
     }
 
     // Pattern 2: Remove pointer-intercepting widgets (marketing popups,
@@ -2715,9 +2822,26 @@ export class ActionEngine {
       }
     } catch { /* evaluate failed */ }
 
-    // Pattern 3: Generic modal close (Escape key)
+    // Pattern 3: Generic modal close (Escape key). Skip when a listbox/menu
+    // popover is visible — Escape would close our own open dropdown, not the
+    // blocker. Safety net in case the upstream `hasBlocker` check was called
+    // in a context where the listbox guard didn't apply.
     const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
     if (hasModal) {
+      const listboxOpen = await this.page.evaluate(() => {
+        const nodes = document.querySelectorAll('[role="option"], [role="listbox"], [role="menu"]');
+        for (const n of Array.from(nodes) as HTMLElement[]) {
+          if (n.offsetParent !== null) {
+            const r = n.getBoundingClientRect();
+            if (r.width >= 1 && r.height >= 1) return true;
+          }
+        }
+        return false;
+      }).catch(() => false);
+      if (listboxOpen) {
+        this.log(2, `[Act] Recovery: Escape skipped — listbox popover is open`);
+        return false;
+      }
       this.log(2, `[Act] Recovery: pressing Escape to close modal/popup`);
       try {
         await this.page.keyboard.press('Escape');

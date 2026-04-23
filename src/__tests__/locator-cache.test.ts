@@ -122,18 +122,22 @@ describe('FileLocatorCache', () => {
 
   afterEach(() => {
     try { fs.unlinkSync(filePath); } catch { /* already gone */ }
+    try { fs.unlinkSync(`${filePath}.${process.pid}.tmp`); } catch { /* ok */ }
+    try { fs.unlinkSync(`${filePath}.${process.pid}.sync.tmp`); } catch { /* ok */ }
     jest.restoreAllMocks();
   });
 
   it('starts empty when file does not exist', () => {
     const cache = new FileLocatorCache(filePath);
     expect(cache.get('https://example.com', 'click submit')).toBeUndefined();
+    cache.close();
   });
 
   it('starts empty when file contains invalid JSON', () => {
     fs.writeFileSync(filePath, 'not-valid-json', 'utf-8');
     const cache = new FileLocatorCache(filePath);
     expect(cache.get('https://example.com', 'click submit')).toBeUndefined();
+    cache.close();
   });
 
   it('loads existing entries from file on construction', () => {
@@ -141,31 +145,87 @@ describe('FileLocatorCache', () => {
     fs.writeFileSync(filePath, JSON.stringify({ [key]: entry }), 'utf-8');
     const cache = new FileLocatorCache(filePath);
     expect(cache.get('https://example.com', 'click submit')).toEqual(entry);
+    cache.close();
   });
 
-  it('writes to file on set()', () => {
+  it('writes to file on set() after flush()', async () => {
     const cache = new FileLocatorCache(filePath);
     cache.set('https://example.com', 'click submit', entry);
+    await cache.flush();
+    const saved = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const key = buildCacheKey('https://example.com', 'click submit');
+    expect(saved[key]).toEqual(entry);
+    cache.close();
+  });
+
+  it('writes to file on invalidate() after flush()', async () => {
+    const cache = new FileLocatorCache(filePath);
+    cache.set('https://example.com', 'click submit', entry);
+    await cache.flush();
+    cache.invalidate('https://example.com', 'click submit');
+    await cache.flush();
+    const saved = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const key = buildCacheKey('https://example.com', 'click submit');
+    expect(saved[key]).toBeUndefined();
+    cache.close();
+  });
+
+  it('round-trips a CachedLocator with value through JSON', async () => {
+    const withValue: CachedLocator = { action: 'fill', role: 'textbox', name: 'Email', value: 'a@b.com' };
+    const cache = new FileLocatorCache(filePath);
+    cache.set('https://example.com', 'fill email', withValue);
+    await cache.flush();
+    const reloaded = new FileLocatorCache(filePath);
+    expect(reloaded.get('https://example.com', 'fill email')).toEqual(withValue);
+    cache.close();
+    reloaded.close();
+  });
+
+  it('debounces rapid set() calls into a single disk write', async () => {
+    const writeFileSpy = jest.spyOn(fs.promises, 'writeFile');
+    const cache = new FileLocatorCache(filePath, { debounceMs: 50 });
+
+    for (let i = 0; i < 10; i++) {
+      cache.set(`https://example.com/${i}`, `act ${i}`, entry);
+    }
+    await cache.flush();
+
+    // 10 set() calls should collapse to a single async writeFile (via flush).
+    expect(writeFileSpy).toHaveBeenCalledTimes(1);
+    cache.close();
+  });
+
+  it('close() performs a synchronous final flush', () => {
+    const cache = new FileLocatorCache(filePath, { debounceMs: 10_000 });
+    cache.set('https://example.com', 'click submit', entry);
+    cache.close();
+    // Despite the long debounce, close() forces a sync write.
     const saved = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     const key = buildCacheKey('https://example.com', 'click submit');
     expect(saved[key]).toEqual(entry);
   });
 
-  it('writes to file on invalidate()', () => {
+  it('write is atomic: no partial files remain on success', async () => {
     const cache = new FileLocatorCache(filePath);
     cache.set('https://example.com', 'click submit', entry);
-    cache.invalidate('https://example.com', 'click submit');
-    const saved = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    const key = buildCacheKey('https://example.com', 'click submit');
-    expect(saved[key]).toBeUndefined();
+    await cache.flush();
+
+    // Temp file must not be left behind after successful rename.
+    expect(fs.existsSync(`${filePath}.${process.pid}.tmp`)).toBe(false);
+    expect(fs.existsSync(filePath)).toBe(true);
+    cache.close();
   });
 
-  it('round-trips a CachedLocator with value through JSON', () => {
-    const withValue: CachedLocator = { action: 'fill', role: 'textbox', name: 'Email', value: 'a@b.com' };
+  it('set() returns synchronously without blocking on disk I/O', () => {
     const cache = new FileLocatorCache(filePath);
-    cache.set('https://example.com', 'fill email', withValue);
-    const reloaded = new FileLocatorCache(filePath);
-    expect(reloaded.get('https://example.com', 'fill email')).toEqual(withValue);
+    const start = Date.now();
+    for (let i = 0; i < 100; i++) {
+      cache.set(`https://example.com/${i}`, `act ${i}`, entry);
+    }
+    const elapsed = Date.now() - start;
+    // Pure in-memory + scheduling should be well under 50ms for 100 writes.
+    expect(elapsed).toBeLessThan(50);
+    cache.close();
   });
 });
 
@@ -184,6 +244,7 @@ describe('createLocatorCache', () => {
   it('returns FileLocatorCache when option is a string', () => {
     const cache = createLocatorCache('/tmp/sentinel-test-factory.json');
     expect(cache).toBeInstanceOf(FileLocatorCache);
+    (cache as FileLocatorCache).close();
     try { fs.unlinkSync('/tmp/sentinel-test-factory.json'); } catch { /* ok */ }
   });
 });

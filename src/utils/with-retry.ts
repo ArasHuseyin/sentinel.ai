@@ -23,7 +23,13 @@ export async function withRetry<T>(
         err?.message?.includes('timeout');
       if (!isRetryable || attempt === retries - 1) throw err;
       const delay = BASE_DELAY_MS * Math.pow(2, attempt);
-      console.warn(`[${label}] Retryable error (attempt ${attempt + 1}/${retries}). Retrying in ${delay}ms...`);
+      // Surface the actual failure cause so rate-limit vs network vs server
+      // overload are distinguishable from the log alone. Strip noise: the full
+      // Gemini/OpenAI error messages can span multiple lines; keep the first
+      // line + status code.
+      const status = err?.status ? ` [${err.status}]` : '';
+      const reason = String(err?.message ?? err).split('\n')[0]?.slice(0, 160) ?? 'unknown';
+      console.warn(`[${label}] Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

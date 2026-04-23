@@ -6,6 +6,32 @@ export interface StepRecord {
   pageUrl: string;
   pageTitle: string;
   timestamp: number;
+  /**
+   * For extract steps: the data returned by the extraction. Stored so the planner
+   * can tell whether a goal has already been answered and stop re-extracting.
+   * Kept out of click/fill steps to avoid bloating the context.
+   */
+  data?: unknown;
+}
+
+/** Hard cap on per-step data text shown to the planner, to keep the summary compact. */
+const DATA_PREVIEW_MAX_CHARS = 300;
+
+/**
+ * Serializes arbitrary data to a stable, truncated JSON preview for the planner
+ * summary. Falls back to String(data) if JSON.stringify fails (cyclic refs etc.).
+ */
+function previewData(data: unknown): string {
+  let text: string;
+  try {
+    text = typeof data === 'string' ? data : JSON.stringify(data);
+  } catch {
+    text = String(data);
+  }
+  if (text.length > DATA_PREVIEW_MAX_CHARS) {
+    return text.slice(0, DATA_PREVIEW_MAX_CHARS) + '…';
+  }
+  return text;
 }
 
 /**
@@ -31,10 +57,10 @@ export class AgentMemory {
   getSummary(): string {
     if (this.history.length === 0) return 'No steps taken yet.';
     return this.history
-      .map(
-        s =>
-          `Step ${s.stepNumber}: [${s.success ? 'OK' : 'FAIL'}] ${s.instruction} → ${s.action} (${s.pageTitle})`
-      )
+      .map(s => {
+        const head = `Step ${s.stepNumber}: [${s.success ? 'OK' : 'FAIL'}] ${s.instruction} → ${s.action} (${s.pageTitle})`;
+        return s.data !== undefined ? `${head} :: data=${previewData(s.data)}` : head;
+      })
       .join('\n');
   }
 

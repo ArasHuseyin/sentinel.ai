@@ -56,6 +56,15 @@ export class VisionGrounding {
   ): Promise<BoundingBox | null> {
     if (!this.provider.analyzeImage) return null;
 
+    // Guard against degenerate viewports (headless context misconfig, detached page, etc.).
+    // Without this, scaleX/scaleY become Infinity or NaN and later bounds checks would
+    // silently reject every bbox with an unclear error.
+    if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) ||
+        viewportWidth < 1 || viewportHeight < 1) {
+      this.warnMsg(1, `[Vision] Refusing to run with invalid viewport ${viewportWidth}x${viewportHeight}`);
+      return null;
+    }
+
     const imageSize = readPngDimensions(screenshot);
     const imgW = imageSize?.width ?? viewportWidth;
     const imgH = imageSize?.height ?? viewportHeight;
