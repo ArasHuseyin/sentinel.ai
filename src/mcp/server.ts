@@ -255,7 +255,7 @@ export function registerTools(
  * restarting the MCP client (client auto-reconnects with exponential backoff).
  */
 export async function startServer() {
-  const server = new McpServer({ name: 'sentinel', version: '3.8.0' });
+  const server = new McpServer({ name: 'sentinel', version: '4.1.4' });
   registerTools(server, getOrInit, cleanup);
 
   if (process.env.SENTINEL_MCP_HTTP === '1') {

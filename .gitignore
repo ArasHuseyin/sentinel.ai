@@ -47,6 +47,7 @@ CLAUDE.md
 # Project notes (not shipped)
 STRATEGY.md
 improvements.md
+refactor.md
 
 # Debug scripts
 debug-*.ts

@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.1.4] - 2026-04-24
+
+### Added
+
+- **HTTP MCP transport** — run the Sentinel MCP server over Streamable HTTP instead of stdio. Set `SENTINEL_MCP_HTTP=1` (optional `SENTINEL_MCP_PORT`, `SENTINEL_MCP_HOST`) and point the client at `http://127.0.0.1:3333/mcp`. Enables shared team instances, Docker/Kubernetes deployments, and a local dev loop where the MCP client reconnects transparently via exponential backoff after the server restarts. Stdio remains the default — no change for existing `sentinel-mcp` users.
+- **npm scripts**: `mcp:stdio`, `mcp:http`, `mcp:dev` (HTTP + `node --watch` for hot reload), `build:watch`.
+- **`previousFailures` planner feedback loop** — when the verifier rejects an action, the next retry's planner prompt now includes the rejection reason and the previously executed action, instructing the LLM to escalate strategy rather than repeat the same move. Fixes the "fill typed text but never pressed Enter" loop on Amazon / Wikipedia search.
+- **Goal-aware LLM verification** — `Verifier.verifyAction()` accepts an optional 4th parameter `userInstruction`. The slow-path prompt now distinguishes the user's goal ("search AND submit") from the planner's atomic action ("fill search box"), so success is rated against the goal, not the side-effect.
+
+### Fixed
+
+- **Verifier false-positive on typed-but-not-submitted actions** — a centralized submit-intent guard now skips fast paths 4a/4b/5/6 (toggle / checked-state / element-delta / focus) when the instruction implies submission (search, submit, press Enter, go, navigate) but URL+title are unchanged. Previously Amazon and Wikipedia search returned "✅ DOM changed significantly" because the autocomplete dropdown opening fooled the element-delta path, leaving the caller to believe the submission fired.
+- **Cookie/consent banners not dismissed proactively** — `goto()` now calls `tryRecoverFromBlocker` once after navigation, so the first `act()`/`extract()` call sees a clean viewport. On MUI, Amazon, and Reddit this eliminates the overlay-blocks-first-interaction failure mode.
+- **Cookie banners without keywords in interactive elements** — MUI's "Allow analytics" + "Essential only" pair is now detected via the characteristic accept+reject button-pair pattern, even when no interactive element carries the word "cookie"/"consent" (the heading is outside the AOM we parse). Accept-button regex widened to include `allow (all|analytics|cookies|tracking|selected)`, `accept and (continue|close)`, and `einverstanden`.
+- **Pattern and locator caches overrode planner re-plan after verification failure** — both caches are now skipped when `previousFailures` is non-empty, so the re-plan actually reaches the LLM with the failure feedback instead of deterministically replaying the failed strategy.
+- **Extract system prompt moved to `systemInstruction`** — the static role/format guidance no longer ships in each user-prompt, letting provider-level caches (Gemini implicit, Claude `cache_control`, OpenAI automatic) deduplicate it.
+
+### Changed
+
+- **`ActOptions.previousFailures?: string[]`** — new optional field carrying verifier rejections across retries. No existing callers pass it; the outer retry loop inside `Sentinel.act()` populates it automatically.
+
+---
+
 ## [4.1.3] - 2026-04-23
 
 ### Added
