@@ -14,6 +14,15 @@ import { detectCaptcha, describeCaptcha } from '../reliability/captcha-detector.
 export interface ActOptions {
   variables?: Record<string, string>;
   retries?: number;
+  /**
+   * Feedback from previous failed verifications in this act() retry chain.
+   * When the outer retry loop re-enters after a verification rejection, it
+   * passes the rejection messages in here so the planner knows what NOT to
+   * repeat — e.g. after "search and submit" failed because only autocomplete
+   * opened, the planner can escalate to pressing Enter on the next attempt
+   * instead of trying the same fill action.
+   */
+  previousFailures?: string[];
 }
 
 export interface ActionAttempt {
@@ -1041,7 +1050,10 @@ export class ActionEngine {
     const state = await this.stateParser.parse();
 
     // ── Self-Healing Locator: cache lookup ────────────────────────────────────
-    if (this.locatorCache) {
+    // Skipped when the outer retry loop signals prior verification failures:
+    // the cached locator is the one that just failed verification, so reusing
+    // it would just cycle. Fix D forces a re-plan with verifier feedback.
+    if (this.locatorCache && !(options?.previousFailures && options.previousFailures.length > 0)) {
       const cached = this.locatorCache.get(state.url, resolvedInstruction);
       if (cached) {
         const target = state.elements.find(
@@ -1101,14 +1113,28 @@ export class ActionEngine {
       // the key written on run N matches the key probed on run N+1 — state
       // classes added by the action (e.g. focus indicators) don't drift
       // the hash.
-      preActionFingerprints = await this.fingerprintTopCandidates(visibleElements);
-      const patternResult = await this.tryPatternCache(visibleElements, preActionFingerprints, resolvedInstruction);
-      if (patternResult) return patternResult;
+      //
+      // Skipped when previous attempts have failed verification: the cached
+      // pattern is (by definition) the one that just failed, so using it
+      // again would guarantee the same failure. Fix D forces the planner to
+      // re-plan with feedback.
+      const previousFailures = options?.previousFailures ?? [];
+      if (previousFailures.length === 0) {
+        preActionFingerprints = await this.fingerprintTopCandidates(visibleElements);
+        const patternResult = await this.tryPatternCache(visibleElements, preActionFingerprints, resolvedInstruction);
+        if (patternResult) return patternResult;
+      } else {
+        this.log(2, `[Act] Skipping pattern cache — ${previousFailures.length} prior verification failure(s), forcing re-plan`);
+      }
+
+      const failureBlock = previousFailures.length > 0
+        ? `\n\nPrevious attempt(s) for THIS instruction failed verification. Do NOT repeat the same strategy — escalate or try a different approach (e.g. if "fill" didn't submit the form, try "press" Enter on the input; if "click" on a button name didn't open a target, try a different candidate):\n${previousFailures.map((f, i) => `  ${i + 1}. ${f}`).join('\n')}`
+        : '';
 
       const prompt = `
 Current Page URL: ${currentState.url}
 Page Title: ${currentState.title}
-Instruction: "${resolvedInstruction}"
+Instruction: "${resolvedInstruction}"${failureBlock}
 
 Elements on page (id | role | name | region):
 ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
@@ -2734,13 +2760,21 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     //      accept intent so "Accepted" (inside "Eczema Association
     //      Accepted") can't match, and "alle" alone does not match (the
     //      keyword requires "alle akzeptieren" / "alle cookies").
-    const hasConsentContext = state.elements.some(e =>
+    // Consent context detection: either a cookie/consent/GDPR keyword in any
+    // element name, OR the characteristic accept+reject button pair (e.g. MUI's
+    // "Allow analytics" + "Essential only" — no interactive element carries the
+    // keyword, the header is a non-interactive text node outside the AOM we parse).
+    const hasConsentKeywordContext = state.elements.some(e =>
       /\b(cookies?|consent|gdpr|dsgvo|datenschutz|privacy|datenverarbeitung|privatsph[aä]re)\b/i.test(e.name)
     );
+    const hasAcceptRejectPair =
+      state.elements.some(e => /^\s*allow (all|analytics|cookies|tracking|selected)\s*$/i.test(e.name)) &&
+      state.elements.some(e => /^\s*(essential only|only (essential|necessary)|reject( all| cookies)?|nur (erforderlich|notwendig)|ablehnen|optionale cookies ablehnen)\s*$/i.test(e.name));
+    const hasConsentContext = hasConsentKeywordContext || hasAcceptRejectPair;
     if (hasConsentContext) {
       const MAX_CONSENT_BUTTON_LEN = 50;
       const acceptPattern =
-        /^\s*(akzeptieren|accept( all| cookies)?|zustimmen|i ?agree|got it|verstanden|alle[s]? (akzeptieren|cookies? (akzeptieren|zulassen)?|annehmen)|allow all)\s*$/i;
+        /^\s*(akzeptieren|accept( all| cookies| and (continue|close))?|zustimmen|einverstanden|i ?agree|got it|verstanden|alle[s]? (akzeptieren|cookies? (akzeptieren|zulassen)?|annehmen)|allow (all|analytics|cookies|tracking|selected))\s*$/i;
       const settingsPattern =
         /einstell|manage|settings|preferences|verwalten|anpassen|nur (erforderlich|notwendig)|only (essential|necessary)|mehr (erfahren|infos?)|learn more/i;
       const cookieElement = state.elements.find(e =>

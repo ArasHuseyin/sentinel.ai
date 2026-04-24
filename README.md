@@ -59,7 +59,7 @@ Full benchmark methodology and raw data: [isoldex.ai/benchmark](https://isoldex.
 - **`intercept()`** — capture API responses instead of scraping DOM
 - **MFA/TOTP** — auto-generate 2FA codes during login flows
 - **CLI** — `npx sentinel run "goal" --url https://...`
-- **MCP Server** — use Sentinel from Claude Desktop, Cursor, or any MCP client
+- **MCP Server** — use Sentinel from Claude Desktop, Cursor, or any MCP client (stdio or standalone HTTP transport)
 
 ## Documentation
 

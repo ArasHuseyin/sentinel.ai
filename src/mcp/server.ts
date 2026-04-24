@@ -3,7 +3,9 @@ dotenv.config();
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Sentinel } from '../index.js';
 import type { SentinelOptions } from '../index.js';
 
@@ -238,9 +240,79 @@ export function registerTools(
 
 // ─── MCP Server entry ──────────────────────────────────────────────────────
 
+/**
+ * Starts the MCP server. Transport is selected via environment:
+ *
+ *   SENTINEL_MCP_HTTP=1  → Streamable HTTP transport on
+ *                          http://<SENTINEL_MCP_HOST|127.0.0.1>:<SENTINEL_MCP_PORT|3333>/mcp
+ *
+ *   (default)            → stdio transport (Cursor, Windsurf, Claude Desktop
+ *                          spawn the server as a subprocess)
+ *
+ * HTTP mode is meant for scenarios where the MCP client and the Sentinel
+ * process are decoupled — shared team instance, Docker/Kubernetes deployments,
+ * and local dev workflows where you want to rebuild Sentinel without
+ * restarting the MCP client (client auto-reconnects with exponential backoff).
+ */
 export async function startServer() {
   const server = new McpServer({ name: 'sentinel', version: '3.8.0' });
   registerTools(server, getOrInit, cleanup);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+
+  if (process.env.SENTINEL_MCP_HTTP === '1') {
+    await startHttpTransport(server);
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
+}
+
+async function startHttpTransport(server: McpServer): Promise<void> {
+  const port = Number(process.env.SENTINEL_MCP_PORT ?? 3333);
+  const host = process.env.SENTINEL_MCP_HOST ?? '127.0.0.1';
+
+  // Stateless transport — each request handled independently. Fits our use
+  // case (single Sentinel singleton, client reconnects transparently after
+  // restart). No session ID juggling on the client side either.
+  // Casts: SDK types express `sessionIdGenerator: () => string` even though
+  // stateless mode requires explicit `undefined`; `server.connect` accepts a
+  // compatible Transport but the StreamableHTTP type diverges on optional
+  // callback handlers under `exactOptionalPropertyTypes`.
+  const transport = new StreamableHTTPServerTransport(
+    { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
+  );
+  await server.connect(transport as unknown as Parameters<typeof server.connect>[0]);
+
+  const http = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+    if (req.url !== '/mcp') {
+      res.statusCode = 404;
+      res.end('Not Found — MCP endpoint is /mcp');
+      return;
+    }
+    try {
+      // Parse JSON body (pre-parsing lets the transport skip its own body reader).
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const bodyStr = Buffer.concat(chunks).toString('utf-8');
+      const body = bodyStr ? JSON.parse(bodyStr) : undefined;
+      await transport.handleRequest(req, res, body);
+    } catch (err) {
+      console.error('[Sentinel MCP] HTTP request error:', (err as Error).message);
+      if (!res.writableEnded) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: (err as Error).message }));
+      }
+    }
+  });
+
+  http.listen(port, host, () => {
+    console.error(`[Sentinel MCP] HTTP transport listening on http://${host}:${port}/mcp`);
+  });
+
+  // Graceful shutdown — close HTTP server + browser session on SIGINT/SIGTERM.
+  const shutdown = () => {
+    http.close();
+    void cleanup().finally(() => process.exit(0));
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }

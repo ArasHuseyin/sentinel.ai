@@ -21,6 +21,24 @@ const MAX_PAGE_TEXT_CHARS = 8000;
  */
 const MAX_AOM_ELEMENTS = 150;
 
+/**
+ * Static system prefix for every extract call. Kept byte-for-byte stable
+ * across calls so provider prompt caching (Gemini implicit cache,
+ * Anthropic `cache_control`, OpenAI automatic cache) can reuse the
+ * tokenised prefix. Only format/role guidance lives here — all dynamic
+ * content (instruction, URL, AOM list, page text) stays in the user
+ * prompt.
+ */
+const EXTRACT_SYSTEM_INSTRUCTION = `You are a data-extraction assistant for web pages.
+
+For each request you will receive:
+- An extraction instruction describing what data to return
+- The page URL and title
+- A list of interactive elements from the Accessibility Object Model (AOM), one per line in the format: \`id | role | name | region | value="..."\` (region and value are optional)
+- The visible text content of the page (may be truncated)
+
+Use both the interactive elements and the visible page text to infer the requested data. Return ONLY the JSON matching the provided schema — no prose, no explanations, no markdown code fences.`;
+
 export class ExtractionEngine {
   constructor(
     private page: Page,
@@ -41,22 +59,20 @@ export class ExtractionEngine {
     // MAX_AOM_ELEMENTS. No-op when the page already has ≤ cap elements.
     const filteredElements = filterRelevantElements(aomState.elements, instruction, MAX_AOM_ELEMENTS);
 
-    const prompt = `
-      Extract structured data from a web page according to the instruction: "${instruction}"
+    const prompt = `Instruction: "${instruction}"
 
-      Page URL: ${aomState.url}
-      Page Title: ${aomState.title}
+Page URL: ${aomState.url}
+Page Title: ${aomState.title}
 
-      --- INTERACTIVE ELEMENTS (AOM, id | role | name | region) ---
-      ${filteredElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
+--- INTERACTIVE ELEMENTS ---
+${filteredElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}`).join('\n')}
 
-      --- VISIBLE PAGE TEXT ---
-      ${pageText}
+--- VISIBLE PAGE TEXT ---
+${pageText}`;
 
-      Return ONLY the requested JSON. Do not include explanations.
-    `;
-
-    return await this.gemini.generateStructuredData<T>(prompt, schema);
+    return await this.gemini.generateStructuredData<T>(prompt, schema, {
+      systemInstruction: EXTRACT_SYSTEM_INSTRUCTION,
+    });
   }
 
   /**

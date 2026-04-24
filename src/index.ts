@@ -499,6 +499,27 @@ export class Sentinel extends EventEmitter {
     await this.driver.goto(url);
     this.stateParser?.invalidateCache();
     this.recorder.record({ type: 'goto', url, pageUrl: url, pageTitle: '' });
+
+    // Proactive blocker dismissal. Cookie/consent banners and third-party
+    // overlay widgets are almost universally present on commercial pages and
+    // silently block subsequent interactions — the previous reactive-only
+    // flow paid two extra LLM calls and one act-retry before the recovery
+    // path fired. Clearing them here (once per goto) fixes the false-positive
+    // chain observed on mui.com / amazon.de / reddit.com during live testing
+    // and gives extract() a clean viewport from the first call.
+    if (this.actionEngine && this.stateParser) {
+      try {
+        const state = await this.stateParser.parse();
+        const dismissed = await this.actionEngine.tryRecoverFromBlocker(state);
+        if (dismissed) {
+          this.stateParser.invalidateCache();
+          this.log(1, '🍪 Blocker dismissed after navigation');
+        }
+      } catch (err: any) {
+        this.log(2, `[goto] Proactive blocker dismissal skipped: ${err.message}`);
+      }
+    }
+
     this.emit('navigate', { url });
     this.log(1, `🌐 Navigated to ${url}`);
   }
@@ -718,13 +739,20 @@ export class Sentinel extends EventEmitter {
         const captchaCfg: CaptchaSolverOptions = typeof this.captchaOption === 'string'
           ? { strategy: this.captchaOption }
           : this.captchaOption;
+        // Verifier-rejection feedback accumulated across retry attempts, so the
+        // planner can escalate strategy instead of repeating the same action.
+        const previousFailures: string[] = [];
 
         while (currentAttempt <= retries) {
           stateParser.invalidateCache();
           const stateBefore = await stateParser.parse();
           let result;
           try {
-            result = await actionEngine.act(instruction, options);
+            const attemptOptions: ActOptions & { retries?: number } = {
+              ...(options ?? {}),
+              ...(previousFailures.length > 0 ? { previousFailures } : {}),
+            };
+            result = await actionEngine.act(instruction, attemptOptions);
           } catch (err: any) {
             // CAPTCHA detected mid-action: try the configured solver once,
             // then retry. If the solver can't clear it, surface the error
@@ -745,6 +773,7 @@ export class Sentinel extends EventEmitter {
 
           if (!result.success) {
             this.log(1, `⚠️  Action failed: ${result.message}. Attempt ${currentAttempt + 1}/${retries + 1}`);
+            previousFailures.push(`Action did not execute: ${result.message}`);
             currentAttempt++;
             continue;
           }
@@ -776,7 +805,7 @@ export class Sentinel extends EventEmitter {
           // Pass the technical action label (e.g. 'click on "Switch demo" (checkbox)')
           // rather than the user instruction ('Toggle the first switch') so the
           // verifier's fast-paths can detect the target role accurately.
-          const verification = await verifier.verifyAction(result.action ?? instruction, stateBefore, stateAfter);
+          const verification = await verifier.verifyAction(result.action ?? instruction, stateBefore, stateAfter, instruction);
 
           if (verification.success && verification.confidence > 0.7) {
             this.log(1, `✅ "${instruction}" verified (confidence: ${(verification.confidence * 100).toFixed(0)}%)`);
@@ -800,6 +829,11 @@ export class Sentinel extends EventEmitter {
               `⚠️  Verification weak (${(verification.confidence * 100).toFixed(0)}%): ${verification.message}. ` +
               `Retrying... (${currentAttempt + 1}/${retries + 1})`
             );
+            // Record what the planner just did and why the verifier rejected it,
+            // so the next attempt can escalate (e.g. fill → press Enter) rather
+            // than repeat the same action.
+            const executedAction = result.action ?? 'unknown action';
+            previousFailures.push(`Tried: ${executedAction}. Verifier rejected: ${verification.message}`);
             currentAttempt++;
           }
         }

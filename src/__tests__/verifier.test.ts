@@ -209,6 +209,78 @@ describe('Verifier', () => {
     expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
   });
 
+  // ─── Autocomplete-suggestion false-positive guard ──────────────────────────
+
+  it('falls through to LLM for submit-intent action when only options were added (autocomplete suggestions)', async () => {
+    // Simulates: user asks "search for X and press Enter", sentinel types but Enter is dropped.
+    // Autocomplete dropdown opens → +29 option elements, URL unchanged.
+    // Without the guard this was hugeDelta → auto-success (the observed Amazon/Wikipedia bug).
+    const llm = makeMockLLM({ success: false, confidence: 0.4, explanation: 'Only suggestions opened, search was not submitted' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const baseTextbox = { id: 0, role: 'textbox', name: 'Search', boundingClientRect: { x: 0, y: 0, width: 200, height: 30 } };
+    const before = makeState({
+      url: 'https://amazon.example/',
+      title: 'Amazon',
+      elements: [baseTextbox],
+    });
+    const optionElements = Array.from({ length: 29 }, (_, i) => ({
+      id: i + 1,
+      role: 'option',
+      name: `Suggestion ${i + 1}`,
+      boundingClientRect: { x: 0, y: 40 + i * 20, width: 200, height: 20 },
+    }));
+    const after = makeState({
+      url: 'https://amazon.example/', // URL unchanged — navigation did NOT happen
+      title: 'Amazon',
+      elements: [baseTextbox, ...optionElements],
+    });
+
+    const result = await verifier.verifyAction("Search for 'mechanical keyboard' and submit the search", before, after);
+
+    // LLM should have been consulted (fast path 5 must not short-circuit)
+    expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('suggestions');
+  });
+
+  it('still auto-succeeds for non-submit-intent action when options are added (legitimate dropdown open)', async () => {
+    // e.g. "click the dropdown" — opening a listbox IS the goal. No submit-intent.
+    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const before = makeState({ url: 'https://example.com/', elements: [{ id: 0, role: 'button', name: 'Age', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }] });
+    const optionElements = Array.from({ length: 10 }, (_, i) => ({
+      id: i + 1,
+      role: 'option',
+      name: `Option ${i + 1}`,
+      boundingClientRect: { x: 0, y: 40 + i * 20, width: 100, height: 20 },
+    }));
+    const after = makeState({ url: 'https://example.com/', elements: [{ id: 0, role: 'button', name: 'Age', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }, ...optionElements] });
+
+    const result = await verifier.verifyAction('Click the Age dropdown to open it', before, after);
+
+    // No submit-intent → fast path 5 should still fire
+    expect(result.success).toBe(true);
+    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+  });
+
+  it('auto-succeeds for submit-intent even with options added if URL changed (real navigation)', async () => {
+    // Happy path: submit-intent + options appeared in the result page + URL changed.
+    // Fast path 1 (URL change) should win before Fast Path 5 even runs.
+    const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
+    const verifier = new Verifier({} as any, {} as any, llm);
+
+    const before = makeState({ url: 'https://amazon.example/', elements: [] });
+    const after = makeState({ url: 'https://amazon.example/s?q=laptop', elements: Array.from({ length: 15 }, (_, i) => ({ id: i, role: 'option', name: `Result ${i}`, boundingClientRect: { x: 0, y: 0, width: 100, height: 20 } })) });
+
+    const result = await verifier.verifyAction("Search for 'laptop' and press Enter", before, after);
+
+    expect(result.success).toBe(true);
+    expect(result.confidence).toBeGreaterThanOrEqual(0.9);
+    expect(llm.generateStructuredData).not.toHaveBeenCalled();
+  });
+
   it('returns unverified success (confidence 0.5) when LLM throws', async () => {
     const llm: LLMProvider = {
       generateStructuredData: jest.fn(async () => { throw new Error('Rate limit 429'); }) as any,

@@ -42,8 +42,15 @@ export class Verifier {
   async verifyAction(
     action: string,
     stateBefore: SimplifiedState,
-    stateAfter: SimplifiedState
+    stateAfter: SimplifiedState,
+    userInstruction?: string
   ): Promise<VerificationResult> {
+    // The submit-intent guard (in Fast Path 5) looks at the user's original
+    // instruction, not the technical action label. "Search for X and submit"
+    // is decomposed by the planner into a single fill action — the fill's
+    // action label doesn't mention "submit", so relying on `action` alone
+    // misses every real submit-then-autocomplete false positive.
+    const intentString = userInstruction ?? action;
 
     // ── Fast path 1: URL changed → navigation → very likely success ───────────
     if (stateBefore.url !== stateAfter.url) {
@@ -65,6 +72,25 @@ export class Verifier {
         message: `Page title changed to "${stateAfter.title}"`,
         confidence: 0.90,
       };
+    }
+
+    // ── Submit-intent safeguard ───────────────────────────────────────────────
+    // Actions that semantically require a server round-trip (search, submit,
+    // press enter, go) almost always produce URL or title change on modern
+    // consumer sites. If we reached this point — URL AND title both unchanged
+    // — the submission did NOT fire. Any downstream fast-path signal (DOM
+    // delta, focus change, checked toggle) is a side-effect of the partial
+    // interaction (autocomplete opened, input focused), not evidence of
+    // success. Skip straight to the LLM slow path so it can honestly read
+    // the AOM diff.
+    //
+    // Root cause: the planner sometimes decomposes "search AND submit" into
+    // a single fill, and the fill's side-effects (focus, autocomplete) fooled
+    // every non-navigation fast-path into false-positive success on Amazon
+    // and Wikipedia during live testing.
+    const isSubmitIntent = /\b(submit|press\s+(?:enter|return)|send\s+search|search\s+for|navigate\s+to|go\s+to)\b/i.test(intentString);
+    if (isSubmitIntent) {
+      console.log(`[Verifier] Submit-intent action with no URL/title change — skipping non-navigation fast paths, going to LLM slow path`);
     }
 
     // ── Fast path 3: Scroll actions — AOM doesn't change on scroll ───────────
@@ -91,7 +117,7 @@ export class Verifier {
     // false-negative retries that would un-toggle the element.
     const isToggleClick = /click/i.test(action) &&
       /\b(checkbox|switch|radio)\b/i.test(action);
-    if (isToggleClick) {
+    if (isToggleClick && !isSubmitIntent) {
       console.log(`[Verifier] Toggle-click on checkbox/switch/radio — auto-success.`);
       return {
         done: true,
@@ -114,7 +140,7 @@ export class Verifier {
       .sort()
       .join('\0');
 
-    if (beforeChecked !== afterChecked) {
+    if (beforeChecked !== afterChecked && !isSubmitIntent) {
       console.log(`[Verifier] Checked state changed. Auto-success.`);
       return {
         done: true,
@@ -128,14 +154,22 @@ export class Verifier {
     // If the number of interactive elements changed by ±5 or more, something
     // clearly happened (modal opened/closed, list loaded, etc.) — no need for LLM.
     //
-    // False-positive guard: if the delta is small-to-medium (5-19) AND the
+    // False-positive guard 1: if the delta is small-to-medium (5-19) AND the
     // target element vanished from the new state without a URL/title change,
     // we likely hit an unrelated DOM update (analytics widget, notification
     // counter, lazy-loaded sidebar) rather than the intended interaction.
     // Fall through to semantic verification instead of claiming auto-success.
     // Huge deltas (≥ 20) are still auto-success — modal open, page transition.
+    //
+    // False-positive guard 2: for actions that semantically imply submission
+    // (search, press enter, go, submit), a DOM delta dominated by `option`
+    // role elements without a URL change almost always means an autocomplete
+    // dropdown opened — the typing worked, but the submit did not fire. This
+    // was the dominant failure mode in live testing (Amazon, Wikipedia search).
+    // Fall through to LLM slow path, which can reason about whether the state
+    // reflects the intended outcome.
     const elementDelta = Math.abs(stateAfter.elements.length - stateBefore.elements.length);
-    if (elementDelta >= 5) {
+    if (elementDelta >= 5 && !isSubmitIntent) {
       const targetNameMatch = /"([^"]+)"/.exec(action);
       const targetName = targetNameMatch?.[1];
       const targetStillPresent = targetName
@@ -143,6 +177,7 @@ export class Verifier {
         : true; // no target extracted — assume presence (can't check)
 
       const hugeDelta = elementDelta >= 20;
+
       if (hugeDelta || targetStillPresent) {
         console.log(`[Verifier] Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
         return {
@@ -151,17 +186,20 @@ export class Verifier {
           message: `DOM changed significantly (${elementDelta} elements ${stateAfter.elements.length > stateBefore.elements.length ? 'added' : 'removed'})`,
           confidence: 0.85,
         };
+      } else {
+        // Medium delta + target vanished → likely unrelated DOM update.
+        // Fall through to focus check / semantic LLM verification.
+        console.log(`[Verifier] Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`);
       }
-      // Medium delta + target vanished → likely unrelated DOM update.
-      // Fall through to focus check / semantic LLM verification.
-      console.log(`[Verifier] Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`);
     }
 
     // ── Fast path 6: Focused element changed ─────────────────────────────────
     // A focus change is strong evidence that a click/tab/fill action succeeded.
+    // Guarded by !isSubmitIntent: for search-and-submit intents, focus moving
+    // into the search box is the PARTIAL result (typing started), not success.
     const focusedBefore = stateBefore.elements.find(e => e.state?.focused)?.name ?? null;
     const focusedAfter  = stateAfter.elements.find(e => e.state?.focused)?.name ?? null;
-    if (focusedBefore !== focusedAfter) {
+    if (focusedBefore !== focusedAfter && !isSubmitIntent) {
       console.log(`[Verifier] Focused element changed: "${focusedBefore}" → "${focusedAfter}". Auto-success.`);
       return {
         done: true,
@@ -172,8 +210,17 @@ export class Verifier {
     }
 
     // ── Slow path: LLM semantic verification ─────────────────────────────────
+    // The prompt distinguishes between the original user goal and the atomic
+    // action the planner executed. Without that split, the LLM rates success
+    // against the narrow action ("fill search box") and happily returns true
+    // when the side-effects (input focused, autocomplete opened) match, even
+    // when the broader user goal ("search AND submit") was not achieved.
+    const userGoalBlock = userInstruction && userInstruction !== action
+      ? `User's original goal: "${userInstruction}"\n      Atomic action executed: "${action}"`
+      : `I performed an action on a web page: "${action}"`;
+
     const prompt = `
-      I performed an action on a web page: "${action}"
+      ${userGoalBlock}
 
       State BEFORE the action:
       ${JSON.stringify(summarizeState(stateBefore), null, 2)}
@@ -182,8 +229,10 @@ export class Verifier {
       ${JSON.stringify(summarizeState(stateAfter), null, 2)}
 
       Based on the semantic differences between these states (URL, title, element changes,
-      checked/focused state), did the action achieve its intended goal?
-      Rate your confidence between 0.0 and 1.0.
+      checked/focused state), did the action achieve the USER'S ORIGINAL GOAL — not merely
+      the atomic action? For example, if the user wanted to "search and submit" but the
+      state only shows autocomplete suggestions appeared (no URL/title change), the goal
+      was NOT achieved. Rate your confidence between 0.0 and 1.0.
     `;
 
     const schema = {

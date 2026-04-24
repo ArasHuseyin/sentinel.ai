@@ -326,12 +326,15 @@ describe('Integration: ExtractionEngine', () => {
 
     expect(result).toEqual(extractedData);
 
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const call = (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[];
+    const promptArg = call[0] as string;
+    const optionsArg = call[2] as { systemInstruction?: string } | undefined;
     expect(promptArg).toContain('Widget A');
     expect(promptArg).toContain('Products');
     expect(promptArg).toContain(pageTextContent);
-    expect(promptArg).toContain('INTERACTIVE ELEMENTS (AOM,');
+    expect(promptArg).toContain('INTERACTIVE ELEMENTS');
     expect(promptArg).toContain('VISIBLE PAGE TEXT');
+    expect(optionsArg?.systemInstruction).toContain('data-extraction assistant');
   });
 
   it('handles page text extraction failure gracefully', async () => {
