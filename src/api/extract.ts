@@ -7,6 +7,28 @@ import { z } from 'zod';
 const MAX_PAGE_TEXT_CHARS = 8000;
 
 /**
+ * Minimum string length to validate against the page corpus. Short strings
+ * (1-4 chars) are noise-prone — "15", "EN", "de" can legitimately appear on
+ * any page unrelated to the instruction — so they don't count for/against
+ * the grounding score.
+ */
+const GROUNDING_MIN_STRING_LEN = 5;
+
+/**
+ * Minimum number of extracted strings before we trust the grounding ratio.
+ * Below this count the denominator is too small for a reliable signal.
+ */
+const GROUNDING_MIN_STRING_COUNT = 3;
+
+/**
+ * Fraction of extracted strings that must appear in the page corpus for
+ * the response to be treated as grounded. 0.3 means: at least 30 % of
+ * scoreable strings must be traceable to page text or AOM element names.
+ * Below that the result is almost certainly fabricated from prior knowledge.
+ */
+const GROUNDING_MIN_MATCH_RATIO = 0.3;
+
+/**
  * Upper bound on AOM elements embedded in the extraction prompt.
  *
  * On a dense results page (Amazon search, category listings, docs sites)
@@ -37,7 +59,13 @@ For each request you will receive:
 - A list of interactive elements from the Accessibility Object Model (AOM), one per line in the format: \`id | role | name | region | value="..."\` (region and value are optional)
 - The visible text content of the page (may be truncated)
 
-Use both the interactive elements and the visible page text to infer the requested data. Return ONLY the JSON matching the provided schema — no prose, no explanations, no markdown code fences.`;
+STRICT GROUNDING RULES — these override everything else:
+1. Every value you emit MUST be traceable to specific content in the supplied AOM elements or visible page text. Never draw on prior knowledge, training data, or general assumptions about the site or topic.
+2. If the page clearly does NOT contain the requested data (redirected homepage, empty results, login wall, error page, mismatched URL), return the schema shape with null / empty string / empty array values — whichever the schema accepts. Do NOT fabricate plausible-looking data to fill the shape.
+3. Before returning any field value, ask yourself: "can I point at the exact substring in the supplied context?" — if not, the value is null or empty.
+4. When a list is requested and fewer real matches exist than the instruction asks for, return only the matches you can ground. An instruction for "top 5" on a page with only 2 matching items returns an array of length 2, not 5.
+
+Return ONLY the JSON matching the provided schema — no prose, no explanations, no markdown code fences.`;
 
 export class ExtractionEngine {
   constructor(
@@ -70,9 +98,17 @@ ${filteredElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e
 --- VISIBLE PAGE TEXT ---
 ${pageText}`;
 
-    return await this.gemini.generateStructuredData<T>(prompt, schema, {
+    const result = await this.gemini.generateStructuredData<T>(prompt, schema, {
       systemInstruction: EXTRACT_SYSTEM_INSTRUCTION,
     });
+
+    // Post-extract grounding filter: if none of the string values in the
+    // returned object appear in the page text or AOM element names, Gemini
+    // hallucinated (seen on redirected/homepage CodePen, Amazon fallback etc.).
+    // This is a last line of defense after the prompt-level STRICT GROUNDING
+    // rules — Gemini sometimes ignores anti-hallucination instructions when
+    // the schema strongly suggests a non-empty shape.
+    return groundingFilter(result, pageText, filteredElements);
   }
 
   /**
@@ -105,3 +141,97 @@ ${pageText}`;
     }
   }
 }
+
+// ─── Post-extract grounding filter ────────────────────────────────────────────
+
+/**
+ * Walks an extracted result and collects every string leaf. Used by the
+ * grounding filter to score how much of the LLM's output is actually present
+ * in the page corpus.
+ */
+function collectStrings(value: unknown, out: string[]): void {
+  if (typeof value === 'string') {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, out);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) collectStrings(v, out);
+  }
+}
+
+/**
+ * Returns the same-shape value with all leaf strings blanked, arrays emptied,
+ * and numbers/booleans zeroed. Used when a result is detected as ungrounded —
+ * we preserve the expected schema shape (so zod/JSON-schema validation
+ * downstream doesn't crash) while signalling "nothing extracted".
+ */
+function emptyLike<T>(value: T): T {
+  if (Array.isArray(value)) return [] as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (Array.isArray(v)) out[k] = [];
+      else if (typeof v === 'string') out[k] = '';
+      else if (typeof v === 'number') out[k] = 0;
+      else if (typeof v === 'boolean') out[k] = false;
+      else if (v === null || v === undefined) out[k] = null;
+      else out[k] = emptyLike(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
+type ExtractElement = { role: string; name: string; value?: string };
+
+/**
+ * Deterministic grounding check. Counts how many scoreable strings from the
+ * LLM's response can be located (as case-insensitive substrings) in the page
+ * text or the AOM element names/values the LLM was given. If fewer than
+ * `GROUNDING_MIN_MATCH_RATIO` of scoreable strings match AND there are at
+ * least `GROUNDING_MIN_STRING_COUNT` of them, the response is treated as
+ * hallucinated and replaced with an empty-shape equivalent.
+ *
+ * This fires AFTER the LLM has run, so it's a safety net — the prompt-level
+ * grounding rules handle the cooperative case, this handles the case where
+ * Gemini ignores those rules.
+ */
+function groundingFilter<T>(result: T, pageText: string, elements: ExtractElement[]): T {
+  const strings: string[] = [];
+  collectStrings(result, strings);
+
+  const corpus = [
+    pageText,
+    ...elements.map(e => `${e.name} ${e.value ?? ''}`),
+  ].join(' ').toLowerCase();
+
+  let scoreable = 0;
+  let matches = 0;
+  for (const raw of strings) {
+    const s = raw.trim().toLowerCase();
+    if (s.length < GROUNDING_MIN_STRING_LEN) continue;
+    scoreable++;
+    // Match on first 40 chars — enough to catch verbatim content while
+    // tolerating punctuation/whitespace normalization differences between
+    // what the LLM emitted and what innerText returned.
+    const probe = s.slice(0, Math.min(40, s.length));
+    if (corpus.includes(probe)) matches++;
+  }
+
+  if (scoreable >= GROUNDING_MIN_STRING_COUNT) {
+    const ratio = matches / scoreable;
+    if (ratio < GROUNDING_MIN_MATCH_RATIO) {
+      console.warn(
+        `[Extract] Ungrounded response filtered: ${matches}/${scoreable} strings found in page corpus (ratio ${ratio.toFixed(2)} < ${GROUNDING_MIN_MATCH_RATIO}). Returning empty-shape.`
+      );
+      return emptyLike(result);
+    }
+  }
+
+  return result;
+}
+

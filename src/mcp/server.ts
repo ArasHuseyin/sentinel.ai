@@ -255,52 +255,67 @@ export function registerTools(
  * restarting the MCP client (client auto-reconnects with exponential backoff).
  */
 export async function startServer() {
-  const server = new McpServer({ name: 'sentinel', version: '4.1.4' });
-  registerTools(server, getOrInit, cleanup);
-
   if (process.env.SENTINEL_MCP_HTTP === '1') {
-    await startHttpTransport(server);
+    // HTTP transport creates a fresh McpServer per request (see
+    // startHttpTransport) — no shared server needed here.
+    await startHttpTransport();
   } else {
+    const server = new McpServer({ name: 'sentinel', version: '4.1.5' });
+    registerTools(server, getOrInit, cleanup);
     const transport = new StdioServerTransport();
     await server.connect(transport);
   }
 }
 
-async function startHttpTransport(server: McpServer): Promise<void> {
+async function startHttpTransport(): Promise<void> {
   const port = Number(process.env.SENTINEL_MCP_PORT ?? 3333);
   const host = process.env.SENTINEL_MCP_HOST ?? '127.0.0.1';
 
-  // Stateless transport — each request handled independently. Fits our use
-  // case (single Sentinel singleton, client reconnects transparently after
-  // restart). No session ID juggling on the client side either.
-  // Casts: SDK types express `sessionIdGenerator: () => string` even though
-  // stateless mode requires explicit `undefined`; `server.connect` accepts a
-  // compatible Transport but the StreamableHTTP type diverges on optional
-  // callback handlers under `exactOptionalPropertyTypes`.
-  const transport = new StreamableHTTPServerTransport(
-    { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
-  );
-  await server.connect(transport as unknown as Parameters<typeof server.connect>[0]);
-
+  // Stateless mode pattern (per MCP SDK docs): create a fresh McpServer and
+  // transport per HTTP request. Sharing a single transport across requests
+  // breaks after the first initialize because the transport's internal
+  // request/response wiring is single-use. Tool execution reaches the shared
+  // Sentinel browser singleton via `getOrInit()` inside the registered tool
+  // handlers, so a new McpServer per request is cheap — it's just the wiring,
+  // not the browser.
   const http = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
     if (req.url !== '/mcp') {
       res.statusCode = 404;
       res.end('Not Found — MCP endpoint is /mcp');
       return;
     }
+    let perReqServer: McpServer | null = null;
+    let perReqTransport: StreamableHTTPServerTransport | null = null;
     try {
+      perReqServer = new McpServer({ name: 'sentinel', version: '4.1.5' });
+      registerTools(perReqServer, getOrInit, cleanup);
+      perReqTransport = new StreamableHTTPServerTransport(
+        { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
+      );
+      await perReqServer.connect(perReqTransport as unknown as Parameters<typeof perReqServer.connect>[0]);
+
       // Parse JSON body (pre-parsing lets the transport skip its own body reader).
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
       const bodyStr = Buffer.concat(chunks).toString('utf-8');
       const body = bodyStr ? JSON.parse(bodyStr) : undefined;
-      await transport.handleRequest(req, res, body);
+
+      // On response close, tear down the per-request plumbing (but NOT the
+      // shared Sentinel browser session — that lives across requests).
+      res.on('close', () => {
+        perReqTransport?.close().catch(() => {});
+        perReqServer?.close().catch(() => {});
+      });
+
+      await perReqTransport.handleRequest(req, res, body);
     } catch (err) {
       console.error('[Sentinel MCP] HTTP request error:', (err as Error).message);
       if (!res.writableEnded) {
         res.statusCode = 500;
         res.end(JSON.stringify({ error: (err as Error).message }));
       }
+      perReqTransport?.close().catch(() => {});
+      perReqServer?.close().catch(() => {});
     }
   });
 

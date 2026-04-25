@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { z } from 'zod';
 import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -80,15 +81,22 @@ export class GeminiProvider implements LLMProvider {
   ): Promise<T> {
     const jsonSchema = resolveJsonSchema(schema);
     const model = this.getModelFor(options?.systemInstruction);
-    return withRetry(async () => {
+    const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+
+    // One-shot adaptive retry on truncation. Gemini sets
+    // candidates[0].finishReason='MAX_TOKENS' when the cap is hit; the partial
+    // text is usually invalid JSON. We retry once at the larger
+    // RETRY_MAX_OUTPUT_TOKENS budget — anything still truncating there is a
+    // runaway loop and should surface the parse error.
+    const callOnce = async (cap: number): Promise<{ text: string; truncated: boolean }> => {
       const result = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: jsonSchema,
+          maxOutputTokens: cap,
         },
       });
-      const text = result.response.text();
       const meta = result.response.usageMetadata;
       if (meta) {
         this.onTokenUsage?.({
@@ -96,6 +104,20 @@ export class GeminiProvider implements LLMProvider {
           outputTokens: meta.candidatesTokenCount ?? 0,
           totalTokens: (meta.promptTokenCount ?? 0) + (meta.candidatesTokenCount ?? 0),
         });
+      }
+      const finishReason = result.response.candidates?.[0]?.finishReason;
+      const truncated = finishReason === 'MAX_TOKENS';
+      const text = result.response.text();
+      return { text, truncated };
+    };
+
+    return withRetry(async () => {
+      let { text, truncated } = await callOnce(requestedCap);
+      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+        console.warn(
+          `[Gemini] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        );
+        ({ text, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }
       const parsed = JSON.parse(text);
       if (isZodSchema(schema)) return schema.parse(parsed) as T;

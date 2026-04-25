@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.1.5] - 2026-04-25
+
+### Added
+
+- **Output-token cap with adaptive retry across all LLM providers** — every `generateStructuredData` call is now bounded by a default `maxOutputTokens=16000` budget (overridable per call via `GenerateOptions.maxOutputTokens`). When the provider signals truncation (`finishReason='MAX_TOKENS'` on Gemini, `finish_reason='length'` on OpenAI, `stop_reason='max_tokens'` on Claude, `done_reason='length'` on Ollama), the call is automatically retried once at 32000 tokens. Bounds the worst-case cost spike from runaway generations (a single Amazon-search call at 64k tokens cost ~$0.40 before; the same scenario now caps at ~$0.05 worst-case) without affecting the 99 % of calls that finish well under 16k. Validated end-to-end on `amazon.de` via the MCP server: largest observed output was 12,248 tokens, no truncation retry triggered, total session cost $0.0068.
+
+### Fixed
+
+- **Extract hallucination on redirected / empty / off-topic pages** — two-layer grounding guard:
+  1. **Prompt-level STRICT GROUNDING RULES** in `EXTRACT_SYSTEM_INSTRUCTION` — every value must be traceable to AOM elements or visible page text; if the page lacks the requested data, return the schema shape with empty / null values instead of fabricating from prior knowledge.
+  2. **Deterministic post-extract grounding filter** — collects every string leaf from the LLM response, checks each (≥5 chars, first-40-char probe) as a case-insensitive substring against `pageText` + AOM names/values; if fewer than 30 % of ≥3 scoreable strings match the page corpus, replaces the result with an empty-shape equivalent (arrays→[], strings→'', numbers→0). Catches the cooperative-failure case where Gemini ignores the prompt rules under strong schema pressure (e.g. asking for "5 pens" on `example.com` no longer returns 5 imagined pens — returns `{pens: []}`).
+- **HTTP MCP transport returned 500 on every request after the first** — the original single-shared-transport design broke after `initialize` because `StreamableHTTPServerTransport`'s request/response wiring is single-use. `startHttpTransport()` now creates a fresh `McpServer` + transport per incoming HTTP request and tears them down on `res.on('close')`. The shared `Sentinel` browser singleton (via `getOrInit()`) lives across requests, so the per-request overhead is just the wiring, not the browser.
+
+### Changed
+
+- **`GenerateOptions.maxOutputTokens?: number`** — new optional per-call budget. All four providers (Gemini, OpenAI, Claude, Ollama) honour it via their respective output-cap fields (`generationConfig.maxOutputTokens`, `max_tokens`, `max_tokens`, `options.num_predict`). The Claude provider's previous hardcoded `max_tokens: 4096` for structured calls is removed in favour of the shared default.
+
+---
+
 ## [4.1.4] - 2026-04-24
 
 ### Added

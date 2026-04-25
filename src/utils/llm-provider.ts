@@ -16,10 +16,33 @@ export type SchemaInput<T> = z.ZodType<T> | Record<string, any>;
  * prompt caching (prompts >= 1024 tokens, 50% discount on hits), and Anthropic's
  * `cache_control`. Callers should put everything that *doesn't* change with the
  * current page state here.
+ *
+ * `maxOutputTokens`: per-call output cap. Defaults to `DEFAULT_MAX_OUTPUT_TOKENS`
+ * (16000) when unset. Providers that detect truncation (Gemini MAX_TOKENS,
+ * OpenAI finish_reason='length', Anthropic stop_reason='max_tokens') retry once
+ * with double the cap before surfacing a parse error. Override for known-large
+ * extracts (e.g. 50-row tables) or known-tiny calls (reflect → 1000).
  */
 export interface GenerateOptions {
   systemInstruction?: string;
+  maxOutputTokens?: number;
 }
+
+/**
+ * Global default output cap. Sized to comfortably cover legitimate browser-
+ * automation outputs (Amazon Top-50 ≈ 8k tokens, Wikipedia tables ≈ 10k,
+ * Reddit threads ≈ 12k) while bounding pathological runaway calls — we
+ * observed a single Gemini call emit 64k output tokens on Amazon search,
+ * driving cost and latency 8× normal. With this cap that worst case is
+ * capped at ~$0.05 instead of ~$0.40.
+ *
+ * The matching `RETRY_MAX_OUTPUT_TOKENS` (32000) is used by providers'
+ * adaptive-retry path on detected truncation: if a legitimate large extract
+ * gets cut, one retry at double the budget recovers it. Anything still
+ * truncating at 32k is almost certainly a runaway loop, surface the error.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16000;
+export const RETRY_MAX_OUTPUT_TOKENS = 32000;
 
 /**
  * Unified interface for all LLM providers.

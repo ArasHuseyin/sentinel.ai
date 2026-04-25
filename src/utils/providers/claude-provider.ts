@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -49,14 +50,16 @@ export class ClaudeProvider implements LLMProvider {
     schema: SchemaInput<T>,
     options?: GenerateOptions
   ): Promise<T> {
-    return withRetry(async () => {
-      // Claude uses tool_use for structured output.
-      // systemInstruction is passed as the `system` param with cache_control so
-      // Anthropic prompt caching (90% discount on cache hits) applies to the
-      // stable prefix across calls.
+    const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+
+    // One-shot adaptive retry on truncation: Claude signals via
+    // stop_reason='max_tokens'. The tool_use block is usually still present
+    // but with incomplete input, so we surface the truncation explicitly
+    // before retrying.
+    const callOnce = async (cap: number): Promise<{ response: any; truncated: boolean }> => {
       const request: any = {
         model: this.model,
-        max_tokens: 4096,
+        max_tokens: cap,
         tools: [
           {
             name: 'structured_output',
@@ -75,8 +78,19 @@ export class ClaudeProvider implements LLMProvider {
         }];
       }
       const response = await this.client.messages.create(request);
-
       this.reportUsage(response);
+      const truncated = response?.stop_reason === 'max_tokens';
+      return { response, truncated };
+    };
+
+    return withRetry(async () => {
+      let { response, truncated } = await callOnce(requestedCap);
+      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+        console.warn(
+          `[Claude] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        );
+        ({ response, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
+      }
       const toolUse = (response.content as any[])?.find((c: any) => c.type === 'tool_use');
       if (!toolUse) throw new LLMError('No tool_use block in response');
       if (isZodSchema(schema)) return (schema as z.ZodType<T>).parse(toolUse.input);

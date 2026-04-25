@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -54,10 +55,13 @@ export class OpenAIProvider implements LLMProvider {
     schema: SchemaInput<T>,
     options?: GenerateOptions
   ): Promise<T> {
-    return withRetry(async () => {
+    const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+
+    // One-shot adaptive retry on truncation: OpenAI signals via
+    // finish_reason='length'. Mirrors the Gemini path so behavior is
+    // consistent across providers.
+    const callOnce = async (cap: number): Promise<{ content: string; truncated: boolean }> => {
       const messages: Array<{ role: string; content: string }> = [];
-      // A stable leading system message enables OpenAI's automatic prompt caching
-      // (prompts ≥1024 tokens get a 50% discount on the cached prefix).
       if (options?.systemInstruction) {
         messages.push({ role: 'system', content: options.systemInstruction });
       }
@@ -65,6 +69,7 @@ export class OpenAIProvider implements LLMProvider {
       const response = await this.client.chat.completions.create({
         model: this.model,
         messages,
+        max_tokens: cap,
         response_format: {
           type: 'json_schema',
           json_schema: {
@@ -75,7 +80,20 @@ export class OpenAIProvider implements LLMProvider {
         },
       });
       this.reportUsage(response);
-      const content = response.choices[0]?.message?.content ?? '{}';
+      const choice = response.choices[0];
+      const content = choice?.message?.content ?? '{}';
+      const truncated = choice?.finish_reason === 'length';
+      return { content, truncated };
+    };
+
+    return withRetry(async () => {
+      let { content, truncated } = await callOnce(requestedCap);
+      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+        console.warn(
+          `[OpenAI] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        );
+        ({ content, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
+      }
       let parsed: any;
       try {
         parsed = JSON.parse(content);

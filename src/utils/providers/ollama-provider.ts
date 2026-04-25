@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
+import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
@@ -44,15 +45,21 @@ export class OllamaProvider implements LLMProvider {
     schema: SchemaInput<T>,
     options?: GenerateOptions
   ): Promise<T> {
-    return withRetry(async () => {
-      // Ollama has no prompt-caching; we merge systemInstruction into the system
-      // message so the model still sees the agent rules alongside the JSON-format
-      // guidance. Token cost is unchanged — this keeps API parity with other providers.
-      const jsonGuide = `You are a JSON API. Always respond with valid JSON that matches this schema: ${JSON.stringify(schema)}. No markdown, no explanation, only raw JSON.`;
-      const systemPrompt = options?.systemInstruction
-        ? `${options.systemInstruction}\n\n${jsonGuide}`
-        : jsonGuide;
+    const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
+    // Ollama has no prompt-caching; we merge systemInstruction into the system
+    // message so the model still sees the agent rules alongside the JSON-format
+    // guidance. Token cost is unchanged — this keeps API parity with other providers.
+    const jsonGuide = `You are a JSON API. Always respond with valid JSON that matches this schema: ${JSON.stringify(schema)}. No markdown, no explanation, only raw JSON.`;
+    const systemPrompt = options?.systemInstruction
+      ? `${options.systemInstruction}\n\n${jsonGuide}`
+      : jsonGuide;
+
+    // Ollama exposes the output cap as options.num_predict. On recent server
+    // versions, done_reason='length' signals truncation — we mirror the
+    // adaptive-retry pattern from the cloud providers. Older Ollama builds
+    // omit done_reason; the retry simply never fires there, which is safe.
+    const callOnce = async (cap: number): Promise<{ content: string; truncated: boolean }> => {
       const response = await fetch(`${this.baseURL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,21 +67,31 @@ export class OllamaProvider implements LLMProvider {
           model: this.model,
           stream: false,
           format: 'json',
+          options: { num_predict: cap },
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: prompt },
           ],
         }),
       });
-
       if (!response.ok) {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
-
       const data = await response.json() as any;
       this.reportUsage(data);
       const content = data?.message?.content ?? '{}';
+      const truncated = data?.done_reason === 'length';
+      return { content, truncated };
+    };
 
+    return withRetry(async () => {
+      let { content, truncated } = await callOnce(requestedCap);
+      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+        console.warn(
+          `[Ollama] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        );
+        ({ content, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
+      }
       try {
         const parsed = JSON.parse(content);
         if (isZodSchema(schema)) return (schema as z.ZodType<T>).parse(parsed);
