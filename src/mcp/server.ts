@@ -260,12 +260,19 @@ export async function startServer() {
     // startHttpTransport) — no shared server needed here.
     await startHttpTransport();
   } else {
-    const server = new McpServer({ name: 'sentinel', version: '4.1.5' });
+    const server = new McpServer({ name: 'sentinel', version: '4.1.6' });
     registerTools(server, getOrInit, cleanup);
     const transport = new StdioServerTransport();
     await server.connect(transport);
   }
 }
+
+/**
+ * Interval at which we write SSE heartbeat comments (`: hb\n\n`) on long-running
+ * tool calls. Browser/proxy/runtime idle timers typically fire between 30 and
+ * 60 seconds; 25 s leaves comfortable headroom on both sides.
+ */
+const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
 
 async function startHttpTransport(): Promise<void> {
   const port = Number(process.env.SENTINEL_MCP_PORT ?? 3333);
@@ -284,10 +291,54 @@ async function startHttpTransport(): Promise<void> {
       res.end('Not Found — MCP endpoint is /mcp');
       return;
     }
+
+    // Long-running agent runs (`sentinel_run`) regularly take 3-5+ minutes
+    // because each step is bounded by browser+LLM latency, not CPU. The MCP
+    // Streamable HTTP SDK opens an SSE response and only writes bytes when the
+    // tool completes — no heartbeats. If no bytes flow for the duration of
+    // Node's `server.requestTimeout` (300 s default in Node 18+) the socket
+    // is killed and the client sees `transport dropped mid-call`. We hijack
+    // `res.writeHead` to detect when an SSE response starts, then write a
+    // `:hb\n\n` comment every 25 s until the response closes — the comment is
+    // valid SSE syntax (clients ignore it) but resets idle timers along the
+    // entire path (Node, proxies, fetch keepalive, etc.). The server-level
+    // `requestTimeout = 0` covers the Node side independently in case the
+    // detection misses an edge case.
+    let heartbeatTimer: NodeJS.Timeout | null = null;
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    };
+    const startHeartbeatIfSse = (headers: unknown) => {
+      if (heartbeatTimer || !headers || typeof headers !== 'object') return;
+      const h = headers as Record<string, unknown>;
+      const ct = (h['content-type'] ?? h['Content-Type']) as string | undefined;
+      if (typeof ct !== 'string' || !ct.toLowerCase().includes('text/event-stream')) return;
+      heartbeatTimer = setInterval(() => {
+        try {
+          if (res.writableEnded) {
+            stopHeartbeat();
+            return;
+          }
+          res.write(': hb\n\n');
+        } catch {
+          stopHeartbeat();
+        }
+      }, SSE_HEARTBEAT_INTERVAL_MS);
+    };
+    const origWriteHead = res.writeHead.bind(res);
+    res.writeHead = ((...args: unknown[]) => {
+      // Headers may appear as the 2nd or 3rd positional argument; scan both.
+      for (const arg of args) startHeartbeatIfSse(arg);
+      return (origWriteHead as (...a: unknown[]) => ServerResponse)(...args);
+    }) as ServerResponse['writeHead'];
+
     let perReqServer: McpServer | null = null;
     let perReqTransport: StreamableHTTPServerTransport | null = null;
     try {
-      perReqServer = new McpServer({ name: 'sentinel', version: '4.1.5' });
+      perReqServer = new McpServer({ name: 'sentinel', version: '4.1.6' });
       registerTools(perReqServer, getOrInit, cleanup);
       perReqTransport = new StreamableHTTPServerTransport(
         { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
@@ -303,13 +354,16 @@ async function startHttpTransport(): Promise<void> {
       // On response close, tear down the per-request plumbing (but NOT the
       // shared Sentinel browser session — that lives across requests).
       res.on('close', () => {
+        stopHeartbeat();
         perReqTransport?.close().catch(() => {});
         perReqServer?.close().catch(() => {});
       });
+      res.on('finish', stopHeartbeat);
 
       await perReqTransport.handleRequest(req, res, body);
     } catch (err) {
       console.error('[Sentinel MCP] HTTP request error:', (err as Error).message);
+      stopHeartbeat();
       if (!res.writableEnded) {
         res.statusCode = 500;
         res.end(JSON.stringify({ error: (err as Error).message }));
@@ -318,6 +372,16 @@ async function startHttpTransport(): Promise<void> {
       perReqServer?.close().catch(() => {});
     }
   });
+
+  // Disable Node's request timeouts. SSE responses for long agent runs sit
+  // open with no incoming/outgoing bytes for minutes at a time, which Node 18+
+  // would otherwise kill after `requestTimeout` (default 300 s) or the legacy
+  // `socket.timeout`. With the per-request heartbeat injector above and the
+  // 127.0.0.1 default bind, removing the timeout is safe — the heartbeat keeps
+  // genuine activity flowing, and a hung client connection eventually gets
+  // collected by `res.on('close')` cleanup.
+  http.requestTimeout = 0;
+  http.timeout = 0;
 
   http.listen(port, host, () => {
     console.error(`[Sentinel MCP] HTTP transport listening on http://${host}:${port}/mcp`);

@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.1.6] - 2026-05-19
+
+### Changed
+
+- **Internal restructure of `src/index.ts` and `src/api/act.ts`** — no public-API change, no behavioural change. Reduces friction for contributors and trims the largest source files to comfortable review sizes. Validated by the full unit-test suite (605/605 passing).
+  - `src/index.ts` (1212 → 930 LOC): `SentinelOptions`, `ExtendedPage`, `ParallelTask` / `ParallelResult` / `ParallelOptions` extracted to `src/types/sentinel-options.ts`; the public re-export barrel moved to `src/exports.ts`. Every symbol previously importable from `@isoldex/sentinel` is still importable from `@isoldex/sentinel` — the barrel re-exports them unchanged.
+  - `src/api/act.ts` (2952 → 1664 LOC, −44 %): the `ActionEngine` class kept its public surface but delegated its specialised paths to new modules under `src/api/act/`:
+    - `types.ts` — `ActOptions` / `ActionAttempt` / `ActionResult` / `ActionType` (re-exported by `act.ts` for backward-compat consumers).
+    - `page-settle.ts`, `mouse.ts`, `diagnostics.ts`, `chunking.ts`, `datepicker.ts` — free functions that previously lived as private helpers on `ActionEngine`. `filterRelevantElements`, `parseDateValue`, `formatNativeInputValue` remain importable from `../api/act.js` via re-export.
+    - `pattern-cache.ts` — new `PatternCacheCoordinator` class. Owns fingerprinting, hit-probing, JIT pre-action fingerprints for off-pool targets, and post-success recording (with sensitive-value redaction). Hit execution receives `performAction` per call as a callback to avoid circular wiring.
+    - `dropdown.ts` — five free page-only helpers: `focusDropdownPopupInput`, `trySetNativeSelectValue`, `clickBestMatchingOption`, `isListboxPopoverVisible`, `ensurePopoverClosed`.
+    - `click-locator.ts` — pointer-intercept fallback as a free function; `ActionEngine.clickLocator()` is now a thin wrapper that injects the warn logger.
+    - `blocker-recovery.ts` — new `BlockerRecovery` class encapsulating the three cookie/overlay/modal recovery patterns and the locator-based `performSemanticFallback`. `ActionEngine.tryRecoverFromBlocker(state)` stays public for `Sentinel.goto()`.
+
+### Removed
+
+- Two dead imports (`PatternSequence` in `act.ts`, `detectCaptcha` in `index.ts`) left behind by the refactor.
+
+---
+
 ## [4.1.5] - 2026-04-25
 
 ### Added
