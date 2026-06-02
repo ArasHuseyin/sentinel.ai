@@ -1,5 +1,9 @@
 import * as dotenv from 'dotenv';
-dotenv.config();
+// `quiet: true` suppresses dotenv's startup banner. Without it, dotenv v17+
+// prints a "injecting env" tip to STDOUT, which corrupts the stdio MCP
+// JSON-RPC stream — the client can't parse the non-JSON line and the server
+// never finishes initializing (appears as "MCP never loads").
+dotenv.config({ quiet: true });
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
