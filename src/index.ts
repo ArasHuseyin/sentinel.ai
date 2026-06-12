@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import type { Page, BrowserContext } from 'playwright';
-import { z } from 'zod';
 
 import { SentinelDriver } from './core/driver.js';
 import type { DriverOptions } from './core/driver.js';
@@ -70,7 +69,6 @@ export class Sentinel extends EventEmitter {
   private readonly visionFallback: boolean;
   private readonly mode: 'aom' | 'hybrid' | 'vision';
   private readonly mfaConfig: { type: 'totp'; secret: string; digits?: number; period?: number } | undefined;
-  private readonly apiKey: string;
   /** Tracks active CDP sessions created by extend() so they can be detached on re-extend. */
   private readonly extendedPages = new WeakMap<Page, { detach(): Promise<void> }>();
 
@@ -115,7 +113,6 @@ export class Sentinel extends EventEmitter {
     this.locatorCacheInstance = createLocatorCache(options.locatorCache ?? false);
     this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
     this.patternCacheInstance = createPatternCache(options.patternCache ?? true);
-    this.apiKey = options.apiKey;
     this.recorder = new WorkflowRecorder();
     this.tokenTracker = new TokenTracker(
       process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview',
@@ -199,7 +196,7 @@ export class Sentinel extends EventEmitter {
     this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike, this.mode, this.patternCacheInstance);
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
-    this.verifier = new Verifier(page, this.stateParser, this.gemini);
+    this.verifier = new Verifier(page, this.stateParser, this.gemini, this.logger.child('Verifier'));
     this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined, this.mfaConfig, this.logger);
 
     this.log(1, '🚀 Sentinel initialized');
