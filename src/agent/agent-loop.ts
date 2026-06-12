@@ -102,7 +102,7 @@ export class AgentLoop {
     private actionEngine: ActionEngine,
     private extractionEngine: ExtractionEngine,
     private stateParser: StateParser,
-    private gemini: LLMProvider,
+    gemini: LLMProvider,
     private page?: Page,
     private visionGrounding?: VisionGrounding,
     plannerLLM?: LLMProvider,

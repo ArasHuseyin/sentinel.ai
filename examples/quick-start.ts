@@ -6,7 +6,7 @@
  * 3. GEMINI_API_KEY=your_key npx ts-node examples/quick-start.ts
  */
 import 'dotenv/config';
-import { Sentinel, z } from '../src/index.js';
+import { Sentinel } from '../src/index.js';
 
 async function main() {
   const sentinel = new Sentinel({

@@ -1,6 +1,6 @@
 import { trace, metrics, context, SpanStatusCode } from '@opentelemetry/api';
 import type { Span, Attributes } from '@opentelemetry/api';
-import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from './llm-provider.js';
+import type { GenerateOptions, LLMProvider, SchemaInput } from './llm-provider.js';
 
 const TRACER_NAME = '@isoldex/sentinel';
 const VERSION = '3.9.0';

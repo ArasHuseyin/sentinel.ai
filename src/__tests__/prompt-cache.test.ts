@@ -7,7 +7,6 @@ import {
   createCachingProvider,
   buildPromptCacheKey,
 } from '../core/prompt-cache.js';
-import type { IPromptCache } from '../core/prompt-cache.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';

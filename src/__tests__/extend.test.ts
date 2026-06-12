@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import { Sentinel } from '../index.js';
 import type { SentinelOptions } from '../index.js';
 
@@ -14,7 +14,7 @@ function makeBoxModel(x = 10, y = 20, w = 80, h = 30) {
 
 function makeMockCDP(nodes: any[]) {
   return {
-    send: jest.fn(async (method: string, params?: any) => {
+    send: jest.fn(async (method: string, _params?: any) => {
       if (method === 'Accessibility.getFullAXTree') return { nodes };
       if (method === 'DOM.getBoxModel') return makeBoxModel();
       return {};

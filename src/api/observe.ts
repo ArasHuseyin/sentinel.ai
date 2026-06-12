@@ -11,7 +11,7 @@ export interface ObserveResult {
 
 export class ObservationEngine {
   constructor(
-    private page: Page,
+    _page: Page,
     private stateParser: StateParser,
     private gemini: LLMProvider
   ) {}

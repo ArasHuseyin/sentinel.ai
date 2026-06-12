@@ -84,12 +84,13 @@ export class ClaudeProvider implements LLMProvider {
     };
 
     return withRetry(async () => {
-      let { response, truncated } = await callOnce(requestedCap);
-      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+      const first = await callOnce(requestedCap);
+      let { response } = first;
+      if (first.truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
         console.warn(
           `[Claude] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
         );
-        ({ response, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
+        ({ response } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }
       const toolUse = (response.content as any[])?.find((c: any) => c.type === 'tool_use');
       if (!toolUse) throw new LLMError('No tool_use block in response');

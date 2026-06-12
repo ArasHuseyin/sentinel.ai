@@ -87,12 +87,13 @@ export class OpenAIProvider implements LLMProvider {
     };
 
     return withRetry(async () => {
-      let { content, truncated } = await callOnce(requestedCap);
-      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+      const first = await callOnce(requestedCap);
+      let { content } = first;
+      if (first.truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
         console.warn(
           `[OpenAI] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
         );
-        ({ content, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
+        ({ content } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }
       let parsed: any;
       try {

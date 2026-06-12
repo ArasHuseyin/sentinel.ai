@@ -2,7 +2,6 @@ import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
 import type { LLMProvider, SchemaInput } from '../utils/llm-provider.js';
 import { filterRelevantElements } from './act.js';
-import { z } from 'zod';
 
 const MAX_PAGE_TEXT_CHARS = 8000;
 

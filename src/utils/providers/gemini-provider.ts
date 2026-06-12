@@ -112,12 +112,13 @@ export class GeminiProvider implements LLMProvider {
     };
 
     return withRetry(async () => {
-      let { text, truncated } = await callOnce(requestedCap);
-      if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
+      const first = await callOnce(requestedCap);
+      let { text } = first;
+      if (first.truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
         console.warn(
           `[Gemini] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
         );
-        ({ text, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
+        ({ text } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }
       const parsed = JSON.parse(text);
       if (isZodSchema(schema)) return schema.parse(parsed) as T;

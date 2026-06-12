@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import { VisionGrounding } from '../core/vision-grounding.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 

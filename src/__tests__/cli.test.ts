@@ -41,10 +41,9 @@ function args(...parts: string[]) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('CLI: buildProgram', () => {
-  let consoleSpy: ReturnType<typeof jest.spyOn>;
 
   beforeEach(() => {
-    consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     process.exitCode = undefined;
   });

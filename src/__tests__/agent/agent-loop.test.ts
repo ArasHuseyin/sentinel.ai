@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import { AgentLoop } from '../../agent/agent-loop.js';
 import type { SimplifiedState } from '../../core/state-parser.js';
 import type { LLMProvider } from '../../utils/llm-provider.js';
@@ -731,13 +731,8 @@ describe('AgentLoop', () => {
       const stateParser = makeStateParser(state);
       const actionEngine = makeActionEngine(true);
 
-      // Capture the prompt passed to generateStructuredData
-      let capturedPrompt = '';
       const llm: LLMProvider = {
-        generateStructuredData: jest.fn(async (prompt: any) => {
-          if (typeof prompt === 'string' && prompt.includes('Checkout')) {
-            capturedPrompt = prompt;
-          }
+        generateStructuredData: jest.fn(async () => {
           return {
             type: 'act',
             instruction: 'click checkout button',

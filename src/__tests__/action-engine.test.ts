@@ -176,7 +176,7 @@ describe('ActionEngine', () => {
 
   it('handles scroll-down without target element (elementId 0)', async () => {
     const page = makeMockPage();
-    const stateParser = makeMockStateParser(makeState());
+
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'Scroll page down' });
     // Use a state with NO element id=0 so isScrollWithoutTarget logic triggers correctly
     const emptyState = makeState({ elements: [] });
