@@ -61,6 +61,28 @@ Full benchmark methodology and raw data: [isoldex.ai/benchmark](https://isoldex.
 - **CLI** — `npx sentinel run "goal" --url https://...`
 - **MCP Server** — use Sentinel from Claude Desktop, Cursor, or any MCP client (stdio or standalone HTTP transport)
 
+## LLM Providers
+
+Gemini works out of the box. OpenAI and Claude require their SDK as an extra install — they are optional peer dependencies and only loaded when you use them. Ollama needs no extra package, just a running [Ollama](https://ollama.com) instance.
+
+| Provider | Extra install | Usage |
+|----------|---------------|-------|
+| Gemini (default) | — | `new Sentinel({ apiKey })` |
+| OpenAI | `npm install openai` | `new Sentinel({ provider: new OpenAIProvider({ apiKey }) })` |
+| Claude | `npm install @anthropic-ai/sdk` | `new Sentinel({ provider: new ClaudeProvider({ apiKey }) })` |
+| Ollama (local) | — | `new Sentinel({ provider: new OllamaProvider({ model: 'llama3' }) })` |
+
+```typescript
+import { Sentinel, OpenAIProvider } from '@isoldex/sentinel';
+
+const sentinel = new Sentinel({
+  apiKey: '',
+  provider: new OpenAIProvider({ apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o-mini' }),
+});
+```
+
+Full setup guide: [isoldex.ai/providers](https://isoldex.ai/providers)
+
 ## Documentation
 
 - [Getting Started](https://isoldex.ai/docs)

@@ -25,7 +25,7 @@ src/
   recorder/     # Record & Replay
   reliability/  # Verifier
   types/        # Error classes
-  __tests__/    # Vitest test suite
+  __tests__/    # Jest test suite
 examples/       # Runnable example scripts
 ```
 
@@ -52,11 +52,13 @@ examples/       # Runnable example scripts
 
 ```bash
 npm run build        # compile TypeScript
-npm test             # run full test suite (Vitest)
+npm test             # run full test suite (Jest)
 npm run test:watch   # watch mode
+npm run lint         # ESLint
+npm run format       # Prettier
 ```
 
-Tests use [Vitest](https://vitest.dev/). Browser-level tests require a real Chromium install (`npx playwright install chromium`).
+Tests use [Jest](https://jestjs.io/). Browser-level tests require a real Chromium install (`npx playwright install chromium`).
 
 ## Code style
 
@@ -79,6 +81,7 @@ test: add runStream generator tests
 
 - [ ] Tests written and passing (`npm test`)
 - [ ] TypeScript compiles without errors (`npx tsc --noEmit`)
+- [ ] Lint and formatting clean (`npm run lint && npm run format:check`)
 - [ ] README updated if public API changed
 - [ ] No breaking changes without prior discussion
 
