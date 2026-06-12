@@ -19,7 +19,9 @@ describe('ConsoleLogger', () => {
     logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
   });
-  afterEach(() => { jest.restoreAllMocks(); });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
 
   it('respects verbose gating for info/notice/debug', () => {
     const l = new ConsoleLogger(1);
@@ -96,15 +98,21 @@ describe('JsonLogger', () => {
   });
 
   it('broken sink never throws to the caller', () => {
-    const broken: Logger = new JsonLogger(1, () => { throw new Error('sink dead'); });
+    const broken: Logger = new JsonLogger(1, () => {
+      throw new Error('sink dead');
+    });
     expect(() => broken.info('x')).not.toThrow();
     expect(() => broken.warn('y')).not.toThrow();
   });
 });
 
 describe('createLogger factory', () => {
-  beforeEach(() => { jest.spyOn(console, 'log').mockImplementation(() => {}); });
-  afterEach(() => { jest.restoreAllMocks(); });
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
 
   it('defaults to ConsoleLogger when logFormat is false/undefined', () => {
     const l = createLogger(false, 1);
@@ -125,13 +133,20 @@ describe('createLogger factory', () => {
       const parsed = JSON.parse(content.trim()) as LogEvent;
       expect(parsed.message).toBe('persisted');
     } finally {
-      try { fs.unlinkSync(tmp); } catch { /* ok */ }
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* ok */
+      }
     }
   });
 
   it('injected logger short-circuits the factory', () => {
     const custom: Logger = {
-      info: jest.fn(), notice: jest.fn(), debug: jest.fn(), warn: jest.fn(),
+      info: jest.fn(),
+      notice: jest.fn(),
+      debug: jest.fn(),
+      warn: jest.fn(),
       child: jest.fn(() => custom),
     };
     const l = createLogger(true, 1, custom);
@@ -150,7 +165,11 @@ describe('createFileSink', () => {
       const content = fs.readFileSync(file, 'utf-8');
       expect(content.trim().split('\n')).toEqual(['{"a":1}', '{"b":2}']);
     } finally {
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ok */ }
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* ok */
+      }
     }
   });
 });

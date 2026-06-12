@@ -78,26 +78,37 @@ export function describeCaptcha(type: CaptchaType, source?: string): string {
   const src = source ? ` (${source})` : '';
   switch (type) {
     case 'recaptcha-v2':
-      return `reCAPTCHA v2 detected${src}. Interactive checkbox challenge — ` +
+      return (
+        `reCAPTCHA v2 detected${src}. Interactive checkbox challenge — ` +
         `auto-solve may work if the browser fingerprint looks human, otherwise ` +
-        `an external solver (2captcha, CapSolver) is required.`;
+        `an external solver (2captcha, CapSolver) is required.`
+      );
     case 'recaptcha-v3':
-      return `reCAPTCHA v3 detected${src}. Invisible score-based challenge — ` +
+      return (
+        `reCAPTCHA v3 detected${src}. Invisible score-based challenge — ` +
         `no UI to interact with. Success depends entirely on browser fingerprint ` +
-        `and IP reputation. Use stealth patches and residential proxies.`;
+        `and IP reputation. Use stealth patches and residential proxies.`
+      );
     case 'hcaptcha':
-      return `hCaptcha detected${src}. Image-selection challenge — requires an ` +
-        `external solver (2captcha, CapSolver) or human intervention.`;
+      return (
+        `hCaptcha detected${src}. Image-selection challenge — requires an ` +
+        `external solver (2captcha, CapSolver) or human intervention.`
+      );
     case 'turnstile':
-      return `Cloudflare Turnstile detected${src}. Usually auto-resolves within ` +
+      return (
+        `Cloudflare Turnstile detected${src}. Usually auto-resolves within ` +
         `5-10 seconds for non-suspicious traffic. If it blocks, improve stealth ` +
-        `patches or use a residential proxy.`;
+        `patches or use a residential proxy.`
+      );
     case 'funcaptcha':
-      return `FunCaptcha (Arkose Labs) detected${src}. Interactive puzzle — ` +
+      return (
+        `FunCaptcha (Arkose Labs) detected${src}. Interactive puzzle — ` +
         `requires a specialised external solver (e.g. CapSolver's Arkose module). ` +
-        `No reliable programmatic solving without it.`;
+        `No reliable programmatic solving without it.`
+      );
     case 'unknown':
-      return `Unknown CAPTCHA widget detected${src}. Manual intervention or a ` +
-        `generic external solver is required.`;
+      return (
+        `Unknown CAPTCHA widget detected${src}. Manual intervention or a ` + `generic external solver is required.`
+      );
   }
 }

@@ -9,9 +9,7 @@ describe('withTimeout', () => {
 
   it('rejects with a timeout error when the promise is too slow', async () => {
     const neverResolves = new Promise<never>(() => {});
-    await expect(withTimeout(neverResolves, 50, 'slow op')).rejects.toThrow(
-      'Timeout after 50ms: slow op'
-    );
+    await expect(withTimeout(neverResolves, 50, 'slow op')).rejects.toThrow('Timeout after 50ms: slow op');
   });
 
   it('re-throws the original error when the promise rejects before the timeout', async () => {
@@ -21,9 +19,7 @@ describe('withTimeout', () => {
 
   it('uses "operation" as default label when none is provided', async () => {
     const neverResolves = new Promise<never>(() => {});
-    await expect(withTimeout(neverResolves, 30)).rejects.toThrow(
-      'Timeout after 30ms: operation'
-    );
+    await expect(withTimeout(neverResolves, 30)).rejects.toThrow('Timeout after 30ms: operation');
   });
 
   it('resolves immediately when the promise is already settled', async () => {

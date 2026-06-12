@@ -132,7 +132,9 @@ describeE2E('MUI Benchmark — 12 components', () => {
       const icon = r.passed ? '✅' : '❌';
       const dur = `${(r.durationMs / 1000).toFixed(1)}s`;
       const tok = r.tokens > 0 ? `${r.tokens}t` : '0t';
-      console.log(`  ${icon} ${r.component.padEnd(16)} ${dur.padStart(6)}  ${tok.padStart(7)}${r.note ? `  — ${r.note}` : ''}`);
+      console.log(
+        `  ${icon} ${r.component.padEnd(16)} ${dur.padStart(6)}  ${tok.padStart(7)}${r.note ? `  — ${r.note}` : ''}`
+      );
     }
     console.log('───────────────────────────────────────────────────────');
     console.log(`  Score: ${passed}/${total} (${Math.round((passed / Math.max(total, 1)) * 100)}%)`);

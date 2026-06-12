@@ -57,11 +57,13 @@ function makeExtractionEngine() {
  * Creates a mock LLMProvider whose generateStructuredData returns a given
  * PlannedStep shape on every call (covers both planNextStep and reflect).
  */
-function makePlannerLLM(overrides: {
-  instruction?: string;
-  isGoalComplete?: boolean;
-  goalAchieved?: boolean;
-} = {}): LLMProvider {
+function makePlannerLLM(
+  overrides: {
+    instruction?: string;
+    isGoalComplete?: boolean;
+    goalAchieved?: boolean;
+  } = {}
+): LLMProvider {
   return {
     generateStructuredData: jest.fn(async () => ({
       type: 'act',
@@ -85,7 +87,11 @@ describe('AgentLoop', () => {
     // Multi-diff changes or any focused/checked/disabled flip pass through.
 
     const el = (id: number, name: string, extra: any = {}) => ({
-      id, role: 'button', name, boundingClientRect: { x: 0, y: 0, width: 10, height: 10 }, ...extra,
+      id,
+      role: 'button',
+      name,
+      boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
+      ...extra,
     });
 
     function makePostActVerificationParser(before: SimplifiedState, after: SimplifiedState) {
@@ -333,7 +339,11 @@ describe('AgentLoop', () => {
         tryRecoverFromBlocker: jest.fn(async () => false),
       };
       // Unchanged state across calls → verifier marks each step as failed.
-      const stableState = makeState({ elements: [{ id: 0, role: 'combobox', name: 'Sort by', boundingClientRect: { x: 0, y: 0, width: 10, height: 10 } }] });
+      const stableState = makeState({
+        elements: [
+          { id: 0, role: 'combobox', name: 'Sort by', boundingClientRect: { x: 0, y: 0, width: 10, height: 10 } },
+        ],
+      });
       const stateParser = {
         parse: jest.fn(async () => stableState),
         invalidateCache: jest.fn(),
@@ -401,10 +411,24 @@ describe('AgentLoop', () => {
           // After 4 planning calls, mark goal complete on the reflect call
           if (callCount >= instructions.length) {
             callCount++;
-            return { type: 'act', instruction: 'done', reasoning: '', isGoalComplete: false, goalAchieved: true, reason: 'done' };
+            return {
+              type: 'act',
+              instruction: 'done',
+              reasoning: '',
+              isGoalComplete: false,
+              goalAchieved: true,
+              reason: 'done',
+            };
           }
           callCount++;
-          return { type: 'act', instruction, reasoning: 'reason', isGoalComplete: false, goalAchieved: false, reason: '' };
+          return {
+            type: 'act',
+            instruction,
+            reasoning: 'reason',
+            isGoalComplete: false,
+            goalAchieved: false,
+            reason: '',
+          };
         }) as any,
         generateText: jest.fn(async () => ''),
       };
@@ -510,8 +534,23 @@ describe('AgentLoop', () => {
       let callCount = 0;
       (llm.generateStructuredData as jest.Mock).mockImplementation(async () => {
         callCount++;
-        if (callCount === 1) return { type: 'act', instruction: 'click A', reasoning: 'r', isGoalComplete: false, goalAchieved: false, reason: '' };
-        return { type: 'act', instruction: 'click A', reasoning: 'r', isGoalComplete: false, goalAchieved: false, reason: '' };
+        if (callCount === 1)
+          return {
+            type: 'act',
+            instruction: 'click A',
+            reasoning: 'r',
+            isGoalComplete: false,
+            goalAchieved: false,
+            reason: '',
+          };
+        return {
+          type: 'act',
+          instruction: 'click A',
+          reasoning: 'r',
+          isGoalComplete: false,
+          goalAchieved: false,
+          reason: '',
+        };
       });
 
       const actionEngine = makeActionEngine(true);
@@ -519,7 +558,7 @@ describe('AgentLoop', () => {
       const stepEvents: any[] = [];
 
       const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
-      await loop.run('goal', { maxSteps: 3, onStep: (e) => stepEvents.push(e) });
+      await loop.run('goal', { maxSteps: 3, onStep: e => stepEvents.push(e) });
 
       // 3 steps should have fired onStep (loop detection aborts after step 3)
       expect(stepEvents).toHaveLength(3);
@@ -533,8 +572,14 @@ describe('AgentLoop', () => {
       extractionEngine.extract = jest.fn(async () => ({ products: ['Laptop', 'Phone'] }));
 
       const llm: LLMProvider = {
-        generateStructuredData: jest.fn<() => Promise<any>>()
-          .mockResolvedValueOnce({ type: 'extract', instruction: 'Get products', reasoning: 'Need data', isGoalComplete: false })
+        generateStructuredData: jest
+          .fn<() => Promise<any>>()
+          .mockResolvedValueOnce({
+            type: 'extract',
+            instruction: 'Get products',
+            reasoning: 'Need data',
+            isGoalComplete: false,
+          })
           .mockResolvedValueOnce({ type: 'act', instruction: 'done', reasoning: '', isGoalComplete: true })
           .mockResolvedValueOnce({ goalAchieved: true, reason: 'done' }) as any,
         generateText: jest.fn(async () => ''),
@@ -555,8 +600,14 @@ describe('AgentLoop', () => {
       extractionEngine.extract = jest.fn(async () => ({ products: ['Laptop', 'Phone'] }));
 
       const llm: LLMProvider = {
-        generateStructuredData: jest.fn<() => Promise<any>>()
-          .mockResolvedValueOnce({ type: 'extract', instruction: 'Get products', reasoning: 'Need data', isGoalComplete: false })
+        generateStructuredData: jest
+          .fn<() => Promise<any>>()
+          .mockResolvedValueOnce({
+            type: 'extract',
+            instruction: 'Get products',
+            reasoning: 'Need data',
+            isGoalComplete: false,
+          })
           .mockResolvedValueOnce({ type: 'act', instruction: 'done', reasoning: '', isGoalComplete: true })
           .mockResolvedValueOnce({ goalAchieved: true, reason: 'done' }) as any,
         generateText: jest.fn(async () => ''),
@@ -576,8 +627,14 @@ describe('AgentLoop', () => {
       extractionEngine.extract = jest.fn(async () => ({ items: [1, 2, 3] }));
 
       const llm: LLMProvider = {
-        generateStructuredData: jest.fn<() => Promise<any>>()
-          .mockResolvedValueOnce({ type: 'extract', instruction: 'Get items', reasoning: 'Need items', isGoalComplete: false })
+        generateStructuredData: jest
+          .fn<() => Promise<any>>()
+          .mockResolvedValueOnce({
+            type: 'extract',
+            instruction: 'Get items',
+            reasoning: 'Need items',
+            isGoalComplete: false,
+          })
           .mockResolvedValueOnce({ type: 'act', instruction: 'done', reasoning: '', isGoalComplete: true })
           .mockResolvedValueOnce({ goalAchieved: true, reason: 'done' }) as any,
         generateText: jest.fn(async () => ''),
@@ -613,9 +670,12 @@ describe('AgentLoop', () => {
   describe('vision-augmented planning', () => {
     it('passes pageDescription to planner when visionGrounding is available and page has many elements', async () => {
       // Create state with >100 elements
-      const manyElements = Array.from({ length: 101 }, (_, i) =>
-        ({ id: i, role: 'link', name: `Link ${i}`, boundingClientRect: { x: 0, y: i * 10, width: 60, height: 10 } })
-      );
+      const manyElements = Array.from({ length: 101 }, (_, i) => ({
+        id: i,
+        role: 'link',
+        name: `Link ${i}`,
+        boundingClientRect: { x: 0, y: i * 10, width: 60, height: 10 },
+      }));
       const state = makeState({ elements: manyElements });
       const stateParser = makeStateParser(state);
       const actionEngine = makeActionEngine(true);
@@ -680,9 +740,12 @@ describe('AgentLoop', () => {
 
     it('skips vision when page has few elements (<=100)', async () => {
       // Only 5 elements — below VISION_ELEMENT_THRESHOLD
-      const fewElements = Array.from({ length: 5 }, (_, i) =>
-        ({ id: i, role: 'button', name: `Button ${i}`, boundingClientRect: { x: 0, y: i * 30, width: 80, height: 30 } })
-      );
+      const fewElements = Array.from({ length: 5 }, (_, i) => ({
+        id: i,
+        role: 'button',
+        name: `Button ${i}`,
+        boundingClientRect: { x: 0, y: i * 30, width: 80, height: 30 },
+      }));
       const state = makeState({ elements: fewElements });
       const stateParser = makeStateParser(state);
       const actionEngine = makeActionEngine(true);
@@ -745,12 +808,7 @@ describe('AgentLoop', () => {
         generateText: jest.fn(async () => ''),
       };
 
-      const loop = new AgentLoop(
-        actionEngine as any,
-        makeExtractionEngine() as any,
-        stateParser as any,
-        llm
-      );
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       await loop.run('click checkout button', { maxSteps: 3 });
 
       // The LLM should have been called
@@ -780,11 +838,15 @@ describe('AgentLoop', () => {
         title: 'Welcome',
         elements: [
           {
-            id: 0, role: 'button', name: 'Accept all cookies',
+            id: 0,
+            role: 'button',
+            name: 'Accept all cookies',
             boundingClientRect: { x: 10, y: 10, width: 120, height: 40 },
           },
           {
-            id: 1, role: 'button', name: 'Continue',
+            id: 1,
+            role: 'button',
+            name: 'Continue',
             boundingClientRect: { x: 200, y: 100, width: 80, height: 40 },
           },
         ],
@@ -797,7 +859,9 @@ describe('AgentLoop', () => {
         title: 'Next Page',
         elements: [
           {
-            id: 0, role: 'button', name: 'Continue',
+            id: 0,
+            role: 'button',
+            name: 'Continue',
             boundingClientRect: { x: 200, y: 100, width: 80, height: 40 },
           },
         ],
@@ -812,9 +876,7 @@ describe('AgentLoop', () => {
       // which prove the NEW gate semantics (state-based, fingerprint-bounded).
       const stateParser = makeScriptedStateParser([withCookieBanner(), withCookieBanner()]);
 
-      const loop = new AgentLoop(
-        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
-      );
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       await loop.run('proceed through flow', { maxSteps: 1 });
 
       expect(actionEngine.tryRecoverFromBlocker).toHaveBeenCalled();
@@ -828,9 +890,7 @@ describe('AgentLoop', () => {
       const banner = withCookieBanner('https://example.com/stuck');
       const stateParser = makeScriptedStateParser([banner, banner, banner, banner, banner, banner, banner, banner]);
 
-      const loop = new AgentLoop(
-        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
-      );
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       await loop.run('get past banner', { maxSteps: 4 });
 
       // Bounded to MAX_RECOVERY_ATTEMPTS_PER_STATE (2) for the same fingerprint
@@ -843,14 +903,15 @@ describe('AgentLoop', () => {
       actionEngine.tryRecoverFromBlocker = jest.fn(async () => false);
       // Three DIFFERENT banners across three pages — each gets its own 2-attempt budget
       const stateParser = makeScriptedStateParser([
-        withCookieBanner('https://a.example'), withCookieBanner('https://a.example'),
-        withCookieBanner('https://b.example'), withCookieBanner('https://b.example'),
-        withCookieBanner('https://c.example'), withCookieBanner('https://c.example'),
+        withCookieBanner('https://a.example'),
+        withCookieBanner('https://a.example'),
+        withCookieBanner('https://b.example'),
+        withCookieBanner('https://b.example'),
+        withCookieBanner('https://c.example'),
+        withCookieBanner('https://c.example'),
       ]);
 
-      const loop = new AgentLoop(
-        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
-      );
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       await loop.run('navigate multi-domain', { maxSteps: 3 });
 
       // One attempt per distinct fingerprint (different URLs → different fingerprints),
@@ -861,13 +922,9 @@ describe('AgentLoop', () => {
     it('no recovery when no blocker is present', async () => {
       const llm = makePlannerLLM({ instruction: 'do something' });
       const actionEngine = makeActionEngine(true);
-      const stateParser = makeScriptedStateParser([
-        withoutBanner(), withoutBanner(), withoutBanner(), withoutBanner(),
-      ]);
+      const stateParser = makeScriptedStateParser([withoutBanner(), withoutBanner(), withoutBanner(), withoutBanner()]);
 
-      const loop = new AgentLoop(
-        actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm
-      );
+      const loop = new AgentLoop(actionEngine as any, makeExtractionEngine() as any, stateParser as any, llm);
       await loop.run('clean flow', { maxSteps: 2 });
 
       expect(actionEngine.tryRecoverFromBlocker).not.toHaveBeenCalled();

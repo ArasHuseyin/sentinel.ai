@@ -5,8 +5,21 @@ import type { UIElement } from './state-parser.js';
 
 /** Words that carry no identifying meaning for a selector key. */
 const STOP_WORDS = new Set([
-  'the', 'a', 'an', 'with', 'into', 'on', 'in', 'to', 'for',
-  'and', 'or', 'at', 'of', 'from', 'by',
+  'the',
+  'a',
+  'an',
+  'with',
+  'into',
+  'on',
+  'in',
+  'to',
+  'for',
+  'and',
+  'or',
+  'at',
+  'of',
+  'from',
+  'by',
 ]);
 
 /**
@@ -28,9 +41,7 @@ export function slugifyInstruction(instruction: string): string {
 
   if (words.length === 0) return 'element';
 
-  return words
-    .map((w, i) => (i === 0 ? w : w[0]!.toUpperCase() + w.slice(1)))
-    .join('');
+  return words.map((w, i) => (i === 0 ? w : w[0]!.toUpperCase() + w.slice(1))).join('');
 }
 
 // ─── Selector generation ──────────────────────────────────────────────────────
@@ -52,10 +63,7 @@ export function slugifyInstruction(instruction: string): string {
  * strategies fail — callers should treat a null result as "no selector
  * available" and omit the entry rather than throwing.
  */
-export async function generateSelector(
-  page: Page,
-  target: UIElement
-): Promise<string | null> {
+export async function generateSelector(page: Page, target: UIElement): Promise<string | null> {
   const cx = target.boundingClientRect.x + target.boundingClientRect.width / 2;
   const cy = target.boundingClientRect.y + target.boundingClientRect.height / 2;
 
@@ -83,9 +91,9 @@ export async function generateSelector(
             id &&
             id.length > 0 &&
             id.length < 60 &&
-            !/^\d/.test(id) &&                        // must not start with a digit
-            !/[a-f0-9]{8}-[a-f0-9]{4}/.test(id) &&   // not a UUID
-            !/^[a-f0-9]{16,}$/.test(id)               // not a long hex hash
+            !/^\d/.test(id) && // must not start with a digit
+            !/[a-f0-9]{8}-[a-f0-9]{4}/.test(id) && // not a UUID
+            !/^[a-f0-9]{16,}$/.test(id) // not a long hex hash
           ) {
             return `#${CSS.escape(id)}`;
           }

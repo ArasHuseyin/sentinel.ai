@@ -1,10 +1,6 @@
 const BASE_DELAY_MS = 1000;
 
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  label: string,
-  retries = 3
-): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, label: string, retries = 3): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
@@ -28,8 +24,13 @@ export async function withRetry<T>(
       // Gemini/OpenAI error messages can span multiple lines; keep the first
       // line + status code.
       const status = err?.status ? ` [${err.status}]` : '';
-      const reason = String(err?.message ?? err).split('\n')[0]?.slice(0, 160) ?? 'unknown';
-      console.warn(`[${label}] Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`);
+      const reason =
+        String(err?.message ?? err)
+          .split('\n')[0]
+          ?.slice(0, 160) ?? 'unknown';
+      console.warn(
+        `[${label}] Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`
+      );
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

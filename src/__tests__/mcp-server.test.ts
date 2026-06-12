@@ -68,8 +68,14 @@ describe('MCP Server: registerTools', () => {
 
   it('registers all 8 expected tools', () => {
     const expected = [
-      'sentinel_goto', 'sentinel_act', 'sentinel_extract', 'sentinel_observe',
-      'sentinel_run', 'sentinel_screenshot', 'sentinel_close', 'sentinel_token_usage',
+      'sentinel_goto',
+      'sentinel_act',
+      'sentinel_extract',
+      'sentinel_observe',
+      'sentinel_run',
+      'sentinel_screenshot',
+      'sentinel_close',
+      'sentinel_token_usage',
     ];
     for (const name of expected) {
       expect(server.registeredNames()).toContain(name);

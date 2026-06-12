@@ -13,13 +13,21 @@ describe('parseDateValue', () => {
 
     it('parses YYYY-MM-DDTHH:mm', () => {
       expect(parseDateValue('2026-10-15T14:30')).toEqual({
-        year: 2026, month: 10, day: 15, hour: 14, minute: 30,
+        year: 2026,
+        month: 10,
+        day: 15,
+        hour: 14,
+        minute: 30,
       });
     });
 
     it('parses YYYY-MM-DD HH:mm (space separator)', () => {
       expect(parseDateValue('2026-10-15 09:05')).toEqual({
-        year: 2026, month: 10, day: 15, hour: 9, minute: 5,
+        year: 2026,
+        month: 10,
+        day: 15,
+        hour: 9,
+        minute: 5,
       });
     });
 
@@ -66,13 +74,21 @@ describe('parseDateValue', () => {
   describe('Time-only HH:mm', () => {
     it('parses 14:30', () => {
       expect(parseDateValue('14:30')).toEqual({
-        year: 0, month: 0, day: 0, hour: 14, minute: 30,
+        year: 0,
+        month: 0,
+        day: 0,
+        hour: 14,
+        minute: 30,
       });
     });
 
     it('parses 09:05', () => {
       expect(parseDateValue('09:05')).toEqual({
-        year: 0, month: 0, day: 0, hour: 9, minute: 5,
+        year: 0,
+        month: 0,
+        day: 0,
+        hour: 9,
+        minute: 5,
       });
     });
 
@@ -84,16 +100,24 @@ describe('parseDateValue', () => {
   describe('Date.parse fallback', () => {
     it('parses English long form "October 15, 2026"', () => {
       const result = parseDateValue('October 15, 2026');
-      expect(result).toEqual(expect.objectContaining({
-        year: 2026, month: 10, day: 15,
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          year: 2026,
+          month: 10,
+          day: 15,
+        })
+      );
     });
 
     it('parses abbreviated "15 Oct 2026"', () => {
       const result = parseDateValue('15 Oct 2026');
-      expect(result).toEqual(expect.objectContaining({
-        year: 2026, month: 10, day: 15,
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          year: 2026,
+          month: 10,
+          day: 15,
+        })
+      );
     });
   });
 

@@ -62,7 +62,9 @@ describeE2E('MUI smoke — 🔴 foundation Go/No-Go', () => {
       console.log(`  ${r.passed ? '✅' : '❌'} ${r.component}${r.note ? ` — ${r.note}` : ''}`);
     }
     console.log(`\n  Score: ${passed}/${total} (${Math.round((passed / Math.max(total, 1)) * 100)}%)`);
-    console.log(`  Verdict: ${passed === total ? '✅ GO for Pattern-Store' : passed >= total * 0.8 ? '🟡 LIKELY GO — fix gaps first' : '❌ NO-GO — fix 🔴 foundation before Pattern-Store'}`);
+    console.log(
+      `  Verdict: ${passed === total ? '✅ GO for Pattern-Store' : passed >= total * 0.8 ? '🟡 LIKELY GO — fix gaps first' : '❌ NO-GO — fix 🔴 foundation before Pattern-Store'}`
+    );
     console.log('────────────────────────────────────────────────────────\n');
   }, 15_000);
 
@@ -77,8 +79,7 @@ describeE2E('MUI smoke — 🔴 foundation Go/No-Go', () => {
 
       // DOM-level verification: at least one visible input should carry the typed value
       const hasValue = await sentinel.page.evaluate(() => {
-        return Array.from(document.querySelectorAll<HTMLInputElement>('input'))
-          .some(i => i.value === 'hello sentinel');
+        return Array.from(document.querySelectorAll<HTMLInputElement>('input')).some(i => i.value === 'hello sentinel');
       });
       expect(hasValue).toBe(true);
       smokeResults.push({ component, passed: true });
@@ -102,8 +103,9 @@ describeE2E('MUI smoke — 🔴 foundation Go/No-Go', () => {
 
       // Verify: the trigger should now display "Twenty" as its selected value
       const showsTwenty = await sentinel.page.evaluate(() => {
-        return Array.from(document.querySelectorAll('[class*="MuiSelect-select"]'))
-          .some(el => el.textContent?.trim() === 'Twenty');
+        return Array.from(document.querySelectorAll('[class*="MuiSelect-select"]')).some(
+          el => el.textContent?.trim() === 'Twenty'
+        );
       });
       expect(showsTwenty).toBe(true);
       smokeResults.push({ component, passed: true });
@@ -126,8 +128,7 @@ describeE2E('MUI smoke — 🔴 foundation Go/No-Go', () => {
 
       // Verify: some input on the page should reflect the chosen value
       const hasGodfather = await sentinel.page.evaluate(() => {
-        return Array.from(document.querySelectorAll<HTMLInputElement>('input'))
-          .some(i => /godfather/i.test(i.value));
+        return Array.from(document.querySelectorAll<HTMLInputElement>('input')).some(i => /godfather/i.test(i.value));
       });
       expect(hasGodfather).toBe(true);
       smokeResults.push({ component, passed: true });
@@ -162,10 +163,12 @@ describeE2E('MUI smoke — 🔴 foundation Go/No-Go', () => {
           const v = parseFloat(raw);
           return !isNaN(v) && Math.abs(v - 70) <= 2;
         };
-        const ariaMatch = Array.from(document.querySelectorAll('[role="slider"]'))
-          .some(el => near70(el.getAttribute('aria-valuenow')));
-        const inputMatch = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="range"]'))
-          .some(inp => near70(inp.value));
+        const ariaMatch = Array.from(document.querySelectorAll('[role="slider"]')).some(el =>
+          near70(el.getAttribute('aria-valuenow'))
+        );
+        const inputMatch = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="range"]')).some(inp =>
+          near70(inp.value)
+        );
         return ariaMatch || inputMatch;
       });
       expect(reachedTarget).toBe(true);
@@ -190,8 +193,9 @@ describeE2E('MUI smoke — 🔴 foundation Go/No-Go', () => {
       // Verify: the picker input should carry the formatted date (MUI may
       // reformat to MM/DD/YYYY — so we just check for the year + day tokens).
       const hasDate = await sentinel.page.evaluate(() => {
-        return Array.from(document.querySelectorAll<HTMLInputElement>('input'))
-          .some(i => /2026/.test(i.value) && /15/.test(i.value) && /10/.test(i.value));
+        return Array.from(document.querySelectorAll<HTMLInputElement>('input')).some(
+          i => /2026/.test(i.value) && /15/.test(i.value) && /10/.test(i.value)
+        );
       });
       expect(hasDate).toBe(true);
       smokeResults.push({ component, passed: true });

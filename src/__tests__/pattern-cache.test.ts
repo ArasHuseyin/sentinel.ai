@@ -101,9 +101,9 @@ describe('InMemoryPatternCache', () => {
   it('recordFailure drops confidence below threshold and suppresses hits', () => {
     const cache = new InMemoryPatternCache();
     const fp: PatternFingerprint = { aria: 'button||' };
-    cache.recordSuccess(fp, 'click', seq());       // 1 success
-    cache.recordFailure(fp, 'click');              // 1/2 = 0.5 (exactly at threshold)
-    cache.recordFailure(fp, 'click');              // 1/3 ≈ 0.33 (below)
+    cache.recordSuccess(fp, 'click', seq()); // 1 success
+    cache.recordFailure(fp, 'click'); // 1/2 = 0.5 (exactly at threshold)
+    cache.recordFailure(fp, 'click'); // 1/3 ≈ 0.33 (below)
     expect(cache.get(fp, 'click')).toBeUndefined();
     expect(cache.getStats().totalMisses).toBe(1);
   });
@@ -112,7 +112,7 @@ describe('InMemoryPatternCache', () => {
     const cache = new InMemoryPatternCache();
     const fp: PatternFingerprint = { aria: 'button||' };
     cache.recordSuccess(fp, 'click', seq());
-    cache.recordFailure(fp, 'click');              // 1 success, 1 failure = 0.5
+    cache.recordFailure(fp, 'click'); // 1 success, 1 failure = 0.5
     expect(cache.get(fp, 'click')).toBeDefined();
   });
 
@@ -178,7 +178,11 @@ describe('FilePatternCache', () => {
       // Stats should carry over too — though the second get() adds its own
       expect(second.getStats().totalHits).toBeGreaterThanOrEqual(2);
     } finally {
-      try { fs.unlinkSync(file); } catch { /* ok */ }
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ok */
+      }
     }
   });
 
@@ -190,7 +194,11 @@ describe('FilePatternCache', () => {
       cache.recordSuccess({ aria: 'button||' }, 'click', seq());
       expect(fs.existsSync(file)).toBe(true);
     } finally {
-      try { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); } catch { /* ok */ }
+      try {
+        fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+      } catch {
+        /* ok */
+      }
     }
   });
 
@@ -200,7 +208,11 @@ describe('FilePatternCache', () => {
       const cache = new FilePatternCache(file);
       expect(cache.get({ aria: 'button||' }, 'click')).toBeUndefined();
     } finally {
-      try { fs.unlinkSync(file); } catch { /* ok */ }
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ok */
+      }
     }
   });
 
@@ -215,7 +227,11 @@ describe('FilePatternCache', () => {
       const raw = fs.readFileSync(file, 'utf-8');
       expect(JSON.parse(raw).version).toBe(1);
     } finally {
-      try { fs.unlinkSync(file); } catch { /* ok */ }
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ok */
+      }
     }
   });
 
@@ -226,7 +242,11 @@ describe('FilePatternCache', () => {
       const cache = new FilePatternCache(file);
       expect(cache.get({ aria: 'button||' }, 'click')).toBeUndefined();
     } finally {
-      try { fs.unlinkSync(file); } catch { /* ok */ }
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ok */
+      }
     }
   });
 });
@@ -247,7 +267,11 @@ describe('createPatternCache factory', () => {
     try {
       expect(createPatternCache(file)).toBeInstanceOf(FilePatternCache);
     } finally {
-      try { fs.unlinkSync(file); } catch { /* ok */ }
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* ok */
+      }
     }
   });
 });

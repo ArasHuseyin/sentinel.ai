@@ -55,11 +55,7 @@ export function writeOutput(data: unknown, outputPath?: string) {
 export function buildProgram(factory: SentinelFactory = defaultFactory): Command {
   const program = new Command();
 
-  program
-    .name('sentinel')
-    .description('AI-powered browser automation — Sentinel CLI')
-    .version('3.8.0')
-    .exitOverride(); // throw instead of process.exit so tests can catch errors
+  program.name('sentinel').description('AI-powered browser automation — Sentinel CLI').version('3.8.0').exitOverride(); // throw instead of process.exit so tests can catch errors
 
   // ── run ────────────────────────────────────────────────────────────────────
 
@@ -74,14 +70,17 @@ export function buildProgram(factory: SentinelFactory = defaultFactory): Command
     try {
       await sentinel.goto(opts.url);
       const result = await sentinel.run(goal, { maxSteps: parseInt(opts.maxSteps, 10) });
-      writeOutput({
-        goalAchieved: result.goalAchieved,
-        success: result.success,
-        totalSteps: result.totalSteps,
-        message: result.message,
-        data: result.data ?? null,
-        tokens: sentinel.getTokenUsage(),
-      }, opts.output);
+      writeOutput(
+        {
+          goalAchieved: result.goalAchieved,
+          success: result.success,
+          totalSteps: result.totalSteps,
+          message: result.message,
+          data: result.data ?? null,
+          tokens: sentinel.getTokenUsage(),
+        },
+        opts.output
+      );
       process.exitCode = result.goalAchieved ? 0 : 1;
     } finally {
       await sentinel.close();
@@ -91,9 +90,7 @@ export function buildProgram(factory: SentinelFactory = defaultFactory): Command
   // ── act ────────────────────────────────────────────────────────────────────
 
   addSharedOptions(
-    program
-      .command('act <instruction>')
-      .description('Perform a natural language action on a page')
+    program.command('act <instruction>').description('Perform a natural language action on a page')
   ).action(async (instruction: string, opts: any) => {
     const sentinel = await resolveSentinel(opts, factory);
     try {

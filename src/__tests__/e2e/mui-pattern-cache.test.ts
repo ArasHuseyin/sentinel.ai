@@ -46,7 +46,7 @@ describeE2E('E2E: PatternCache — LLM-skip on second hit', () => {
       verbose: 2,
       viewport: { width: 1280, height: 800 },
       domSettleTimeoutMs: 3000,
-      patternCache: true,  // in-memory, shared across acts within this instance
+      patternCache: true, // in-memory, shared across acts within this instance
     });
     await sentinel.init();
   }, 30_000);
@@ -57,10 +57,14 @@ describeE2E('E2E: PatternCache — LLM-skip on second hit', () => {
     for (const p of pairs) {
       const savings = p.firstRunTokens - p.secondRunTokens;
       const marker = p.secondHitPattern ? '🎯 [pattern]' : '🔥 LLM';
-      console.log(`  ${p.component}: cold=${p.firstRunTokens}t  warm=${p.secondRunTokens}t  saved=${savings}t  ${marker}`);
+      console.log(
+        `  ${p.component}: cold=${p.firstRunTokens}t  warm=${p.secondRunTokens}t  saved=${savings}t  ${marker}`
+      );
     }
     const allWarmHit = pairs.every(p => p.secondRunTokens === 0 && p.secondHitPattern);
-    console.log(`\n  Verdict: ${allWarmHit ? '✅ Pattern cache functional (all warm hits)' : '⚠️  Some warm runs missed the cache'}`);
+    console.log(
+      `\n  Verdict: ${allWarmHit ? '✅ Pattern cache functional (all warm hits)' : '⚠️  Some warm runs missed the cache'}`
+    );
     console.log('────────────────────────────────────────────────────────\n');
   }, 15_000);
 
@@ -111,14 +115,12 @@ describeE2E('E2E: PatternCache — LLM-skip on second hit', () => {
     // logic in `tryPatternCache` guarantees.
     const outlinedHasValue = await sentinel.page.evaluate(() => {
       const labels = Array.from(document.querySelectorAll<HTMLLabelElement>('label'));
-      const outlinedLabels = labels.filter(l =>
-        l.textContent?.trim().toLowerCase().includes('outlined')
-      );
+      const outlinedLabels = labels.filter(l => l.textContent?.trim().toLowerCase().includes('outlined'));
       return outlinedLabels.some(label => {
         const forId = label.getAttribute('for');
         const input = forId
-          ? document.getElementById(forId) as HTMLInputElement | null
-          : label.parentElement?.querySelector('input') as HTMLInputElement | null;
+          ? (document.getElementById(forId) as HTMLInputElement | null)
+          : (label.parentElement?.querySelector('input') as HTMLInputElement | null);
         return input?.value === 'pattern-probe';
       });
     });

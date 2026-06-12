@@ -5,7 +5,9 @@ import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
-  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
+  return (
+    typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function'
+  );
 }
 
 export interface ClaudeProviderOptions {
@@ -27,9 +29,7 @@ export class ClaudeProvider implements LLMProvider {
       const Anthropic = require('@anthropic-ai/sdk');
       this.client = new Anthropic.default({ apiKey: options.apiKey });
     } catch {
-      throw new LLMError(
-        '"@anthropic-ai/sdk" package not found. Install it with: npm install @anthropic-ai/sdk'
-      );
+      throw new LLMError('"@anthropic-ai/sdk" package not found. Install it with: npm install @anthropic-ai/sdk');
     }
     this.model = options.model ?? 'claude-sonnet-4-6';
   }
@@ -45,11 +45,7 @@ export class ClaudeProvider implements LLMProvider {
     }
   }
 
-  async generateStructuredData<T>(
-    prompt: string,
-    schema: SchemaInput<T>,
-    options?: GenerateOptions
-  ): Promise<T> {
+  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
     const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
     // One-shot adaptive retry on truncation: Claude signals via
@@ -71,11 +67,13 @@ export class ClaudeProvider implements LLMProvider {
         messages: [{ role: 'user', content: prompt }],
       };
       if (options?.systemInstruction) {
-        request.system = [{
-          type: 'text',
-          text: options.systemInstruction,
-          cache_control: { type: 'ephemeral' },
-        }];
+        request.system = [
+          {
+            type: 'text',
+            text: options.systemInstruction,
+            cache_control: { type: 'ephemeral' },
+          },
+        ];
       }
       const response = await this.client.messages.create(request);
       this.reportUsage(response);

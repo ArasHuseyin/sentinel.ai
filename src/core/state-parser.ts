@@ -57,14 +57,45 @@ const STATE_CACHE_TTL_MS = 2000;
  */
 const GENERIC_NAMES = new Set([
   // German
-  'mehr erfahren', 'weiter', 'klick hier', 'hier klicken', 'auswählen',
-  'tarif auswählen', 'jetzt auswählen', 'jetzt wählen', 'wählen',
-  'anzeigen', 'anmelden', 'bestätigen', 'abbrechen', 'schließen',
-  'ja', 'nein', 'ok', 'button', 'link',
+  'mehr erfahren',
+  'weiter',
+  'klick hier',
+  'hier klicken',
+  'auswählen',
+  'tarif auswählen',
+  'jetzt auswählen',
+  'jetzt wählen',
+  'wählen',
+  'anzeigen',
+  'anmelden',
+  'bestätigen',
+  'abbrechen',
+  'schließen',
+  'ja',
+  'nein',
+  'ok',
+  'button',
+  'link',
   // English
-  'more info', 'details', 'next', 'next step', 'click here', 'select',
-  'choose', 'show', 'hide', 'confirm', 'cancel', 'close', 'yes', 'no',
-  'learn more', 'read more', 'view', 'open', 'submit',
+  'more info',
+  'details',
+  'next',
+  'next step',
+  'click here',
+  'select',
+  'choose',
+  'show',
+  'hide',
+  'confirm',
+  'cancel',
+  'close',
+  'yes',
+  'no',
+  'learn more',
+  'read more',
+  'view',
+  'open',
+  'submit',
 ]);
 
 function isGenericName(name: string): boolean {
@@ -94,7 +125,10 @@ export class StateParser {
    */
   private frameRegistry = new Map<string, Frame>();
 
-  constructor(private page: Page, private cdp: CDPSession) {}
+  constructor(
+    private page: Page,
+    private cdp: CDPSession
+  ) {}
 
   invalidateCache() {
     this.cachedState = null;
@@ -126,8 +160,9 @@ export class StateParser {
     targets: Array<{ id: number; x: number; y: number }>
   ): Promise<Map<number, PatternFingerprint>> {
     if (targets.length === 0) return new Map();
-    const raw = await this.page.evaluate(computeFingerprintsBrowserSide, targets)
-      .catch(() => ({} as Record<number, PatternFingerprint>));
+    const raw = await this.page
+      .evaluate(computeFingerprintsBrowserSide, targets)
+      .catch(() => ({}) as Record<number, PatternFingerprint>);
     const out = new Map<number, PatternFingerprint>();
     for (const [k, v] of Object.entries(raw)) {
       out.set(Number(k), v);
@@ -137,7 +172,7 @@ export class StateParser {
 
   async parse(): Promise<SimplifiedState> {
     const now = Date.now();
-    if (this.cachedState && (now - this.cacheTimestamp) < STATE_CACHE_TTL_MS) {
+    if (this.cachedState && now - this.cacheTimestamp < STATE_CACHE_TTL_MS) {
       return this.cachedState;
     }
 
@@ -160,14 +195,10 @@ export class StateParser {
     }
 
     // ─── Filter + parallel bounding-box fetch ─────────────────────────────────
-    const interactiveNodes = nodes.filter(
-      (node: any) => this.isInteractive(node) && node.backendDOMNodeId
-    );
+    const interactiveNodes = nodes.filter((node: any) => this.isInteractive(node) && node.backendDOMNodeId);
 
     const boxModelResults = await Promise.allSettled(
-      interactiveNodes.map((node: any) =>
-        this.cdp.send('DOM.getBoxModel', { backendNodeId: node.backendDOMNodeId })
-      )
+      interactiveNodes.map((node: any) => this.cdp.send('DOM.getBoxModel', { backendNodeId: node.backendDOMNodeId }))
     );
 
     // ─── Build UIElement list ─────────────────────────────────────────────────
@@ -182,9 +213,7 @@ export class StateParser {
       const { model } = fulfilled.value;
       if (!model?.content || model.content.length < 8) continue;
 
-      const subtextContext = node?.nodeId
-        ? this.extractSubtreeText(node.nodeId, nodeMap, childrenMap)
-        : '';
+      const subtextContext = node?.nodeId ? this.extractSubtreeText(node.nodeId, nodeMap, childrenMap) : '';
 
       const element = this.nodeToUIElement(node, subtextContext, parentMap, nodeMap, counter);
       if (!element) continue;
@@ -206,14 +235,15 @@ export class StateParser {
     // elements are outside the visible viewport (React SPAs with custom
     // components that use tabindex="-1" or CSS-hidden form controls).
     const viewport = this.page.viewportSize?.() ?? { width: 1920, height: 1080 };
-    const scrollPos = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    const scrollPos = await this.page
+      .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
       .catch(() => ({ x: 0, y: 0 }));
     const sx = scrollPos?.x ?? 0;
     const sy = scrollPos?.y ?? 0;
 
     const visibleAOM = uiElements.filter(e => {
-      const vpX = (e.boundingClientRect.x + e.boundingClientRect.width / 2) - sx;
-      const vpY = (e.boundingClientRect.y + e.boundingClientRect.height / 2) - sy;
+      const vpX = e.boundingClientRect.x + e.boundingClientRect.width / 2 - sx;
+      const vpY = e.boundingClientRect.y + e.boundingClientRect.height / 2 - sy;
       return vpX >= 0 && vpY >= 0 && vpX <= viewport.width && vpY <= viewport.height;
     });
     const needsDOMFallback = uiElements.length < 5 || visibleAOM.length === 0;
@@ -303,139 +333,144 @@ export class StateParser {
   private async parseDOMSnapshot(counter: { n: number }): Promise<UIElement[]> {
     const genericNamesArray = [...GENERIC_NAMES];
 
-    const rawElements = await this.page.evaluate((params: { genericNames: string[] }) => {
-      const genericNamesSet = new Set(params.genericNames);
+    const rawElements = await this.page.evaluate(
+      (params: { genericNames: string[] }) => {
+        const genericNamesSet = new Set(params.genericNames);
 
-      function isGeneric(name: string): boolean {
-        return name.length < 3 || genericNamesSet.has(name.toLowerCase().trim());
-      }
+        function isGeneric(name: string): boolean {
+          return name.length < 3 || genericNamesSet.has(name.toLowerCase().trim());
+        }
 
-      function getContextualName(el: Element, baseName: string): string {
-        if (!isGeneric(baseName)) return baseName;
-        let container: Element | null = el.parentElement;
-        for (let depth = 0; depth < 6 && container; depth++) {
-          const heading = container.querySelector(
-            'h1, h2, h3, h4, strong, b, [class*="title"], [class*="name"], [class*="heading"]'
-          );
-          const contextText =
-            container.getAttribute('data-name') ??
-            container.getAttribute('data-provider') ??
-            container.getAttribute('data-title') ??
-            container.getAttribute('aria-label') ??
-            heading?.textContent?.trim() ??
-            '';
-          if (contextText.length > 2 && contextText.length < 80 && !isGeneric(contextText)) {
-            return `${contextText}: ${baseName}`;
+        function getContextualName(el: Element, baseName: string): string {
+          if (!isGeneric(baseName)) return baseName;
+          let container: Element | null = el.parentElement;
+          for (let depth = 0; depth < 6 && container; depth++) {
+            const heading = container.querySelector(
+              'h1, h2, h3, h4, strong, b, [class*="title"], [class*="name"], [class*="heading"]'
+            );
+            const contextText =
+              container.getAttribute('data-name') ??
+              container.getAttribute('data-provider') ??
+              container.getAttribute('data-title') ??
+              container.getAttribute('aria-label') ??
+              heading?.textContent?.trim() ??
+              '';
+            if (contextText.length > 2 && contextText.length < 80 && !isGeneric(contextText)) {
+              return `${contextText}: ${baseName}`;
+            }
+            container = container.parentElement;
           }
-          container = container.parentElement;
+          return baseName;
         }
-        return baseName;
-      }
 
-      const results: any[] = [];
-      const seen = new Set<string>();
+        const results: any[] = [];
+        const seen = new Set<string>();
 
-      // Shadow DOM: pierce all shadow roots recursively
-      function queryShadowAll(selector: string, root: any): any[] {
-        const found: any[] = Array.from(root.querySelectorAll(selector));
-        for (const el of Array.from(root.querySelectorAll('*')) as any[]) {
-          if (el.shadowRoot) found.push(...queryShadowAll(selector, el.shadowRoot));
+        // Shadow DOM: pierce all shadow roots recursively
+        function queryShadowAll(selector: string, root: any): any[] {
+          const found: any[] = Array.from(root.querySelectorAll(selector));
+          for (const el of Array.from(root.querySelectorAll('*')) as any[]) {
+            if (el.shadowRoot) found.push(...queryShadowAll(selector, el.shadowRoot));
+          }
+          return found;
         }
-        return found;
-      }
 
-      const candidates = queryShadowAll(
-        'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick], [contenteditable="true"], [contenteditable=""], [tabindex]',
-        document
-      );
+        const candidates = queryShadowAll(
+          'a, button, input, select, textarea, [role], [data-testid], [title], [aria-label], [onclick], [contenteditable="true"], [contenteditable=""], [tabindex]',
+          document
+        );
 
-      const MAX_ELEMENTS = 200;
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      // Convert viewport-relative getBoundingClientRect to document-space
-      const sx = window.scrollX;
-      const sy = window.scrollY;
+        const MAX_ELEMENTS = 200;
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+        // Convert viewport-relative getBoundingClientRect to document-space
+        const sx = window.scrollX;
+        const sy = window.scrollY;
 
-      for (const el of candidates) {
-        if (results.length >= MAX_ELEMENTS) break;
-        const htmlEl = el as HTMLElement;
-        const rect = htmlEl.getBoundingClientRect();
-
-        if (rect.width < 5 || rect.height < 5) continue;
-        if (rect.top < 0 || rect.left < 0) continue;
-        if (rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
-
-        const rawName =
-          htmlEl.getAttribute('aria-label') ||
-          htmlEl.getAttribute('title') ||
-          htmlEl.getAttribute('data-testid') ||
-          htmlEl.getAttribute('placeholder') ||
-          htmlEl.getAttribute('data-placeholder') ||
-          htmlEl.getAttribute('aria-placeholder') ||
-          htmlEl.textContent?.trim().slice(0, 80) ||
-          '';
-
-        if (!rawName) continue;
-
-        // Apply contextual naming: prefix with parent context for generic names
-        const name = getContextualName(el, rawName);
-
-        const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        results.push({
-          tag: htmlEl.tagName.toLowerCase(),
-          role: htmlEl.getAttribute('role') || htmlEl.tagName.toLowerCase(),
-          name,
-          x: rect.x + sx,
-          y: rect.y + sy,
-          width: rect.width,
-          height: rect.height,
-        });
-      }
-
-      // Phase 2: Heuristic detection for custom React/Vue/Angular components
-      // that have no ARIA attributes but ARE interactive (cursor: pointer)
-      if (results.length < MAX_ELEMENTS) {
-        const interactiveEls = queryShadowAll('div[class], span[class]', document);
-        for (const el of interactiveEls) {
+        for (const el of candidates) {
           if (results.length >= MAX_ELEMENTS) break;
           const htmlEl = el as HTMLElement;
           const rect = htmlEl.getBoundingClientRect();
-          if (rect.width < 10 || rect.height < 10) continue;
+
+          if (rect.width < 5 || rect.height < 5) continue;
           if (rect.top < 0 || rect.left < 0) continue;
           if (rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
-          const style = window.getComputedStyle(htmlEl);
-          if (style.cursor !== 'pointer') continue;
-          // Skip wrappers that contain real interactive children
-          if (htmlEl.querySelector('a, button, input, select, textarea')) continue;
 
           const rawName =
             htmlEl.getAttribute('aria-label') ||
             htmlEl.getAttribute('title') ||
             htmlEl.getAttribute('data-testid') ||
+            htmlEl.getAttribute('placeholder') ||
+            htmlEl.getAttribute('data-placeholder') ||
+            htmlEl.getAttribute('aria-placeholder') ||
             htmlEl.textContent?.trim().slice(0, 80) ||
             '';
+
           if (!rawName) continue;
 
+          // Apply contextual naming: prefix with parent context for generic names
           const name = getContextualName(el, rawName);
+
           const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
           if (seen.has(key)) continue;
           seen.add(key);
 
           results.push({
             tag: htmlEl.tagName.toLowerCase(),
-            role: 'button', // interactive div with cursor:pointer behaves as button
+            role: htmlEl.getAttribute('role') || htmlEl.tagName.toLowerCase(),
             name,
-            x: rect.x + sx, y: rect.y + sy,
-            width: rect.width, height: rect.height,
+            x: rect.x + sx,
+            y: rect.y + sy,
+            width: rect.width,
+            height: rect.height,
           });
         }
-      }
 
-      return results;
-    }, { genericNames: genericNamesArray });
+        // Phase 2: Heuristic detection for custom React/Vue/Angular components
+        // that have no ARIA attributes but ARE interactive (cursor: pointer)
+        if (results.length < MAX_ELEMENTS) {
+          const interactiveEls = queryShadowAll('div[class], span[class]', document);
+          for (const el of interactiveEls) {
+            if (results.length >= MAX_ELEMENTS) break;
+            const htmlEl = el as HTMLElement;
+            const rect = htmlEl.getBoundingClientRect();
+            if (rect.width < 10 || rect.height < 10) continue;
+            if (rect.top < 0 || rect.left < 0) continue;
+            if (rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
+            const style = window.getComputedStyle(htmlEl);
+            if (style.cursor !== 'pointer') continue;
+            // Skip wrappers that contain real interactive children
+            if (htmlEl.querySelector('a, button, input, select, textarea')) continue;
+
+            const rawName =
+              htmlEl.getAttribute('aria-label') ||
+              htmlEl.getAttribute('title') ||
+              htmlEl.getAttribute('data-testid') ||
+              htmlEl.textContent?.trim().slice(0, 80) ||
+              '';
+            if (!rawName) continue;
+
+            const name = getContextualName(el, rawName);
+            const key = `${name}|${Math.round(rect.x + sx)}|${Math.round(rect.y + sy)}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            results.push({
+              tag: htmlEl.tagName.toLowerCase(),
+              role: 'button', // interactive div with cursor:pointer behaves as button
+              name,
+              x: rect.x + sx,
+              y: rect.y + sy,
+              width: rect.width,
+              height: rect.height,
+            });
+          }
+        }
+
+        return results;
+      },
+      { genericNames: genericNamesArray }
+    );
 
     return rawElements.map((el: any) => ({
       id: counter.n++,
@@ -469,8 +504,8 @@ export class StateParser {
 
       const candidates = queryShadowAll(
         'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="image"]),' +
-        'select, textarea, [role="radio"], [role="checkbox"], [role="option"],' +
-        '[contenteditable="true"], [contenteditable=""]',
+          'select, textarea, [role="radio"], [role="checkbox"], [role="option"],' +
+          '[contenteditable="true"], [contenteditable=""]',
         document
       );
 
@@ -502,16 +537,25 @@ export class StateParser {
         const roleAttr = htmlEl.getAttribute('role') ?? '';
         const role =
           roleAttr ||
-          (inputType === 'radio' ? 'radio' :
-           inputType === 'checkbox' ? 'checkbox' :
-           inputType === 'range' ? 'slider' :
-           inputType === 'file' ? 'file' :
-           inputType === 'email' || inputType === 'text' || inputType === 'password' || inputType === 'tel' ? 'textbox' :
-           inputType === 'number' ? 'spinbutton' :
-           inputType === 'search' ? 'searchbox' :
-           htmlEl.tagName.toLowerCase() === 'select' ? 'combobox' :
-           htmlEl.tagName.toLowerCase() === 'textarea' ? 'textbox' :
-           'textbox');
+          (inputType === 'radio'
+            ? 'radio'
+            : inputType === 'checkbox'
+              ? 'checkbox'
+              : inputType === 'range'
+                ? 'slider'
+                : inputType === 'file'
+                  ? 'file'
+                  : inputType === 'email' || inputType === 'text' || inputType === 'password' || inputType === 'tel'
+                    ? 'textbox'
+                    : inputType === 'number'
+                      ? 'spinbutton'
+                      : inputType === 'search'
+                        ? 'searchbox'
+                        : htmlEl.tagName.toLowerCase() === 'select'
+                          ? 'combobox'
+                          : htmlEl.tagName.toLowerCase() === 'textarea'
+                            ? 'textbox'
+                            : 'textbox');
 
         // Track current input value
         const value = (htmlEl as HTMLInputElement).value ?? '';
@@ -558,10 +602,7 @@ export class StateParser {
         return found;
       }
 
-      const candidates = queryShadowAll(
-        '[contenteditable="true"], [contenteditable=""]',
-        document
-      );
+      const candidates = queryShadowAll('[contenteditable="true"], [contenteditable=""]', document);
 
       const sx = window.scrollX;
       const sy = window.scrollY;
@@ -646,9 +687,11 @@ export class StateParser {
         const rawElements = await frame.evaluate(() => {
           const results: any[] = [];
           const seen = new Set<string>();
-          const candidates = Array.from(document.querySelectorAll(
-            'a, button, input:not([type="hidden"]), select, textarea, [role], [aria-label], [data-testid]'
-          ));
+          const candidates = Array.from(
+            document.querySelectorAll(
+              'a, button, input:not([type="hidden"]), select, textarea, [role], [aria-label], [data-testid]'
+            )
+          );
           const vw = window.innerWidth;
           const vh = window.innerHeight;
 
@@ -711,9 +754,9 @@ export class StateParser {
         }
         console.warn(
           `[StateParser] Cross-origin iframe skipped: ${frameUrl}\n` +
-          `  → Elements inside are invisible to widget discovery (same-origin policy).\n` +
-          `  → If you need to interact with it, target elements by role+name directly ` +
-          `(frame context is auto-detected when the element's accessible name is known).`
+            `  → Elements inside are invisible to widget discovery (same-origin policy).\n` +
+            `  → If you need to interact with it, target elements by role+name directly ` +
+            `(frame context is auto-detected when the element's accessible name is known).`
         );
       }
     }
@@ -734,9 +777,7 @@ export class StateParser {
     if (elements.length === 0) return;
 
     const genericNamesArray = [...GENERIC_NAMES];
-    const genericIds = new Set(
-      elements.filter(e => isGenericName(e.name)).map(e => e.id)
-    );
+    const genericIds = new Set(elements.filter(e => isGenericName(e.name)).map(e => e.id));
 
     const items = elements.map(e => ({
       id: e.id,
@@ -745,169 +786,188 @@ export class StateParser {
       needsContext: genericIds.has(e.id),
     }));
 
-    const results: { id: number; context: string; region: string; error: string }[] = await this.page.evaluate(
-      ({ items, genericNames }: {
-        items: { id: number; x: number; y: number; needsContext: boolean }[];
-        genericNames: string[];
-      }) => {
-        const genericSet = new Set(genericNames);
-        function isGeneric(name: string): boolean {
-          return name.length < 3 || genericSet.has(name.toLowerCase().trim());
-        }
-
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-
-        function detectRegion(el: Element | null, x: number, y: number): string {
-          if (!el) return positionalFallback(x, y);
-          let node: Element | null = el;
-          for (let depth = 0; depth < 15 && node; depth++) {
-            const tag = node.tagName?.toLowerCase();
-            const role = node.getAttribute('role');
-            if (role === 'dialog' || role === 'alertdialog' || tag === 'dialog') return 'modal';
-            if (role === 'menu' || role === 'listbox' || role === 'tooltip' ||
-                role === 'popup' || node.classList?.contains('popup') ||
-                node.classList?.contains('dropdown') || node.classList?.contains('popover')) return 'popup';
-            if (tag === 'header' || role === 'banner') return 'header';
-            if (tag === 'footer' || role === 'contentinfo') return 'footer';
-            if (tag === 'nav' || role === 'navigation') return 'nav';
-            if (tag === 'aside' || role === 'complementary') return 'sidebar';
-            if (tag === 'main' || role === 'main') return 'main';
-            node = node.parentElement;
+    const results: { id: number; context: string; region: string; error: string }[] = await this.page
+      .evaluate(
+        ({
+          items,
+          genericNames,
+        }: {
+          items: { id: number; x: number; y: number; needsContext: boolean }[];
+          genericNames: string[];
+        }) => {
+          const genericSet = new Set(genericNames);
+          function isGeneric(name: string): boolean {
+            return name.length < 3 || genericSet.has(name.toLowerCase().trim());
           }
-          return positionalFallback(x, y);
-        }
 
-        function positionalFallback(x: number, y: number): string {
-          if (y < 60) return 'header';
-          if (y > vh - 60) return 'footer';
-          if (x < vw * 0.25 && vw > 600) return 'sidebar';
-          return 'main';
-        }
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
 
-        function findContext(el: Element): string {
-          let container: Element | null = el.parentElement;
-          for (let depth = 0; depth < 8 && container; depth++) {
-            const dataContext =
-              container.getAttribute('data-name') ??
-              container.getAttribute('data-provider') ??
-              container.getAttribute('data-title') ??
-              container.getAttribute('aria-label') ??
-              '';
-            if (dataContext.length > 2 && dataContext.length < 80 && !isGeneric(dataContext)) {
-              return dataContext;
+          function detectRegion(el: Element | null, x: number, y: number): string {
+            if (!el) return positionalFallback(x, y);
+            let node: Element | null = el;
+            for (let depth = 0; depth < 15 && node; depth++) {
+              const tag = node.tagName?.toLowerCase();
+              const role = node.getAttribute('role');
+              if (role === 'dialog' || role === 'alertdialog' || tag === 'dialog') return 'modal';
+              if (
+                role === 'menu' ||
+                role === 'listbox' ||
+                role === 'tooltip' ||
+                role === 'popup' ||
+                node.classList?.contains('popup') ||
+                node.classList?.contains('dropdown') ||
+                node.classList?.contains('popover')
+              )
+                return 'popup';
+              if (tag === 'header' || role === 'banner') return 'header';
+              if (tag === 'footer' || role === 'contentinfo') return 'footer';
+              if (tag === 'nav' || role === 'navigation') return 'nav';
+              if (tag === 'aside' || role === 'complementary') return 'sidebar';
+              if (tag === 'main' || role === 'main') return 'main';
+              node = node.parentElement;
             }
+            return positionalFallback(x, y);
+          }
 
-            const imgAlt = (() => {
-              for (const img of Array.from(container!.querySelectorAll('img[alt]'))) {
-                const imgEl = img as HTMLImageElement;
-                if (imgEl.offsetParent === null) continue;
-                const alt = imgEl.alt.replace(/\s+/g, ' ').trim();
+          function positionalFallback(x: number, y: number): string {
+            if (y < 60) return 'header';
+            if (y > vh - 60) return 'footer';
+            if (x < vw * 0.25 && vw > 600) return 'sidebar';
+            return 'main';
+          }
+
+          function findContext(el: Element): string {
+            let container: Element | null = el.parentElement;
+            for (let depth = 0; depth < 8 && container; depth++) {
+              const dataContext =
+                container.getAttribute('data-name') ??
+                container.getAttribute('data-provider') ??
+                container.getAttribute('data-title') ??
+                container.getAttribute('aria-label') ??
+                '';
+              if (dataContext.length > 2 && dataContext.length < 80 && !isGeneric(dataContext)) {
+                return dataContext;
+              }
+
+              const imgAlt = (() => {
+                for (const img of Array.from(container!.querySelectorAll('img[alt]'))) {
+                  const imgEl = img as HTMLImageElement;
+                  if (imgEl.offsetParent === null) continue;
+                  const alt = imgEl.alt.replace(/\s+/g, ' ').trim();
+                  if (
+                    alt.length > 1 &&
+                    alt.length < 60 &&
+                    !isGeneric(alt) &&
+                    !/[/\\]|icon|logo|check|image|photo|pic|banner|avatar/i.test(alt)
+                  )
+                    return alt;
+                }
+                return '';
+              })();
+
+              const heading =
+                Array.from(container.querySelectorAll('h1, h2, h3, h4, strong, b')).find(
+                  h => (h as HTMLElement).offsetParent !== null
+                ) ?? null;
+              const headingText = heading?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+
+              const extraParts: string[] = [];
+              for (const p of Array.from(container.querySelectorAll('p'))) {
+                if ((p as HTMLElement).offsetParent === null) continue;
+                const t = p.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+                if (t.length > 2 && t.length < 60 && !isGeneric(t) && t !== headingText && !headingText.includes(t)) {
+                  extraParts.push(t);
+                  if (extraParts.length >= 2) break;
+                }
+              }
+
+              for (const node of Array.from(container.querySelectorAll('span, div'))) {
+                if (node.children.length > 0) continue;
+                if ((node as HTMLElement).offsetParent === null) continue;
+                const t = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
                 if (
-                  alt.length > 1 && alt.length < 60 &&
-                  !isGeneric(alt) &&
-                  !/[/\\]|icon|logo|check|image|photo|pic|banner|avatar/i.test(alt)
-                ) return alt;
+                  t.length > 2 &&
+                  t.length < 35 &&
+                  !isGeneric(t) &&
+                  t !== headingText &&
+                  !headingText.includes(t) &&
+                  !extraParts.includes(t)
+                ) {
+                  extraParts.push(t);
+                  if (extraParts.length >= 3) break;
+                }
               }
-              return '';
-            })();
 
-            const heading = Array.from(
-              container.querySelectorAll('h1, h2, h3, h4, strong, b')
-            ).find(h => (h as HTMLElement).offsetParent !== null) ?? null;
-            const headingText = heading?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+              const parts = [
+                ...(imgAlt && imgAlt !== headingText ? [imgAlt] : []),
+                ...(headingText ? [headingText] : []),
+                ...extraParts,
+              ];
+              const contextText = parts.join(' | ');
 
-            const extraParts: string[] = [];
-            for (const p of Array.from(container.querySelectorAll('p'))) {
-              if ((p as HTMLElement).offsetParent === null) continue;
-              const t = p.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-              if (t.length > 2 && t.length < 60 && !isGeneric(t) &&
-                  t !== headingText && !headingText.includes(t)) {
-                extraParts.push(t);
-                if (extraParts.length >= 2) break;
+              if (contextText.length > 2 && contextText.length < 120 && !isGeneric(contextText)) {
+                return contextText;
               }
+
+              container = container.parentElement;
             }
-
-            for (const node of Array.from(container.querySelectorAll('span, div'))) {
-              if (node.children.length > 0) continue;
-              if ((node as HTMLElement).offsetParent === null) continue;
-              const t = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-              if (t.length > 2 && t.length < 35 && !isGeneric(t) &&
-                  t !== headingText && !headingText.includes(t) &&
-                  !extraParts.includes(t)) {
-                extraParts.push(t);
-                if (extraParts.length >= 3) break;
-              }
-            }
-
-            const parts = [
-              ...(imgAlt && imgAlt !== headingText ? [imgAlt] : []),
-              ...(headingText ? [headingText] : []),
-              ...extraParts,
-            ];
-            const contextText = parts.join(' | ');
-
-            if (contextText.length > 2 && contextText.length < 120 && !isGeneric(contextText)) {
-              return contextText;
-            }
-
-            container = container.parentElement;
-          }
-          return '';
-        }
-
-        // Find validation errors for form fields via ARIA attributes and DOM proximity.
-        // Uses W3C standards (aria-invalid, aria-errormessage, aria-describedby, role="alert")
-        // and structural patterns (nearby elements with error/invalid classes).
-        function findError(el: Element | null): string {
-          if (!el) return '';
-
-          // 1. aria-invalid on the element or its parent
-          let node: Element | null = el;
-          for (let d = 0; d < 3 && node; d++) {
-            if (node.getAttribute('aria-invalid') === 'true') {
-              // Look for the error message via aria-errormessage or aria-describedby
-              const errId = node.getAttribute('aria-errormessage') ?? node.getAttribute('aria-describedby');
-              if (errId) {
-                const errEl = document.getElementById(errId);
-                if (errEl) return errEl.textContent?.trim().slice(0, 100) || '';
-              }
-            }
-            node = node.parentElement;
+            return '';
           }
 
-          // 2. Nearby sibling/parent with error class or role="alert"
-          let container: Element | null = el.closest('div') ?? el.parentElement;
-          for (let d = 0; d < 4 && container; d++) {
-            const errEl = container.querySelector(
-              '[role="alert"], [class*="error"], [class*="Error"], ' +
-              '[class*="invalid"], [class*="Invalid"], [class*="errorMessage"], ' +
-              '[class*="validation"], [class*="Validation"]'
-            );
-            if (errEl && errEl.textContent?.trim()) {
-              const text = errEl.textContent.trim().slice(0, 100);
-              if (text.length > 2) return text;
+          // Find validation errors for form fields via ARIA attributes and DOM proximity.
+          // Uses W3C standards (aria-invalid, aria-errormessage, aria-describedby, role="alert")
+          // and structural patterns (nearby elements with error/invalid classes).
+          function findError(el: Element | null): string {
+            if (!el) return '';
+
+            // 1. aria-invalid on the element or its parent
+            let node: Element | null = el;
+            for (let d = 0; d < 3 && node; d++) {
+              if (node.getAttribute('aria-invalid') === 'true') {
+                // Look for the error message via aria-errormessage or aria-describedby
+                const errId = node.getAttribute('aria-errormessage') ?? node.getAttribute('aria-describedby');
+                if (errId) {
+                  const errEl = document.getElementById(errId);
+                  if (errEl) return errEl.textContent?.trim().slice(0, 100) || '';
+                }
+              }
+              node = node.parentElement;
             }
-            container = container.parentElement;
+
+            // 2. Nearby sibling/parent with error class or role="alert"
+            let container: Element | null = el.closest('div') ?? el.parentElement;
+            for (let d = 0; d < 4 && container; d++) {
+              const errEl = container.querySelector(
+                '[role="alert"], [class*="error"], [class*="Error"], ' +
+                  '[class*="invalid"], [class*="Invalid"], [class*="errorMessage"], ' +
+                  '[class*="validation"], [class*="Validation"]'
+              );
+              if (errEl && errEl.textContent?.trim()) {
+                const text = errEl.textContent.trim().slice(0, 100);
+                if (text.length > 2) return text;
+              }
+              container = container.parentElement;
+            }
+
+            return '';
           }
 
-          return '';
-        }
-
-        return items.map(({ id, x, y, needsContext }) => {
-          const vpX = x - window.scrollX;
-          const vpY = y - window.scrollY;
-          const el = document.elementFromPoint(vpX, vpY);
-          return {
-            id,
-            context: needsContext && el ? findContext(el) : '',
-            region: detectRegion(el, vpX, vpY),
-            error: el ? findError(el) : '',
-          };
-        });
-      },
-      { items, genericNames: genericNamesArray }
-    ).catch(() => [] as { id: number; context: string; region: string; error: string }[]);
+          return items.map(({ id, x, y, needsContext }) => {
+            const vpX = x - window.scrollX;
+            const vpY = y - window.scrollY;
+            const el = document.elementFromPoint(vpX, vpY);
+            return {
+              id,
+              context: needsContext && el ? findContext(el) : '',
+              region: detectRegion(el, vpX, vpY),
+              error: el ? findError(el) : '',
+            };
+          });
+        },
+        { items, genericNames: genericNamesArray }
+      )
+      .catch(() => [] as { id: number; context: string; region: string; error: string }[]);
 
     const resultMap = new Map(results.map(r => [r.id, r]));
     for (const el of elements) {
@@ -923,11 +983,27 @@ export class StateParser {
 
   private isInteractive(node: any): boolean {
     const interactiveRoles = [
-      'button', 'link', 'textbox', 'checkbox', 'combobox',
-      'listbox', 'menuitem', 'radio', 'searchbox', 'slider',
-      'spinbutton', 'switch', 'tab', 'treeitem',
-      'listitem', 'option', 'row', 'gridcell',
-      'menuitemcheckbox', 'menuitemradio', 'columnheader',
+      'button',
+      'link',
+      'textbox',
+      'checkbox',
+      'combobox',
+      'listbox',
+      'menuitem',
+      'radio',
+      'searchbox',
+      'slider',
+      'spinbutton',
+      'switch',
+      'tab',
+      'treeitem',
+      'listitem',
+      'option',
+      'row',
+      'gridcell',
+      'menuitemcheckbox',
+      'menuitemradio',
+      'columnheader',
     ];
     return interactiveRoles.includes(node.role?.value) && !node.ignored;
   }
@@ -981,12 +1057,7 @@ export class StateParser {
         continue;
       }
       const parentName = (parent.name?.value ?? '').trim();
-      if (
-        parentName &&
-        parentName.length > 2 &&
-        parentName.length < 80 &&
-        !isGenericName(parentName)
-      ) {
+      if (parentName && parentName.length > 2 && parentName.length < 80 && !isGenericName(parentName)) {
         return parentName;
       }
       currentId = parentMap.get(currentId);
@@ -1026,9 +1097,9 @@ export class StateParser {
     if (node.properties) {
       for (const prop of node.properties) {
         if (prop.name === 'disabled') state.disabled = prop.value.value;
-        if (prop.name === 'hidden')   state.hidden   = prop.value.value;
-        if (prop.name === 'focused')  state.focused  = prop.value.value;
-        if (prop.name === 'checked')  state.checked  = prop.value.value;
+        if (prop.name === 'hidden') state.hidden = prop.value.value;
+        if (prop.name === 'focused') state.focused = prop.value.value;
+        if (prop.name === 'checked') state.checked = prop.value.value;
       }
     }
     // Track input values for form fields

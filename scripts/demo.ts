@@ -40,7 +40,6 @@ async function main() {
     // observe() with optional instruction
     const actions = await sentinel.observe('Find navigation or search elements');
     console.log('Observable actions:', actions);
-
   } catch (error) {
     console.error('Sentinel Error:', error);
   } finally {

@@ -27,7 +27,7 @@ type WarnLogger = (level: 1 | 2 | 3, message: string) => void;
 export async function clickLocator(
   locator: Locator,
   options: { timeout?: number } = {},
-  warn?: WarnLogger,
+  warn?: WarnLogger
 ): Promise<void> {
   try {
     await locator.click(options);

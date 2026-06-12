@@ -8,11 +8,7 @@ import { waitForPageSettle } from './page-settle.js';
 type Logger = (level: 1 | 2 | 3, message: string) => void;
 
 /** Callback into ActionEngine's `performAction` for cache-hit execution. */
-export type PerformActionCallback = (
-  action: ActionType,
-  target: UIElement,
-  value?: string,
-) => Promise<void>;
+export type PerformActionCallback = (action: ActionType, target: UIElement, value?: string) => Promise<void>;
 
 /**
  * How many relevance-ranked candidates get fingerprinted and probed.
@@ -110,7 +106,7 @@ export class PatternCacheCoordinator {
     private readonly patternCache: IPatternCache | null,
     private readonly log: Logger,
     private readonly warn: Logger,
-    private readonly domSettleTimeoutMs: number,
+    private readonly domSettleTimeoutMs: number
   ) {}
 
   get enabled(): boolean {
@@ -128,16 +124,14 @@ export class PatternCacheCoordinator {
    */
   async fingerprintTop(candidates: UIElement[]): Promise<Map<number, PatternFingerprint>> {
     if (!this.patternCache || candidates.length === 0) return new Map();
-    const top = candidates
-      .slice(0, PATTERN_PROBE_TOP_N)
-      .filter(c => c.boundingClientRect.width > 0);
+    const top = candidates.slice(0, PATTERN_PROBE_TOP_N).filter(c => c.boundingClientRect.width > 0);
     if (top.length === 0) return new Map();
     return await this.stateParser.computeTargetFingerprints(
       top.map(e => ({
         id: e.id,
         x: e.boundingClientRect.x + e.boundingClientRect.width / 2,
         y: e.boundingClientRect.y + e.boundingClientRect.height / 2,
-      })),
+      }))
     );
   }
 
@@ -154,21 +148,30 @@ export class PatternCacheCoordinator {
     candidates: UIElement[],
     fingerprints: Map<number, PatternFingerprint>,
     instruction: string,
-    performAction: PerformActionCallback,
+    performAction: PerformActionCallback
   ): Promise<ActionResult | null> {
     if (!this.patternCache || fingerprints.size === 0) return null;
     // Iterate candidates in relevance order — first cache hit wins.
     const top = candidates.slice(0, PATTERN_PROBE_TOP_N);
-    this.log(2, `[Pattern] probing ${top.length} candidate(s) against cache (${fingerprints.size} fingerprints computed)`);
+    this.log(
+      2,
+      `[Pattern] probing ${top.length} candidate(s) against cache (${fingerprints.size} fingerprints computed)`
+    );
     for (const candidate of top) {
       const fp = fingerprints.get(candidate.id);
       if (!fp || (!fp.aria && !fp.library && !fp.topology)) {
-        this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — no fingerprint (elementFromPoint returned nothing)`);
+        this.log(
+          2,
+          `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — no fingerprint (elementFromPoint returned nothing)`
+        );
         continue;
       }
       const entry = this.patternCache.get(fp, instruction);
       if (!entry) {
-        this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — MISS fp=${JSON.stringify(fp)}`);
+        this.log(
+          2,
+          `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — MISS fp=${JSON.stringify(fp)}`
+        );
         continue;
       }
       // Name-compat check: several widgets on the same page often share a
@@ -178,7 +181,10 @@ export class PatternCacheCoordinator {
       // cached one — exact or substring either direction. Prevents cache
       // hits from routing the action to the wrong same-shape widget.
       if (!namesCompatible(candidate.name, entry.sequence.name)) {
-        this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — FP match but name differs from cached "${entry.sequence.name}" — skipping`);
+        this.log(
+          2,
+          `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — FP match but name differs from cached "${entry.sequence.name}" — skipping`
+        );
         continue;
       }
       this.log(2, `[Pattern]   ${candidate.id} (${candidate.role} "${candidate.name}") — HIT fp=${JSON.stringify(fp)}`);
@@ -213,10 +219,7 @@ export class PatternCacheCoordinator {
    * what a future `tryHit` lookup will probe — no drift from framework
    * state classes added by the action.
    */
-  async ensureFingerprintFor(
-    target: UIElement,
-    fingerprints: Map<number, PatternFingerprint>,
-  ): Promise<void> {
+  async ensureFingerprintFor(target: UIElement, fingerprints: Map<number, PatternFingerprint>): Promise<void> {
     if (!this.patternCache || fingerprints.has(target.id)) return;
     const { x, y, width, height } = target.boundingClientRect;
     if (width <= 0 || height <= 0) return;
@@ -240,7 +243,7 @@ export class PatternCacheCoordinator {
     target: UIElement,
     sequence: PatternSequence,
     instruction: string,
-    preActionFingerprints: Map<number, PatternFingerprint>,
+    preActionFingerprints: Map<number, PatternFingerprint>
   ): Promise<void> {
     if (!this.patternCache) return;
     try {

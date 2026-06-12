@@ -83,9 +83,7 @@ describe('ClaudeProvider', () => {
         usage: { input_tokens: 10, output_tokens: 5 },
       });
 
-      await expect(
-        provider.generateStructuredData('test prompt', { type: 'object' })
-      ).rejects.toThrow(LLMError);
+      await expect(provider.generateStructuredData('test prompt', { type: 'object' })).rejects.toThrow(LLMError);
     });
 
     it('throws LLMError with correct message when response is empty', async () => {
@@ -94,9 +92,9 @@ describe('ClaudeProvider', () => {
         usage: { input_tokens: 10, output_tokens: 5 },
       });
 
-      await expect(
-        provider.generateStructuredData('test prompt', { type: 'object' })
-      ).rejects.toThrow('No tool_use block in response');
+      await expect(provider.generateStructuredData('test prompt', { type: 'object' })).rejects.toThrow(
+        'No tool_use block in response'
+      );
     });
   });
 
@@ -188,10 +186,10 @@ describe('OpenAIProvider', () => {
         usage: { prompt_tokens: 80, completion_tokens: 40, total_tokens: 120 },
       });
 
-      const result = await provider.generateStructuredData<{ city: string; population: number }>(
-        'test prompt',
-        { type: 'object', properties: { city: { type: 'string' }, population: { type: 'number' } } }
-      );
+      const result = await provider.generateStructuredData<{ city: string; population: number }>('test prompt', {
+        type: 'object',
+        properties: { city: { type: 'string' }, population: { type: 'number' } },
+      });
 
       expect(result).toEqual({ city: 'Berlin', population: 3700000 });
     });

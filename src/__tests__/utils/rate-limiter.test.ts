@@ -45,11 +45,7 @@ describe('RateLimiter', () => {
   it('concurrent acquires on same host all serialize through reserved slots', async () => {
     const limiter = new RateLimiter(20); // 50ms interval
     const start = Date.now();
-    await Promise.all([
-      limiter.acquire('example.com'),
-      limiter.acquire('example.com'),
-      limiter.acquire('example.com'),
-    ]);
+    await Promise.all([limiter.acquire('example.com'), limiter.acquire('example.com'), limiter.acquire('example.com')]);
     const elapsed = Date.now() - start;
     // All three reservations are scheduled before any timer completes — each
     // one adds intervalMs on top of the previous reservation, so the last

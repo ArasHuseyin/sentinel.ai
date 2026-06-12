@@ -52,11 +52,7 @@ export interface LLMProvider {
   /**
    * Generate structured JSON data conforming to the given schema.
    */
-  generateStructuredData<T>(
-    prompt: string,
-    schema: SchemaInput<T>,
-    options?: GenerateOptions
-  ): Promise<T>;
+  generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T>;
 
   /**
    * Generate a plain text response.

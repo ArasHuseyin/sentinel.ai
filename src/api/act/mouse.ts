@@ -7,13 +7,7 @@ import type { Page } from 'playwright';
  * Steps are scaled to the distance: short movements use fewer points,
  * long diagonal swipes use up to 40. Typical duration: ~120–180 ms.
  */
-export async function moveMouse(
-  page: Page,
-  x0: number,
-  y0: number,
-  x1: number,
-  y1: number
-): Promise<void> {
+export async function moveMouse(page: Page, x0: number, y0: number, x1: number, y1: number): Promise<void> {
   const dx = x1 - x0;
   const dy = y1 - y0;
   const dist = Math.sqrt(dx * dx + dy * dy);

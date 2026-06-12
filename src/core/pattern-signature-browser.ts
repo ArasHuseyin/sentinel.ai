@@ -21,9 +21,13 @@ export function computeFingerprintsBrowserSide(
   targets: Array<{ id: number; x: number; y: number }>
 ): Record<number, PatternFingerprint> {
   const ARIA_NOISE = new Set([
-    'aria-label', 'aria-labelledby', 'aria-describedby',
-    'aria-valuenow', 'aria-valuetext',
-    'aria-activedescendant', 'aria-owns',
+    'aria-label',
+    'aria-labelledby',
+    'aria-describedby',
+    'aria-valuenow',
+    'aria-valuetext',
+    'aria-activedescendant',
+    'aria-owns',
   ]);
 
   const LIBRARY_PREFIXES: Array<[string, string]> = [
@@ -167,8 +171,10 @@ export function computeFingerprintsBrowserSide(
       // Bring target into the viewport if needed (instant, no animation —
       // must complete before the next elementFromPoint call).
       const needsScroll =
-        t.y - window.scrollY < 0 || t.y - window.scrollY > window.innerHeight ||
-        t.x - window.scrollX < 0 || t.x - window.scrollX > window.innerWidth;
+        t.y - window.scrollY < 0 ||
+        t.y - window.scrollY > window.innerHeight ||
+        t.x - window.scrollX < 0 ||
+        t.x - window.scrollX > window.innerWidth;
       if (needsScroll) {
         window.scrollTo({
           left: Math.max(0, t.x - window.innerWidth / 2),
@@ -192,7 +198,8 @@ export function computeFingerprintsBrowserSide(
   } finally {
     // Always restore — fingerprinting must be side-effect-free on the page.
     window.scrollTo({
-      left: origScrollX, top: origScrollY,
+      left: origScrollX,
+      top: origScrollY,
       behavior: 'instant' as ScrollBehavior,
     });
   }

@@ -23,11 +23,7 @@ export class GeminiService {
     }
   }
 
-  async generateStructuredData<T>(
-    prompt: string,
-    schema: SchemaInput<T>,
-    options?: GenerateOptions
-  ): Promise<T> {
+  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
     this.syncTokenUsage();
     return this.provider.generateStructuredData<T>(prompt, schema, options);
   }

@@ -5,7 +5,9 @@ import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
-  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
+  return (
+    typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function'
+  );
 }
 
 export interface OpenAIProviderOptions {
@@ -32,9 +34,7 @@ export class OpenAIProvider implements LLMProvider {
         ...(options.baseURL ? { baseURL: options.baseURL } : {}),
       });
     } catch {
-      throw new LLMError(
-        '"openai" package not found. Install it with: npm install openai'
-      );
+      throw new LLMError('"openai" package not found. Install it with: npm install openai');
     }
     this.model = options.model ?? 'gpt-4o';
   }
@@ -50,11 +50,7 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async generateStructuredData<T>(
-    prompt: string,
-    schema: SchemaInput<T>,
-    options?: GenerateOptions
-  ): Promise<T> {
+  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
     const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
     // One-shot adaptive retry on truncation: OpenAI signals via

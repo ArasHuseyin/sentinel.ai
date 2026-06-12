@@ -4,7 +4,7 @@ dotenv.config();
 async function listAllModels() {
   const key = process.env.GEMINI_API_KEY;
   const versions = ['v1', 'v1beta', 'v1alpha'];
-  
+
   for (const v of versions) {
     try {
       console.log(`Checking models in ${v}...`);

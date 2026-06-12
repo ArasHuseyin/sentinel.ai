@@ -49,11 +49,7 @@ export const ARIA_NOISE = new Set([
  * string from already-collected primitives. Sorting + dedup make the
  * output order-independent so two identical widgets always hash equal.
  */
-export function formatAriaFingerprint(
-  role: string,
-  ariaAttrKeys: string[],
-  descendantRolePattern: string[]
-): string {
+export function formatAriaFingerprint(role: string, ariaAttrKeys: string[], descendantRolePattern: string[]): string {
   if (!role) return '';
   const ariaPart = [...new Set(ariaAttrKeys)].sort().join(',');
   const descPart = [...new Set(descendantRolePattern)].sort().join(',');
@@ -67,21 +63,37 @@ export function formatAriaFingerprint(
  * the element contributes `''` to the fingerprint (i.e. won't match).
  */
 const IMPLIED_ROLES: Record<string, (el: Element) => string> = {
-  'BUTTON': () => 'button',
-  'A': (el) => el.hasAttribute('href') ? 'link' : '',
-  'SELECT': () => 'combobox',
-  'TEXTAREA': () => 'textbox',
-  'INPUT': (el) => {
+  BUTTON: () => 'button',
+  A: el => (el.hasAttribute('href') ? 'link' : ''),
+  SELECT: () => 'combobox',
+  TEXTAREA: () => 'textbox',
+  INPUT: el => {
     const type = ((el as HTMLInputElement).type ?? '').toLowerCase();
     switch (type) {
-      case 'button': case 'submit': case 'reset': case 'image': return 'button';
-      case 'checkbox': return 'checkbox';
-      case 'radio': return 'radio';
-      case 'range': return 'slider';
-      case 'number': return 'spinbutton';
-      case 'search': return 'searchbox';
-      case 'text': case 'email': case 'password': case 'tel': case 'url': case '': return 'textbox';
-      default: return 'textbox';
+      case 'button':
+      case 'submit':
+      case 'reset':
+      case 'image':
+        return 'button';
+      case 'checkbox':
+        return 'checkbox';
+      case 'radio':
+        return 'radio';
+      case 'range':
+        return 'slider';
+      case 'number':
+        return 'spinbutton';
+      case 'search':
+        return 'searchbox';
+      case 'text':
+      case 'email':
+      case 'password':
+      case 'tel':
+      case 'url':
+      case '':
+        return 'textbox';
+      default:
+        return 'textbox';
     }
   },
 };
@@ -128,8 +140,7 @@ export function collectAriaFingerprintInputs(el: Element): {
 
   // Follow aria-controls / aria-owns pointers so popup-controlled widgets
   // carry their linked structure (e.g. combobox controlling listbox).
-  const linked = [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')]
-    .filter(Boolean) as string[];
+  const linked = [el.getAttribute('aria-controls'), el.getAttribute('aria-owns')].filter(Boolean) as string[];
   for (const ids of linked) {
     for (const id of ids.split(/\s+/)) {
       const target = el.ownerDocument?.getElementById(id);

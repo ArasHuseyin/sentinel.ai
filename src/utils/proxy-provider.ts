@@ -86,8 +86,8 @@ export class WebshareProxyProvider implements IProxyProvider {
   constructor(private readonly opts: WebshareProxyOptions) {}
 
   private async fetchProxies(): Promise<void> {
-    const limit  = this.opts.limit    ?? 25;
-    const proto  = this.opts.protocol ?? 'http';
+    const limit = this.opts.limit ?? 25;
+    const proto = this.opts.protocol ?? 'http';
     const params = new URLSearchParams({ page_size: String(limit), mode: 'direct' });
     if (this.opts.country) params.set('country_code__icontains', this.opts.country);
 
@@ -102,7 +102,7 @@ export class WebshareProxyProvider implements IProxyProvider {
     const data = (await resp.json()) as WebshareResponse;
 
     this.cache = data.results.map(p => ({
-      server:   `${proto}://${p.proxy_address}:${p.port}`,
+      server: `${proto}://${p.proxy_address}:${p.port}`,
       username: p.username,
       password: p.password,
     }));
@@ -131,9 +131,6 @@ export class WebshareProxyProvider implements IProxyProvider {
 
 export function isProxyProvider(value: unknown): value is IProxyProvider {
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    'getProxy' in value &&
-    typeof (value as any).getProxy === 'function'
+    typeof value === 'object' && value !== null && 'getProxy' in value && typeof (value as any).getProxy === 'function'
   );
 }

@@ -82,7 +82,11 @@ export class Sentinel extends EventEmitter {
   private readonly patternCacheInstance: IPatternCache | null;
   private readonly rateLimiter: RateLimiter | null;
   private readonly logger: Logger;
-  private readonly captchaOption: 'auto' | 'skip' | 'manual' | { strategy: 'auto' | 'skip' | 'manual'; timeoutMs?: number };
+  private readonly captchaOption:
+    | 'auto'
+    | 'skip'
+    | 'manual'
+    | { strategy: 'auto' | 'skip' | 'manual'; timeoutMs?: number };
   private _tokenUsageCallback: ((usage: { inputTokens: number; outputTokens: number }) => void) | undefined;
 
   constructor(options: SentinelOptions) {
@@ -114,20 +118,15 @@ export class Sentinel extends EventEmitter {
     this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
     this.patternCacheInstance = createPatternCache(options.patternCache ?? true);
     this.recorder = new WorkflowRecorder();
-    this.tokenTracker = new TokenTracker(
-      process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview',
-      {
-        budget: {
-          ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
-          ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
-        },
-        ...(options.costAuditPath !== undefined ? { persistPath: options.costAuditPath } : {}),
-      }
-    );
+    this.tokenTracker = new TokenTracker(process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview', {
+      budget: {
+        ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
+      },
+      ...(options.costAuditPath !== undefined ? { persistPath: options.costAuditPath } : {}),
+    });
     this.captchaOption = options.captcha ?? 'auto';
-    this.rateLimiter = options.rateLimit && options.rateLimit > 0
-      ? new RateLimiter(options.rateLimit)
-      : null;
+    this.rateLimiter = options.rateLimit && options.rateLimit > 0 ? new RateLimiter(options.rateLimit) : null;
 
     // Separate planner LLM (optional — uses stronger model for planning decisions)
     if (options.plannerProvider) {
@@ -173,9 +172,9 @@ export class Sentinel extends EventEmitter {
     const modelName = process.env.GEMINI_VERSION ?? 'unknown';
     if (this._tokenUsageCallback) {
       const prevCb = this._tokenUsageCallback;
-      this._tokenUsageCallback = (usage) => {
+      this._tokenUsageCallback = usage => {
         prevCb(usage);
-        llmTokens.add(usage.inputTokens,  { 'llm.model': modelName, direction: 'input' });
+        llmTokens.add(usage.inputTokens, { 'llm.model': modelName, direction: 'input' });
         llmTokens.add(usage.outputTokens, { 'llm.model': modelName, direction: 'output' });
       };
       (this.gemini as any).onTokenUsage = this._tokenUsageCallback;
@@ -193,11 +192,33 @@ export class Sentinel extends EventEmitter {
     if (this.visionFallback) {
       this.visionGrounding = new VisionGrounding(this.gemini, this.verbose);
     }
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike, this.mode, this.patternCacheInstance);
+    this.actionEngine = new ActionEngine(
+      page,
+      this.stateParser,
+      this.gemini,
+      this.visionGrounding ?? undefined,
+      this.domSettleTimeoutMs,
+      this.locatorCacheInstance,
+      this.maxElements,
+      this.verbose,
+      this.humanLike,
+      this.mode,
+      this.patternCacheInstance
+    );
     this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
     this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
     this.verifier = new Verifier(page, this.stateParser, this.gemini, this.logger.child('Verifier'));
-    this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined, this.mfaConfig, this.logger);
+    this.agentLoop = new AgentLoop(
+      this.actionEngine,
+      this.extractionEngine,
+      this.stateParser,
+      this.gemini,
+      page,
+      this.visionGrounding ?? undefined,
+      this.plannerLLM ?? undefined,
+      this.mfaConfig,
+      this.logger
+    );
 
     this.log(1, '🚀 Sentinel initialized');
   }
@@ -248,7 +269,9 @@ export class Sentinel extends EventEmitter {
     // Flush any pending locator-cache writes before releasing the browser, so
     // debounced entries make it to disk even on short-lived runs.
     if (this.locatorCacheInstance?.flush) {
-      await this.locatorCacheInstance.flush().catch(() => { /* best-effort */ });
+      await this.locatorCacheInstance.flush().catch(() => {
+        /* best-effort */
+      });
     }
     this.locatorCacheInstance?.close?.();
     await this.driver.close();
@@ -289,11 +312,13 @@ export class Sentinel extends EventEmitter {
     //   const concurrency = Math.min(options.concurrency ?? 3, tierLimit);
     const concurrency = Math.max(1, options.concurrency ?? 3);
 
-    const factory = _factory ?? (async (opts: SentinelOptions) => {
-      const s = new Sentinel(opts);
-      await s.init();
-      return s;
-    });
+    const factory =
+      _factory ??
+      (async (opts: SentinelOptions) => {
+        const s = new Sentinel(opts);
+        await s.init();
+        return s;
+      });
 
     const results: ParallelResult[] = new Array(tasks.length);
     let completed = 0;
@@ -338,7 +363,9 @@ export class Sentinel extends EventEmitter {
             // and the caller to see the task result. But surface it so zombie browsers
             // don't stay silently undetected.
             if ((options.verbose ?? 1) >= 1) {
-              console.warn(`[Sentinel.parallel] close() failed for task ${index} (${task.url}): ${closeErr?.message ?? closeErr}`);
+              console.warn(
+                `[Sentinel.parallel] close() failed for task ${index} (${task.url}): ${closeErr?.message ?? closeErr}`
+              );
             }
           }
         }
@@ -357,9 +384,7 @@ export class Sentinel extends EventEmitter {
     };
 
     // Spawn min(concurrency, tasks.length) workers in parallel
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, tasks.length) }, worker)
-    );
+    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
 
     return results;
   }
@@ -445,15 +470,14 @@ export class Sentinel extends EventEmitter {
     if (!actionEngine || !stateParser || !verifier) throw new NotInitializedError();
 
     const t0 = Date.now();
-    return withSpan('sentinel.act', { 'sentinel.instruction': instruction }, async (span) => {
+    return withSpan('sentinel.act', { 'sentinel.instruction': instruction }, async span => {
       let success = false;
       try {
         const retries = options?.retries ?? 2;
         let currentAttempt = 0;
         let captchaSolveAttempts = 0;
-        const captchaCfg: CaptchaSolverOptions = typeof this.captchaOption === 'string'
-          ? { strategy: this.captchaOption }
-          : this.captchaOption;
+        const captchaCfg: CaptchaSolverOptions =
+          typeof this.captchaOption === 'string' ? { strategy: this.captchaOption } : this.captchaOption;
         // Verifier-rejection feedback accumulated across retry attempts, so the
         // planner can escalate strategy instead of repeating the same action.
         const previousFailures: string[] = [];
@@ -474,7 +498,7 @@ export class Sentinel extends EventEmitter {
             // so the caller can route to an external service.
             if (err instanceof CaptchaDetectedError && captchaSolveAttempts === 0) {
               captchaSolveAttempts++;
-              this.log(1, `🧩 ${describeCaptcha(err.type, (err.context?.captchaSource) as string | undefined)}`);
+              this.log(1, `🧩 ${describeCaptcha(err.type, err.context?.captchaSource as string | undefined)}`);
               this.log(2, `[Captcha] attempting ${captchaCfg.strategy ?? 'auto'} strategy...`);
               const solved = await attemptAutoSolve(this.driver.getPage(), err.type, captchaCfg);
               if (solved) {
@@ -502,14 +526,14 @@ export class Sentinel extends EventEmitter {
             const actionResult: ActionResult = {
               success: true,
               message: result.message,
-              ...(result.action   ? { action:   result.action }   : {}),
+              ...(result.action ? { action: result.action } : {}),
               ...(result.selector ? { selector: result.selector } : {}),
             };
             this.recorder.record({ type: 'act', instruction, pageUrl: this.driver.getPage().url(), pageTitle: '' });
             this.emit('action', { instruction, result: actionResult });
             span.setAttributes({
               'sentinel.success': true,
-              ...(actionResult.action   ? { 'sentinel.action':   actionResult.action }   : {}),
+              ...(actionResult.action ? { 'sentinel.action': actionResult.action } : {}),
               ...(actionResult.selector ? { 'sentinel.selector': actionResult.selector } : {}),
             });
             success = true;
@@ -520,29 +544,35 @@ export class Sentinel extends EventEmitter {
           // Pass the technical action label (e.g. 'click on "Switch demo" (checkbox)')
           // rather than the user instruction ('Toggle the first switch') so the
           // verifier's fast-paths can detect the target role accurately.
-          const verification = await verifier.verifyAction(result.action ?? instruction, stateBefore, stateAfter, instruction);
+          const verification = await verifier.verifyAction(
+            result.action ?? instruction,
+            stateBefore,
+            stateAfter,
+            instruction
+          );
 
           if (verification.success && verification.confidence > 0.7) {
             this.log(1, `✅ "${instruction}" verified (confidence: ${(verification.confidence * 100).toFixed(0)}%)`);
             const actionResult: ActionResult = {
               success: true,
               message: verification.message,
-              ...(result.action   ? { action:   result.action }   : {}),
+              ...(result.action ? { action: result.action } : {}),
               ...(result.selector ? { selector: result.selector } : {}),
             };
             this.recorder.record({ type: 'act', instruction, pageUrl: this.driver.getPage().url(), pageTitle: '' });
             this.emit('action', { instruction, result: actionResult });
             span.setAttributes({
               'sentinel.success': true,
-              ...(actionResult.action   ? { 'sentinel.action':   actionResult.action }   : {}),
+              ...(actionResult.action ? { 'sentinel.action': actionResult.action } : {}),
               ...(actionResult.selector ? { 'sentinel.selector': actionResult.selector } : {}),
             });
             success = true;
             return actionResult;
           } else {
-            this.log(1,
+            this.log(
+              1,
               `⚠️  Verification weak (${(verification.confidence * 100).toFixed(0)}%): ${verification.message}. ` +
-              `Retrying... (${currentAttempt + 1}/${retries + 1})`
+                `Retrying... (${currentAttempt + 1}/${retries + 1})`
             );
             // Record what the planner just did and why the verifier rejected it,
             // so the next attempt can escalate (e.g. fill → press Enter) rather
@@ -597,10 +627,8 @@ export class Sentinel extends EventEmitter {
     if (!this.observationEngine) throw new Error('Sentinel not initialized. Call init() first.');
     if (!this.enableCaching) this.stateParser?.invalidateCache();
     this.log(2, `👁️  Observing${instruction ? `: "${instruction}"` : ''}`);
-    return withSpan(
-      'sentinel.observe',
-      instruction ? { 'sentinel.instruction': instruction } : {},
-      () => this.observationEngine!.observe(instruction)
+    return withSpan('sentinel.observe', instruction ? { 'sentinel.instruction': instruction } : {}, () =>
+      this.observationEngine!.observe(instruction)
     );
   }
 
@@ -733,7 +761,9 @@ export class Sentinel extends EventEmitter {
     const stateParser = new StateParser(page, cdp);
     const mode = this.visionFallback ? (this.visionGrounding ? 'hybrid' : 'aom') : 'aom';
     const actionEngine = new ActionEngine(
-      page, stateParser, this.gemini,
+      page,
+      stateParser,
+      this.gemini,
       this.visionGrounding ?? undefined,
       this.domSettleTimeoutMs,
       this.locatorCacheInstance,
@@ -749,7 +779,7 @@ export class Sentinel extends EventEmitter {
     const extended = page as ExtendedPage;
     extended.act = (instruction, options) => actionEngine.act(instruction, options);
     extended.extract = (instruction, schema) => extractionEngine.extract(instruction, schema);
-    extended.observe = (instruction) => observationEngine.observe(instruction);
+    extended.observe = instruction => observationEngine.observe(instruction);
     return extended;
   }
 
@@ -795,7 +825,10 @@ export class Sentinel extends EventEmitter {
    *   fuel: 'Benzin', postalCode: '1010'
    * });
    */
-  async fillForm(data: Record<string, string | number | boolean>, options?: { maxSteps?: number }): Promise<AgentResult> {
+  async fillForm(
+    data: Record<string, string | number | boolean>,
+    options?: { maxSteps?: number }
+  ): Promise<AgentResult> {
     if (!this.agentLoop) throw new Error('Sentinel not initialized. Call init() first.');
 
     // Build a natural language goal from the JSON data
@@ -824,18 +857,22 @@ export class Sentinel extends EventEmitter {
   async run(goal: string, options?: AgentRunOptions): Promise<AgentResult> {
     if (!this.agentLoop) throw new Error('Sentinel not initialized. Call init() first.');
     this.log(1, `🤖 Agent starting: "${goal}"`);
-    const result = await withSpan('sentinel.agent', {
-      'sentinel.goal':      goal,
-      'sentinel.max_steps': options?.maxSteps ?? 15,
-    }, async (span) => {
-      const r = await this.agentLoop!.run(goal, options);
-      span.setAttributes({
-        'sentinel.goal_achieved': r.goalAchieved,
-        'sentinel.total_steps':   r.totalSteps,
-      });
-      agentSteps.record(r.totalSteps, { goal_achieved: String(r.goalAchieved) });
-      return r;
-    });
+    const result = await withSpan(
+      'sentinel.agent',
+      {
+        'sentinel.goal': goal,
+        'sentinel.max_steps': options?.maxSteps ?? 15,
+      },
+      async span => {
+        const r = await this.agentLoop!.run(goal, options);
+        span.setAttributes({
+          'sentinel.goal_achieved': r.goalAchieved,
+          'sentinel.total_steps': r.totalSteps,
+        });
+        agentSteps.record(r.totalSteps, { goal_achieved: String(r.goalAchieved) });
+        return r;
+      }
+    );
     this.log(1, `✔️ Agent finished: ${result.message}`);
     return result;
   }
@@ -866,10 +903,7 @@ export class Sentinel extends EventEmitter {
    *   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
    * }
    */
-  async *runStream(
-    goal: string,
-    options?: AgentRunOptions
-  ): AsyncGenerator<AgentStepEvent | AgentResult> {
+  async *runStream(goal: string, options?: AgentRunOptions): AsyncGenerator<AgentStepEvent | AgentResult> {
     if (!this.agentLoop) throw new Error('Sentinel not initialized. Call init() first.');
 
     // Internal async queue for bridging the callback-based AgentLoop with AsyncGenerator
@@ -883,8 +917,14 @@ export class Sentinel extends EventEmitter {
 
     const waitForItem = (): Promise<void> =>
       new Promise(resolve => {
-        if (queue.length > 0) { resolve(); return; }
-        notify = () => { notify = null; resolve(); };
+        if (queue.length > 0) {
+          resolve();
+          return;
+        }
+        notify = () => {
+          notify = null;
+          resolve();
+        };
       });
 
     // Run the agent in the background, feeding steps into the queue
@@ -894,20 +934,25 @@ export class Sentinel extends EventEmitter {
         enqueue(step);
         options?.onStep?.(step);
       },
-    }).then((result: AgentResult) => {
-      enqueue(result);
-      enqueue(null); // sentinel: done
-    }).catch((err: unknown) => {
-      enqueue(err instanceof Error ? err : new Error(String(err)));
-      enqueue(null);
-    });
+    })
+      .then((result: AgentResult) => {
+        enqueue(result);
+        enqueue(null); // sentinel: done
+      })
+      .catch((err: unknown) => {
+        enqueue(err instanceof Error ? err : new Error(String(err)));
+        enqueue(null);
+      });
 
     // Drain the queue as items arrive
     while (true) {
       await waitForItem();
       const item = queue.shift()!;
-      if (item === null) break;      // done
-      if (item instanceof Error) { await runPromise; throw item; }
+      if (item === null) break; // done
+      if (item instanceof Error) {
+        await runPromise;
+        throw item;
+      }
       yield item as AgentStepEvent | AgentResult;
     }
 

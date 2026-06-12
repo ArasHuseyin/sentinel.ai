@@ -23,11 +23,7 @@ const config: Config = {
   },
   testMatch: ['**/src/__tests__/**/*.test.ts'],
   testPathIgnorePatterns: ['/node_modules/', '/src/__tests__/e2e/'],
-  collectCoverageFrom: [
-    'src/**/*.ts',
-    '!src/__tests__/**',
-    '!src/index.ts',
-  ],
+  collectCoverageFrom: ['src/**/*.ts', '!src/__tests__/**', '!src/index.ts'],
   coverageReporters: ['text', 'lcov', 'html'],
   coverageDirectory: 'coverage',
   forceExit: true,

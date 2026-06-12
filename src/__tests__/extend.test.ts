@@ -5,7 +5,16 @@ import type { SentinelOptions } from '../index.js';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeAomNodes(role: string, name: string) {
-  return [{ role: { value: role }, name: { value: name }, description: { value: '' }, backendDOMNodeId: 1, ignored: false, properties: [] }];
+  return [
+    {
+      role: { value: role },
+      name: { value: name },
+      description: { value: '' },
+      backendDOMNodeId: 1,
+      ignored: false,
+      properties: [],
+    },
+  ];
 }
 
 function makeBoxModel(x = 10, y = 20, w = 80, h = 30) {
@@ -35,11 +44,28 @@ function makePage(url = 'https://example.com') {
     }),
     viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
     waitForNavigation: jest.fn(async () => {}),
-    mouse: { click: jest.fn(async () => {}), wheel: jest.fn(async () => {}), move: jest.fn(async () => {}), dblclick: jest.fn(async () => {}) },
+    mouse: {
+      click: jest.fn(async () => {}),
+      wheel: jest.fn(async () => {}),
+      move: jest.fn(async () => {}),
+      dblclick: jest.fn(async () => {}),
+    },
     keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
-    locator: jest.fn(() => { const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) }; l.first = jest.fn(() => l); return l; }),
-    getByRole: jest.fn(() => { const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) }; l.first = jest.fn(() => l); return l; }),
-    getByText: jest.fn(() => { const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) }; l.first = jest.fn(() => l); return l; }),
+    locator: jest.fn(() => {
+      const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) };
+      l.first = jest.fn(() => l);
+      return l;
+    }),
+    getByRole: jest.fn(() => {
+      const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) };
+      l.first = jest.fn(() => l);
+      return l;
+    }),
+    getByText: jest.fn(() => {
+      const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) };
+      l.first = jest.fn(() => l);
+      return l;
+    }),
     context: jest.fn(),
   };
   self.mainFrame = () => self;
@@ -157,9 +183,7 @@ describe('sentinel.extend(page)', () => {
   it('observe() on extended page calls LLM and returns actions list', async () => {
     const { sentinel, page, mockLLM } = makeSentinel();
     const observeResult = {
-      actions: [
-        { description: 'Click login button', method: 'click', selector: 'button' },
-      ],
+      actions: [{ description: 'Click login button', method: 'click', selector: 'button' }],
     };
     (mockLLM.generateStructuredData as jest.Mock<any>).mockResolvedValueOnce(observeResult);
 

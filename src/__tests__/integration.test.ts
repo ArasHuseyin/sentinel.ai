@@ -126,9 +126,7 @@ describe('Integration: ActionEngine + Verifier', () => {
     const stateUnchanged = makeState();
     const stateChanged = makeState({
       title: 'Updated Page',
-      elements: [
-        { id: 0, role: 'button', name: 'Done', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-      ],
+      elements: [{ id: 0, role: 'button', name: 'Done', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } }],
     });
 
     const page = makeMockPage();
@@ -143,7 +141,8 @@ describe('Integration: ActionEngine + Verifier', () => {
     };
 
     const verifierLLM: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         .mockResolvedValueOnce({ success: false, confidence: 0.3, explanation: 'Nothing changed' })
         .mockResolvedValueOnce({ success: true, confidence: 0.85, explanation: 'State changed' }),
       generateText: jest.fn(async () => ''),
@@ -182,30 +181,49 @@ describe('Integration: AgentLoop', () => {
     // compares state[start-of-step] with state[after-act]; they must differ.
     // Each act step consumes 3 parse calls (start / action-engine / post-act),
     // the goal-complete step consumes 1, and reflection consumes 1 → 11 total.
-    const states = Array.from({ length: 11 }, (_, i) =>
-      makeState({ url: `https://example.com/step${i}` })
-    );
+    const states = Array.from({ length: 11 }, (_, i) => makeState({ url: `https://example.com/step${i}` }));
     const stateParser = makeMockStateParser(states);
 
     // LLM mock: alternates between planner calls and action engine calls.
     // Pattern per step: planner.planNextStep → actionEngine.act
     // After 3 steps: planner marks goal complete
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         // Step 1: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click search field', reasoning: 'Need to search', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click search field',
+          reasoning: 'Need to search',
+          isGoalComplete: false,
+        })
         // Step 1: action engine
         .mockResolvedValueOnce({ elementId: 1, action: 'click', reasoning: 'Search field found' })
         // Step 2: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Type query', reasoning: 'Enter search term', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Type query',
+          reasoning: 'Enter search term',
+          isGoalComplete: false,
+        })
         // Step 2: action engine
         .mockResolvedValueOnce({ elementId: 1, action: 'fill', value: 'test', reasoning: 'Fill search' })
         // Step 3: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click submit', reasoning: 'Submit search', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click submit',
+          reasoning: 'Submit search',
+          isGoalComplete: false,
+        })
         // Step 3: action engine
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Step 4: planner marks goal complete
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Done', reasoning: 'Search completed', isGoalComplete: true }),
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Done',
+          reasoning: 'Search completed',
+          isGoalComplete: true,
+        }),
       generateText: jest.fn(async () => ''),
     };
 
@@ -226,17 +244,33 @@ describe('Integration: AgentLoop', () => {
     // Planner always returns an instruction; action engine always returns
     // an element ID that doesn't exist (empty elements list → failure)
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         // Step 1: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click login', reasoning: 'Need login', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click login',
+          reasoning: 'Need login',
+          isGoalComplete: false,
+        })
         // Step 1: action → element 5 not in empty list
         .mockResolvedValueOnce({ elementId: 5, action: 'click', reasoning: 'Login button' })
         // Step 2: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click sign in', reasoning: 'Try sign in', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click sign in',
+          reasoning: 'Try sign in',
+          isGoalComplete: false,
+        })
         // Step 2: action → element 5 not in empty list
         .mockResolvedValueOnce({ elementId: 5, action: 'click', reasoning: 'Sign in button' })
         // Step 3: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click enter', reasoning: 'Try enter', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click enter',
+          reasoning: 'Try enter',
+          isGoalComplete: false,
+        })
         // Step 3: action → element 5 not in empty list
         .mockResolvedValueOnce({ elementId: 5, action: 'click', reasoning: 'Enter button' })
         // Reflection after abort
@@ -261,15 +295,31 @@ describe('Integration: AgentLoop', () => {
     // Planner always returns the same instruction, action engine always succeeds
     const repeatedInstruction = 'Click the submit button';
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         // Step 1
-        .mockResolvedValueOnce({ type: 'act', instruction: repeatedInstruction, reasoning: 'Submit form', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: repeatedInstruction,
+          reasoning: 'Submit form',
+          isGoalComplete: false,
+        })
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Step 2
-        .mockResolvedValueOnce({ type: 'act', instruction: repeatedInstruction, reasoning: 'Submit form', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: repeatedInstruction,
+          reasoning: 'Submit form',
+          isGoalComplete: false,
+        })
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Step 3
-        .mockResolvedValueOnce({ type: 'act', instruction: repeatedInstruction, reasoning: 'Submit form', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: repeatedInstruction,
+          reasoning: 'Submit form',
+          isGoalComplete: false,
+        })
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Reflection after loop detection
         .mockResolvedValueOnce({ goalAchieved: false, reason: 'Stuck in loop' }),

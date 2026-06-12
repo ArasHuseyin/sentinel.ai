@@ -72,7 +72,7 @@ export class Verifier {
         done: true,
         success: true,
         message: `Page title changed to "${stateAfter.title}"`,
-        confidence: 0.90,
+        confidence: 0.9,
       };
     }
 
@@ -90,9 +90,12 @@ export class Verifier {
     // a single fill, and the fill's side-effects (focus, autocomplete) fooled
     // every non-navigation fast-path into false-positive success on Amazon
     // and Wikipedia during live testing.
-    const isSubmitIntent = /\b(submit|press\s+(?:enter|return)|send\s+search|search\s+for|navigate\s+to|go\s+to)\b/i.test(intentString);
+    const isSubmitIntent =
+      /\b(submit|press\s+(?:enter|return)|send\s+search|search\s+for|navigate\s+to|go\s+to)\b/i.test(intentString);
     if (isSubmitIntent) {
-      this.logger.notice('Submit-intent action with no URL/title change — skipping non-navigation fast paths, going to LLM slow path');
+      this.logger.notice(
+        'Submit-intent action with no URL/title change — skipping non-navigation fast paths, going to LLM slow path'
+      );
     }
 
     // ── Fast path 3: Scroll actions — AOM doesn't change on scroll ───────────
@@ -117,15 +120,14 @@ export class Verifier {
     // native input (role=presentation, excluded from AOM) rather than on the
     // visible wrapper that carries the ARIA role. Trusting the click avoids
     // false-negative retries that would un-toggle the element.
-    const isToggleClick = /click/i.test(action) &&
-      /\b(checkbox|switch|radio)\b/i.test(action);
+    const isToggleClick = /click/i.test(action) && /\b(checkbox|switch|radio)\b/i.test(action);
     if (isToggleClick && !isSubmitIntent) {
       this.logger.notice('Toggle-click on checkbox/switch/radio — auto-success.');
       return {
         done: true,
         success: true,
         message: 'Checkbox/switch/radio toggle executed',
-        confidence: 0.90,
+        confidence: 0.9,
       };
     }
 
@@ -174,14 +176,14 @@ export class Verifier {
     if (elementDelta >= 5 && !isSubmitIntent) {
       const targetNameMatch = /"([^"]+)"/.exec(action);
       const targetName = targetNameMatch?.[1];
-      const targetStillPresent = targetName
-        ? stateAfter.elements.some(e => e.name === targetName)
-        : true; // no target extracted — assume presence (can't check)
+      const targetStillPresent = targetName ? stateAfter.elements.some(e => e.name === targetName) : true; // no target extracted — assume presence (can't check)
 
       const hugeDelta = elementDelta >= 20;
 
       if (hugeDelta || targetStillPresent) {
-        this.logger.notice(`Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
+        this.logger.notice(
+          `Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`
+        );
         return {
           done: true,
           success: true,
@@ -191,7 +193,9 @@ export class Verifier {
       } else {
         // Medium delta + target vanished → likely unrelated DOM update.
         // Fall through to focus check / semantic LLM verification.
-        this.logger.notice(`Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`);
+        this.logger.notice(
+          `Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`
+        );
       }
     }
 
@@ -200,7 +204,7 @@ export class Verifier {
     // Guarded by !isSubmitIntent: for search-and-submit intents, focus moving
     // into the search box is the PARTIAL result (typing started), not success.
     const focusedBefore = stateBefore.elements.find(e => e.state?.focused)?.name ?? null;
-    const focusedAfter  = stateAfter.elements.find(e => e.state?.focused)?.name ?? null;
+    const focusedAfter = stateAfter.elements.find(e => e.state?.focused)?.name ?? null;
     if (focusedBefore !== focusedAfter && !isSubmitIntent) {
       this.logger.notice(`Focused element changed: "${focusedBefore}" → "${focusedAfter}". Auto-success.`);
       return {
@@ -217,9 +221,10 @@ export class Verifier {
     // against the narrow action ("fill search box") and happily returns true
     // when the side-effects (input focused, autocomplete opened) match, even
     // when the broader user goal ("search AND submit") was not achieved.
-    const userGoalBlock = userInstruction && userInstruction !== action
-      ? `User's original goal: "${userInstruction}"\n      Atomic action executed: "${action}"`
-      : `I performed an action on a web page: "${action}"`;
+    const userGoalBlock =
+      userInstruction && userInstruction !== action
+        ? `User's original goal: "${userInstruction}"\n      Atomic action executed: "${action}"`
+        : `I performed an action on a web page: "${action}"`;
 
     const prompt = `
       ${userGoalBlock}
@@ -238,13 +243,13 @@ export class Verifier {
     `;
 
     const schema = {
-      type: "object",
+      type: 'object',
       properties: {
-        success: { type: "boolean" },
-        confidence: { type: "number" },
-        explanation: { type: "string" }
+        success: { type: 'boolean' },
+        confidence: { type: 'number' },
+        explanation: { type: 'string' },
       },
-      required: ["success", "confidence", "explanation"]
+      required: ['success', 'confidence', 'explanation'],
     };
 
     try {

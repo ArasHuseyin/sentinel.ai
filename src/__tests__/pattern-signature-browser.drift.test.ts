@@ -29,7 +29,9 @@ type ElSpec = {
 function makeDoc() {
   const byId = new Map<string, any>();
   return {
-    getElementById(id: string) { return byId.get(id) ?? null; },
+    getElementById(id: string) {
+      return byId.get(id) ?? null;
+    },
     register(el: any): void {
       const id = el.getAttribute?.('id');
       if (id) byId.set(id, el);
@@ -52,9 +54,15 @@ function makeEl(spec: ElSpec, doc?: any): any {
     children,
     parentElement: null,
     type: spec.type,
-    getAttribute(name: string): string | null { return attrs[name] ?? null; },
-    hasAttribute(name: string): boolean { return name in attrs; },
-    get ownerDocument() { return doc; },
+    getAttribute(name: string): string | null {
+      return attrs[name] ?? null;
+    },
+    hasAttribute(name: string): boolean {
+      return name in attrs;
+    },
+    get ownerDocument() {
+      return doc;
+    },
   };
   for (const child of children) child.parentElement = el;
   doc?.register?.(el);
@@ -72,8 +80,10 @@ function runBrowserSide(root: any, doc: any): PatternFingerprint | undefined {
   const prevWindow = (globalThis as any).window;
   const prevDoc = (globalThis as any).document;
   (globalThis as any).window = {
-    scrollX: 0, scrollY: 0,
-    innerWidth: 1024, innerHeight: 768,
+    scrollX: 0,
+    scrollY: 0,
+    innerWidth: 1024,
+    innerHeight: 768,
     scrollTo: () => {},
   };
   (globalThis as any).document = {
@@ -111,11 +121,14 @@ const FIXTURES: Fixture[] = [
     build: () => {
       const doc = makeDoc();
       const listbox = makeEl({ role: 'listbox', children: [makeEl({ role: 'option' })] });
-      const el = makeEl({
-        role: 'combobox',
-        attrs: { 'aria-expanded': 'false', 'aria-haspopup': 'listbox' },
-        children: [listbox],
-      }, doc);
+      const el = makeEl(
+        {
+          role: 'combobox',
+          attrs: { 'aria-expanded': 'false', 'aria-haspopup': 'listbox' },
+          children: [listbox],
+        },
+        doc
+      );
       return { el, doc };
     },
   },
@@ -124,10 +137,13 @@ const FIXTURES: Fixture[] = [
     build: () => {
       const doc = makeDoc();
       const input = makeEl({ tag: 'input', type: 'text' });
-      const el = makeEl({
-        classes: ['MuiAutocomplete-root'],
-        children: [input],
-      }, doc);
+      const el = makeEl(
+        {
+          classes: ['MuiAutocomplete-root'],
+          children: [input],
+        },
+        doc
+      );
       return { el, doc };
     },
   },
@@ -149,17 +165,23 @@ const FIXTURES: Fixture[] = [
     name: 'ant-prefixed select with aria-controls → listbox',
     build: () => {
       const doc = makeDoc();
-      const listbox = makeEl({
-        id: 'popup-1',
-        role: 'listbox',
-        children: [makeEl({ role: 'option' }), makeEl({ role: 'option' })],
-      }, doc);
+      const listbox = makeEl(
+        {
+          id: 'popup-1',
+          role: 'listbox',
+          children: [makeEl({ role: 'option' }), makeEl({ role: 'option' })],
+        },
+        doc
+      );
       void listbox;
-      const el = makeEl({
-        classes: ['ant-select-selector'],
-        role: 'combobox',
-        attrs: { 'aria-controls': 'popup-1', 'aria-expanded': 'true' },
-      }, doc);
+      const el = makeEl(
+        {
+          classes: ['ant-select-selector'],
+          role: 'combobox',
+          attrs: { 'aria-controls': 'popup-1', 'aria-expanded': 'true' },
+        },
+        doc
+      );
       return { el, doc };
     },
   },
@@ -167,16 +189,19 @@ const FIXTURES: Fixture[] = [
     name: 'noise-heavy button (aria-label, aria-describedby must be filtered)',
     build: () => {
       const doc = makeDoc();
-      const el = makeEl({
-        tag: 'button',
-        attrs: {
-          'aria-label': 'Accept cookies',
-          'aria-labelledby': 'lbl1',
-          'aria-describedby': 'desc1',
-          'aria-valuenow': '5',
-          'aria-pressed': 'false', // real capability — should survive
+      const el = makeEl(
+        {
+          tag: 'button',
+          attrs: {
+            'aria-label': 'Accept cookies',
+            'aria-labelledby': 'lbl1',
+            'aria-describedby': 'desc1',
+            'aria-valuenow': '5',
+            'aria-pressed': 'false', // real capability — should survive
+          },
         },
-      }, doc);
+        doc
+      );
       return { el, doc };
     },
   },
@@ -184,13 +209,16 @@ const FIXTURES: Fixture[] = [
     name: 'custom topology-only widget (no role, no library class)',
     build: () => {
       const doc = makeDoc();
-      const el = makeEl({
-        tag: 'div',
-        children: [
-          makeEl({ tag: 'div', children: [makeEl({ tag: 'input', type: 'email' })] }),
-          makeEl({ tag: 'button' }),
-        ],
-      }, doc);
+      const el = makeEl(
+        {
+          tag: 'div',
+          children: [
+            makeEl({ tag: 'div', children: [makeEl({ tag: 'input', type: 'email' })] }),
+            makeEl({ tag: 'button' }),
+          ],
+        },
+        doc
+      );
       return { el, doc };
     },
   },
@@ -236,8 +264,10 @@ describe('pattern-signature-browser parity with Node module', () => {
     const prevWindow = (globalThis as any).window;
     const prevDoc = (globalThis as any).document;
     (globalThis as any).window = {
-      scrollX: 0, scrollY: 0,
-      innerWidth: 1024, innerHeight: 768,
+      scrollX: 0,
+      scrollY: 0,
+      innerWidth: 1024,
+      innerHeight: 768,
       scrollTo: () => {},
     };
     (globalThis as any).document = {

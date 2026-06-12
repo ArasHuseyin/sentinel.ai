@@ -75,10 +75,7 @@ export class ExtractionEngine {
 
   async extract<T>(instruction: string, schema: SchemaInput<T>): Promise<T> {
     // Run AOM parse and innerText capture in parallel
-    const [aomState, pageText] = await Promise.all([
-      this.stateParser.parse(),
-      this.getPageText(),
-    ]);
+    const [aomState, pageText] = await Promise.all([this.stateParser.parse(), this.getPageText()]);
 
     // Relevance-filter AOM before prompting. Keeps form fields + blocker
     // CTAs unconditionally (same guarantees `act()` relies on), scores
@@ -203,10 +200,7 @@ function groundingFilter<T>(result: T, pageText: string, elements: ExtractElemen
   const strings: string[] = [];
   collectStrings(result, strings);
 
-  const corpus = [
-    pageText,
-    ...elements.map(e => `${e.name} ${e.value ?? ''}`),
-  ].join(' ').toLowerCase();
+  const corpus = [pageText, ...elements.map(e => `${e.name} ${e.value ?? ''}`)].join(' ').toLowerCase();
 
   let scoreable = 0;
   let matches = 0;
@@ -233,4 +227,3 @@ function groundingFilter<T>(result: T, pageText: string, elements: ExtractElemen
 
   return result;
 }
-

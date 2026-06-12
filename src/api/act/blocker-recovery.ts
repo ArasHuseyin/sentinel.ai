@@ -29,13 +29,10 @@ export class BlockerRecovery {
     private readonly page: Page,
     private readonly log: Logger,
     private readonly warn: Logger,
-    private readonly domSettleTimeoutMs: number,
+    private readonly domSettleTimeoutMs: number
   ) {}
 
-  async tryRecover(
-    state: SimplifiedState,
-    performAction: PerformActionCallback,
-  ): Promise<boolean> {
+  async tryRecover(state: SimplifiedState, performAction: PerformActionCallback): Promise<boolean> {
     // Pattern 1: Cookie/consent banner dismissal.
     //
     // Historical footguns that this version guards against:
@@ -67,7 +64,11 @@ export class BlockerRecovery {
     );
     const hasAcceptRejectPair =
       state.elements.some(e => /^\s*allow (all|analytics|cookies|tracking|selected)\s*$/i.test(e.name)) &&
-      state.elements.some(e => /^\s*(essential only|only (essential|necessary)|reject( all| cookies)?|nur (erforderlich|notwendig)|ablehnen|optionale cookies ablehnen)\s*$/i.test(e.name));
+      state.elements.some(e =>
+        /^\s*(essential only|only (essential|necessary)|reject( all| cookies)?|nur (erforderlich|notwendig)|ablehnen|optionale cookies ablehnen)\s*$/i.test(
+          e.name
+        )
+      );
     const hasConsentContext = hasConsentKeywordContext || hasAcceptRejectPair;
     if (hasConsentContext) {
       const MAX_CONSENT_BUTTON_LEN = 50;
@@ -75,11 +76,12 @@ export class BlockerRecovery {
         /^\s*(akzeptieren|accept( all| cookies| and (continue|close))?|zustimmen|einverstanden|i ?agree|got it|verstanden|alle[s]? (akzeptieren|cookies? (akzeptieren|zulassen)?|annehmen)|allow (all|analytics|cookies|tracking|selected))\s*$/i;
       const settingsPattern =
         /einstell|manage|settings|preferences|verwalten|anpassen|nur (erforderlich|notwendig)|only (essential|necessary)|mehr (erfahren|infos?)|learn more/i;
-      const cookieElement = state.elements.find(e =>
-        (e.role === 'button' || e.role === 'link') &&
-        e.name.trim().length <= MAX_CONSENT_BUTTON_LEN &&
-        acceptPattern.test(e.name) &&
-        !settingsPattern.test(e.name)
+      const cookieElement = state.elements.find(
+        e =>
+          (e.role === 'button' || e.role === 'link') &&
+          e.name.trim().length <= MAX_CONSENT_BUTTON_LEN &&
+          acceptPattern.test(e.name) &&
+          !settingsPattern.test(e.name)
       );
       if (cookieElement) {
         this.log(2, `[Act] Recovery: dismissing cookie banner via "${cookieElement.name}"`);
@@ -87,7 +89,9 @@ export class BlockerRecovery {
           await performAction('click', cookieElement);
           await waitForPageSettle(this.page, this.domSettleTimeoutMs);
           return true;
-        } catch { /* recovery failed, continue */ }
+        } catch {
+          /* recovery failed, continue */
+        }
       }
     }
 
@@ -119,15 +123,15 @@ export class BlockerRecovery {
       const removed = await this.page.evaluate(() => {
         const blockers = document.querySelectorAll(
           'getsitecontrol-widget, ' +
-          '[class*="getsitecontrol"], ' +
-          '[class*="intercom-"], [id*="intercom-"], ' +
-          '[class*="drift-frame"], [class*="drift-widget"], ' +
-          '[class*="zendesk-"], [id*="zendesk-"], ' +
-          '[id*="hubspot-messages"], ' +
-          '[id*="fc_frame"], ' +                  // Freshchat
-          '[id*="tawk-container"], [class*="tawk-"], ' +
-          '[class*="usabilla-"], ' +
-          '[aria-modal="true"]'
+            '[class*="getsitecontrol"], ' +
+            '[class*="intercom-"], [id*="intercom-"], ' +
+            '[class*="drift-frame"], [class*="drift-widget"], ' +
+            '[class*="zendesk-"], [id*="zendesk-"], ' +
+            '[id*="hubspot-messages"], ' +
+            '[id*="fc_frame"], ' + // Freshchat
+            '[id*="tawk-container"], [class*="tawk-"], ' +
+            '[class*="usabilla-"], ' +
+            '[aria-modal="true"]'
         );
         let count = 0;
         for (const el of Array.from(blockers)) {
@@ -152,7 +156,9 @@ export class BlockerRecovery {
         this.log(2, `[Act] Recovery: removed ${removed} pointer-intercepting widget(s)`);
         return true;
       }
-    } catch { /* evaluate failed */ }
+    } catch {
+      /* evaluate failed */
+    }
 
     // Pattern 3: Generic modal close (Escape key). Skip when a listbox/menu
     // popover is visible — Escape would close our own open dropdown, not the
@@ -160,16 +166,18 @@ export class BlockerRecovery {
     // in a context where the listbox guard didn't apply.
     const hasModal = state.elements.some(e => e.region === 'modal' || e.region === 'popup');
     if (hasModal) {
-      const listboxOpen = await this.page.evaluate(() => {
-        const nodes = document.querySelectorAll('[role="option"], [role="listbox"], [role="menu"]');
-        for (const n of Array.from(nodes) as HTMLElement[]) {
-          if (n.offsetParent !== null) {
-            const r = n.getBoundingClientRect();
-            if (r.width >= 1 && r.height >= 1) return true;
+      const listboxOpen = await this.page
+        .evaluate(() => {
+          const nodes = document.querySelectorAll('[role="option"], [role="listbox"], [role="menu"]');
+          for (const n of Array.from(nodes) as HTMLElement[]) {
+            if (n.offsetParent !== null) {
+              const r = n.getBoundingClientRect();
+              if (r.width >= 1 && r.height >= 1) return true;
+            }
           }
-        }
-        return false;
-      }).catch(() => false);
+          return false;
+        })
+        .catch(() => false);
       if (listboxOpen) {
         this.log(2, `[Act] Recovery: Escape skipped — listbox popover is open`);
         return false;
@@ -179,7 +187,9 @@ export class BlockerRecovery {
         await this.page.keyboard.press('Escape');
         await waitForPageSettle(this.page, this.domSettleTimeoutMs);
         return true;
-      } catch { /* recovery failed */ }
+      } catch {
+        /* recovery failed */
+      }
     }
 
     return false;
@@ -189,7 +199,7 @@ export class BlockerRecovery {
     action: ActionType,
     target: UIElement | null,
     value: string | undefined,
-    findBestLocator: FindBestLocator,
+    findBestLocator: FindBestLocator
   ): Promise<void> {
     if (action === 'scroll-down' && !target) {
       await this.page.mouse.wheel(0, 600);
@@ -207,8 +217,11 @@ export class BlockerRecovery {
     switch (action) {
       case 'click':
         if (target.role === 'radio' || target.role === 'checkbox') {
-          try { await locator.check({ timeout: 5000 }); }
-          catch { await clickLocator(locator, { timeout: 5000 }, this.warn); }
+          try {
+            await locator.check({ timeout: 5000 });
+          } catch {
+            await clickLocator(locator, { timeout: 5000 }, this.warn);
+          }
         } else {
           await clickLocator(locator, { timeout: 5000 }, this.warn);
         }

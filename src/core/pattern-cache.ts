@@ -52,11 +52,7 @@ export interface IPatternCache {
    * fingerprint simultaneously so future lookups can hit via any of
    * them. Increments `successCount` on existing entries.
    */
-  recordSuccess(
-    fingerprint: PatternFingerprint,
-    instruction: string,
-    sequence: PatternSequence
-  ): void;
+  recordSuccess(fingerprint: PatternFingerprint, instruction: string, sequence: PatternSequence): void;
 
   /** Records a failure for all matching layers — decays confidence. */
   recordFailure(fingerprint: PatternFingerprint, instruction: string): void;
@@ -71,11 +67,7 @@ export interface IPatternCache {
 // ─── Key helpers ─────────────────────────────────────────────────────────────
 
 /** Compose a stable store key from a layer, its value, and the instruction. */
-export function buildPatternKey(
-  layer: FingerprintLayer,
-  fingerprintValue: string,
-  instruction: string
-): string {
+export function buildPatternKey(layer: FingerprintLayer, fingerprintValue: string, instruction: string): string {
   return `${layer}::${fingerprintValue}::${instruction.trim().toLowerCase()}`;
 }
 
@@ -143,11 +135,7 @@ abstract class BasePatternCache implements IPatternCache {
     return undefined;
   }
 
-  recordSuccess(
-    fingerprint: PatternFingerprint,
-    instruction: string,
-    sequence: PatternSequence
-  ): void {
+  recordSuccess(fingerprint: PatternFingerprint, instruction: string, sequence: PatternSequence): void {
     const now = Date.now();
     for (const [layer, value] of this.lookupOrder(fingerprint)) {
       const key = buildPatternKey(layer, value, instruction);
@@ -220,7 +208,9 @@ abstract class BasePatternCache implements IPatternCache {
 // ─── In-memory variant ──────────────────────────────────────────────────────
 
 export class InMemoryPatternCache extends BasePatternCache {
-  protected persist(): void { /* no-op */ }
+  protected persist(): void {
+    /* no-op */
+  }
 }
 
 // ─── File-persisted variant ─────────────────────────────────────────────────
@@ -247,8 +237,7 @@ export class FilePatternCache extends BasePatternCache {
       if (parsed?.version !== 1 || !Array.isArray(parsed.entries)) return;
       for (const [key, value] of parsed.entries) {
         // Shallow validation — tolerate forward-compat additions
-        if (typeof key === 'string' && value && typeof value === 'object' &&
-            typeof value.successCount === 'number') {
+        if (typeof key === 'string' && value && typeof value === 'object' && typeof value.successCount === 'number') {
           this.store.set(key, value);
         }
       }

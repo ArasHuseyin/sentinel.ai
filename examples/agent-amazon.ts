@@ -30,7 +30,7 @@ async function run() {
     {
       maxSteps: 10,
       onStep: step => {
-        const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
+        const icon = step.type === 'extract' ? '🔍' : step.success ? '✅' : '❌';
         console.log(`\n[Step ${step.stepNumber}] ${icon} ${step.instruction}`);
         console.log(`  → ${step.reasoning}`);
       },

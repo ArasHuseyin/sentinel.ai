@@ -46,7 +46,11 @@ function makeFactory(
   return { factory, instances: () => instances };
 }
 
-const sharedOptions: SentinelOptions = { apiKey: 'test', verbose: 0, provider: { generateStructuredData: jest.fn() as any, generateText: jest.fn() as any } };
+const sharedOptions: SentinelOptions = {
+  apiKey: 'test',
+  verbose: 0,
+  provider: { generateStructuredData: jest.fn() as any, generateText: jest.fn() as any },
+};
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -57,9 +61,7 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('runs a single task and returns its result', async () => {
-    const { factory } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 3, message: 'Done' },
-    ]);
+    const { factory } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 3, message: 'Done' }]);
     const tasks: ParallelTask[] = [{ url: 'https://example.com', goal: 'Click login' }];
 
     const results = await Sentinel.parallel(tasks, sharedOptions, factory);
@@ -75,9 +77,9 @@ describe('Sentinel.parallel()', () => {
 
   it('runs multiple tasks and returns results in input order', async () => {
     const { factory } = makeFactory([
-      { goalAchieved: true,  success: true,  totalSteps: 2, message: 'Task A done' },
+      { goalAchieved: true, success: true, totalSteps: 2, message: 'Task A done' },
       { goalAchieved: false, success: false, totalSteps: 5, message: 'Task B failed' },
-      { goalAchieved: true,  success: true,  totalSteps: 1, message: 'Task C done' },
+      { goalAchieved: true, success: true, totalSteps: 1, message: 'Task C done' },
     ]);
 
     const tasks: ParallelTask[] = [
@@ -98,9 +100,7 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('passes the url to sentinel.goto() and goal to sentinel.run()', async () => {
-    const { factory, instances } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
-    ]);
+    const { factory, instances } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 1, message: 'ok' }]);
     const tasks: ParallelTask[] = [{ url: 'https://shop.com', goal: 'Buy laptop', maxSteps: 20 }];
 
     await Sentinel.parallel(tasks, sharedOptions, factory);
@@ -111,9 +111,7 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('uses default maxSteps of 15 when not specified', async () => {
-    const { factory, instances } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
-    ]);
+    const { factory, instances } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 1, message: 'ok' }]);
 
     await Sentinel.parallel([{ url: 'https://x.com', goal: 'Do something' }], sharedOptions, factory);
 
@@ -121,9 +119,7 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('always calls sentinel.close() even on success', async () => {
-    const { factory, instances } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
-    ]);
+    const { factory, instances } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 1, message: 'ok' }]);
 
     await Sentinel.parallel([{ url: 'https://x.com', goal: 'Go' }], sharedOptions, factory);
 
@@ -132,17 +128,18 @@ describe('Sentinel.parallel()', () => {
 
   it('calls sentinel.close() even when run() throws', async () => {
     const closeSpy = jest.fn(async () => {});
-    const factory = jest.fn(async () => ({
-      goto: jest.fn(async () => {}),
-      run: jest.fn(async () => { throw new Error('Browser crashed'); }),
-      close: closeSpy,
-    } as unknown as Sentinel));
-
-    const results = await Sentinel.parallel(
-      [{ url: 'https://x.com', goal: 'Crash' }],
-      sharedOptions,
-      factory
+    const factory = jest.fn(
+      async () =>
+        ({
+          goto: jest.fn(async () => {}),
+          run: jest.fn(async () => {
+            throw new Error('Browser crashed');
+          }),
+          close: closeSpy,
+        }) as unknown as Sentinel
     );
+
+    const results = await Sentinel.parallel([{ url: 'https://x.com', goal: 'Crash' }], sharedOptions, factory);
 
     expect(closeSpy).toHaveBeenCalled();
     expect(results[0]!.success).toBe(false);
@@ -207,18 +204,21 @@ describe('Sentinel.parallel()', () => {
   it('respects concurrency — at most N instances run simultaneously', async () => {
     const activeCount = { current: 0, peak: 0 };
 
-    const factory = jest.fn(async () => ({
-      goto: jest.fn(async () => {}),
-      run: jest.fn(async () => {
-        activeCount.current++;
-        activeCount.peak = Math.max(activeCount.peak, activeCount.current);
-        // Simulate async work so multiple tasks overlap
-        await new Promise(r => setTimeout(r, 10));
-        activeCount.current--;
-        return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
-      }),
-      close: jest.fn(async () => {}),
-    } as unknown as Sentinel));
+    const factory = jest.fn(
+      async () =>
+        ({
+          goto: jest.fn(async () => {}),
+          run: jest.fn(async () => {
+            activeCount.current++;
+            activeCount.peak = Math.max(activeCount.peak, activeCount.current);
+            // Simulate async work so multiple tasks overlap
+            await new Promise(r => setTimeout(r, 10));
+            activeCount.current--;
+            return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
+          }),
+          close: jest.fn(async () => {}),
+        }) as unknown as Sentinel
+    );
 
     const tasks = Array.from({ length: 6 }, (_, i) => ({
       url: `https://task${i}.com`,
@@ -232,9 +232,7 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('creates one factory instance per task', async () => {
-    const { factory } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
-    ]);
+    const { factory } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 1, message: 'ok' }]);
     const tasks = Array.from({ length: 4 }, (_, i) => ({ url: `https://t${i}.com`, goal: `G${i}` }));
 
     await Sentinel.parallel(tasks, { ...sharedOptions, concurrency: 4 }, factory);
@@ -244,9 +242,7 @@ describe('Sentinel.parallel()', () => {
 
   it('includes result.data when run() returns data', async () => {
     const data = { products: ['Laptop A', 'Laptop B'] };
-    const { factory } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 4, message: 'Extracted', data },
-    ]);
+    const { factory } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 4, message: 'Extracted', data }]);
 
     const results = await Sentinel.parallel(
       [{ url: 'https://shop.com', goal: 'Extract products' }],
@@ -258,15 +254,9 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('omits result.data when run() returns no data', async () => {
-    const { factory } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
-    ]);
+    const { factory } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 1, message: 'ok' }]);
 
-    const results = await Sentinel.parallel(
-      [{ url: 'https://x.com', goal: 'Click' }],
-      sharedOptions,
-      factory
-    );
+    const results = await Sentinel.parallel([{ url: 'https://x.com', goal: 'Click' }], sharedOptions, factory);
 
     expect('data' in results[0]!).toBe(false);
   });
@@ -295,16 +285,10 @@ describe('Sentinel.parallel()', () => {
   });
 
   it('onProgress receives the ParallelResult of the completed task', async () => {
-    const { factory } = makeFactory([
-      { goalAchieved: true, success: true, totalSteps: 3, message: 'Goal achieved' },
-    ]);
+    const { factory } = makeFactory([{ goalAchieved: true, success: true, totalSteps: 3, message: 'Goal achieved' }]);
     const onProgress = jest.fn();
 
-    await Sentinel.parallel(
-      [{ url: 'https://x.com', goal: 'Do it' }],
-      { ...sharedOptions, onProgress },
-      factory
-    );
+    await Sentinel.parallel([{ url: 'https://x.com', goal: 'Do it' }], { ...sharedOptions, onProgress }, factory);
 
     const resultArg = (onProgress.mock.calls[0] as any[])[2] as ParallelResult;
     expect(resultArg.goalAchieved).toBe(true);
@@ -314,17 +298,20 @@ describe('Sentinel.parallel()', () => {
   it('concurrency defaults to 3 when not specified', async () => {
     const activeCount = { current: 0, peak: 0 };
 
-    const factory = jest.fn(async () => ({
-      goto: jest.fn(async () => {}),
-      run: jest.fn(async () => {
-        activeCount.current++;
-        activeCount.peak = Math.max(activeCount.peak, activeCount.current);
-        await new Promise(r => setTimeout(r, 5));
-        activeCount.current--;
-        return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
-      }),
-      close: jest.fn(async () => {}),
-    } as unknown as Sentinel));
+    const factory = jest.fn(
+      async () =>
+        ({
+          goto: jest.fn(async () => {}),
+          run: jest.fn(async () => {
+            activeCount.current++;
+            activeCount.peak = Math.max(activeCount.peak, activeCount.current);
+            await new Promise(r => setTimeout(r, 5));
+            activeCount.current--;
+            return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
+          }),
+          close: jest.fn(async () => {}),
+        }) as unknown as Sentinel
+    );
 
     const tasks = Array.from({ length: 9 }, (_, i) => ({ url: `https://t${i}.com`, goal: `G${i}` }));
 
@@ -341,7 +328,10 @@ describe('Sentinel.parallel()', () => {
     ]);
 
     const results = await Sentinel.parallel(
-      [{ url: 'https://a.com', goal: 'A' }, { url: 'https://b.com', goal: 'B' }],
+      [
+        { url: 'https://a.com', goal: 'A' },
+        { url: 'https://b.com', goal: 'B' },
+      ],
       { ...sharedOptions, concurrency: 100 }, // more than 2 tasks
       factory
     );

@@ -5,7 +5,9 @@ import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
-  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
+  return (
+    typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function'
+  );
 }
 
 export interface OllamaProviderOptions {
@@ -40,20 +42,14 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async generateStructuredData<T>(
-    prompt: string,
-    schema: SchemaInput<T>,
-    options?: GenerateOptions
-  ): Promise<T> {
+  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
     const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 
     // Ollama has no prompt-caching; we merge systemInstruction into the system
     // message so the model still sees the agent rules alongside the JSON-format
     // guidance. Token cost is unchanged — this keeps API parity with other providers.
     const jsonGuide = `You are a JSON API. Always respond with valid JSON that matches this schema: ${JSON.stringify(schema)}. No markdown, no explanation, only raw JSON.`;
-    const systemPrompt = options?.systemInstruction
-      ? `${options.systemInstruction}\n\n${jsonGuide}`
-      : jsonGuide;
+    const systemPrompt = options?.systemInstruction ? `${options.systemInstruction}\n\n${jsonGuide}` : jsonGuide;
 
     // Ollama exposes the output cap as options.num_predict. On recent server
     // versions, done_reason='length' signals truncation — we mirror the
@@ -77,7 +73,7 @@ export class OllamaProvider implements LLMProvider {
       if (!response.ok) {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
-      const data = await response.json() as any;
+      const data = (await response.json()) as any;
       this.reportUsage(data);
       const content = data?.message?.content ?? '{}';
       const truncated = data?.done_reason === 'length';
@@ -111,15 +107,13 @@ export class OllamaProvider implements LLMProvider {
         body: JSON.stringify({
           model: this.model,
           stream: false,
-          messages: [
-            { role: 'user', content: prompt, images: [imageBase64] },
-          ],
+          messages: [{ role: 'user', content: prompt, images: [imageBase64] }],
         }),
       });
       if (!response.ok) {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
-      const data = await response.json() as any;
+      const data = (await response.json()) as any;
       this.reportUsage(data);
       return data?.message?.content ?? '';
     }, 'Ollama');
@@ -147,7 +141,7 @@ export class OllamaProvider implements LLMProvider {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
 
-      const data = await response.json() as any;
+      const data = (await response.json()) as any;
       this.reportUsage(data);
       return data?.message?.content ?? '';
     }, 'Ollama');

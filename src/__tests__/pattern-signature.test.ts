@@ -59,7 +59,9 @@ function makeEl(spec: ElSpec, doc?: any): any {
     hasAttribute(name: string): boolean {
       return name in attrs;
     },
-    get ownerDocument() { return doc; },
+    get ownerDocument() {
+      return doc;
+    },
   };
   for (const child of children) child.parentElement = el;
   doc?.register?.(el);
@@ -158,10 +160,13 @@ describe('collectAriaFingerprintInputs', () => {
     const doc = makeDoc();
     const option = makeEl({ role: 'option' }, doc);
     const listbox = makeEl({ id: 'popup1', role: 'listbox', children: [option] }, doc);
-    const el = makeEl({
-      role: 'combobox',
-      attrs: { 'aria-controls': 'popup1' },
-    }, doc);
+    const el = makeEl(
+      {
+        role: 'combobox',
+        attrs: { 'aria-controls': 'popup1' },
+      },
+      doc
+    );
     // Manually register the linked listbox so getElementById resolves it
     doc.register(listbox);
     const { descendantRolePattern } = collectAriaFingerprintInputs(el);
@@ -181,11 +186,12 @@ describe('collectAriaFingerprintInputs', () => {
 
 describe('computeAriaFingerprint', () => {
   it('returns identical fingerprints for same ARIA shape', () => {
-    const build = () => makeEl({
-      role: 'combobox',
-      attrs: { 'aria-expanded': 'false', 'aria-controls': 'l1' },
-      children: [makeEl({ role: 'textbox' })],
-    });
+    const build = () =>
+      makeEl({
+        role: 'combobox',
+        attrs: { 'aria-expanded': 'false', 'aria-controls': 'l1' },
+        children: [makeEl({ role: 'textbox' })],
+      });
     expect(computeAriaFingerprint(build())).toBe(computeAriaFingerprint(build()));
   });
 
@@ -256,13 +262,11 @@ describe('computeLibrarySignature', () => {
 
 describe('computeTopologyHash', () => {
   it('produces stable output across calls', () => {
-    const build = () => makeEl({
-      tag: 'div',
-      children: [
-        makeEl({ tag: 'input', type: 'text' }),
-        makeEl({ tag: 'button' }),
-      ],
-    });
+    const build = () =>
+      makeEl({
+        tag: 'div',
+        children: [makeEl({ tag: 'input', type: 'text' }), makeEl({ tag: 'button' })],
+      });
     expect(computeTopologyHash(build())).toBe(computeTopologyHash(build()));
   });
 

@@ -92,21 +92,17 @@ describe('OllamaProvider retry logic', () => {
 
     const provider = new OllamaProvider({ model: 'llama3' });
     // No timer advancement needed — JSON parse error is thrown synchronously (no delay)
-    await expect(provider.generateStructuredData('test prompt', {})).rejects.toThrow(
-      'Failed to parse JSON'
-    );
+    await expect(provider.generateStructuredData('test prompt', {})).rejects.toThrow('Failed to parse JSON');
     expect(fetchMock).toHaveBeenCalledTimes(1); // no retries
   });
 
   it('retries generateText on timeout error', async () => {
-    fetchMock
-      .mockRejectedValueOnce(new Error('timeout: request took too long'))
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ message: { content: 'Hello world' } }),
-        text: async () => '',
-      } as unknown as Response);
+    fetchMock.mockRejectedValueOnce(new Error('timeout: request took too long')).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ message: { content: 'Hello world' } }),
+      text: async () => '',
+    } as unknown as Response);
 
     const provider = new OllamaProvider({ model: 'llama3' });
     const promise = provider.generateText('Say hello');

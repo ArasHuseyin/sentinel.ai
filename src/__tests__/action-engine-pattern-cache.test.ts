@@ -87,9 +87,7 @@ function makeMockPage() {
   };
 }
 
-function makeMockLLM(decision: {
-  elementId: number; action: string; value?: string; reasoning: string;
-}): LLMProvider {
+function makeMockLLM(decision: { elementId: number; action: string; value?: string; reasoning: string }): LLMProvider {
   const normalized = {
     candidates: [{ elementId: decision.elementId, confidence: 1.0 }],
     action: decision.action,
@@ -127,10 +125,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), fingerprints);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, undefined, 3000, null, 50, 0, false, 'aom', cache);
     const result = await engine.act('click submit');
 
     expect(result.success).toBe(true);
@@ -154,10 +149,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), { 0: fp });
     const llm = makeMockLLM({ elementId: 999, action: 'click', reasoning: 'should-not-run' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, undefined, 3000, null, 50, 0, false, 'aom', cache);
     const result = await engine.act('click submit');
 
     expect(result.success).toBe(true);
@@ -176,16 +168,17 @@ describe('ActionEngine + PatternCache integration', () => {
 
     // Page.mouse.click throws on ALL calls — including LLM-fallback retries.
     const page = makeMockPage();
-    (page.mouse.click as jest.Mock).mockImplementation(async () => { throw new Error('boom'); });
-    (page._locatorInstance.click as jest.Mock).mockImplementation(async () => { throw new Error('boom'); });
+    (page.mouse.click as jest.Mock).mockImplementation(async () => {
+      throw new Error('boom');
+    });
+    (page._locatorInstance.click as jest.Mock).mockImplementation(async () => {
+      throw new Error('boom');
+    });
 
     const parser = makeMockStateParser(makeState(), { 0: fp });
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'fallback attempt' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, undefined, 3000, null, 50, 0, false, 'aom', cache);
     await engine.act('click submit');
 
     // Pattern failure recorded — confidence decayed (1 success, 1 failure = 0.5 threshold, still hittable;
@@ -204,10 +197,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), {});
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, undefined, 3000, null, 50, 0, false, 'aom', cache);
     await engine.act('click submit');
 
     expect(cache.getStats().totalHits).toBe(0);
@@ -232,10 +222,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser({ url: 'https://example.com', title: 't', elements }, {});
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, undefined, 3000, null, 50, 0, false, 'aom', cache);
     await engine.act('click btn0');
 
     expect(parser.computeTargetFingerprints).toHaveBeenCalled();

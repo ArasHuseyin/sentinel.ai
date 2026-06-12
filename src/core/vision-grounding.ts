@@ -24,11 +24,14 @@ const MIN_CONFIDENCE = 0.5;
  * OllamaProvider (with a vision model such as llava or bakllava).
  */
 export class VisionGrounding {
-  constructor(private provider: LLMProvider, private verbose: number = 1) {
+  constructor(
+    private provider: LLMProvider,
+    private verbose: number = 1
+  ) {
     if (!provider.analyzeImage && this.verbose >= 1) {
       console.warn(
         '[VisionGrounding] The configured LLM provider does not implement analyzeImage. ' +
-        'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
+          'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
       );
     }
   }
@@ -59,8 +62,12 @@ export class VisionGrounding {
     // Guard against degenerate viewports (headless context misconfig, detached page, etc.).
     // Without this, scaleX/scaleY become Infinity or NaN and later bounds checks would
     // silently reject every bbox with an unclear error.
-    if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) ||
-        viewportWidth < 1 || viewportHeight < 1) {
+    if (
+      !Number.isFinite(viewportWidth) ||
+      !Number.isFinite(viewportHeight) ||
+      viewportWidth < 1 ||
+      viewportHeight < 1
+    ) {
       this.warnMsg(1, `[Vision] Refusing to run with invalid viewport ${viewportWidth}x${viewportHeight}`);
       return null;
     }
@@ -136,7 +143,10 @@ If you cannot confidently locate the element, set found to false and omit the co
         return null;
       }
 
-      this.log(2, `[Vision] Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`);
+      this.log(
+        2,
+        `[Vision] Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`
+      );
       return { x: cssX, y: cssY, width: cssW, height: cssH };
     } catch (err: any) {
       console.error(`[Vision] findElement failed: ${err.message}`);
@@ -195,7 +205,11 @@ function extractJSON(text: string): any {
   } catch {
     const match = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
     if (match) {
-      try { return JSON.parse(match[1]!.trim()); } catch { /* fall through */ }
+      try {
+        return JSON.parse(match[1]!.trim());
+      } catch {
+        /* fall through */
+      }
     }
     return null;
   }

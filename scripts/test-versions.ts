@@ -8,11 +8,11 @@ async function testVersions() {
     try {
       const resp = await fetch(`https://generativelanguage.googleapis.com/${v}/models/${model}:generateContent`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-goog-api-key': key || ""
+          'x-goog-api-key': key || '',
         },
-        body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] })
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] }),
       });
       const data = await resp.json();
       if (resp.ok) {

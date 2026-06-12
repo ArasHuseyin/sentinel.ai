@@ -37,26 +37,13 @@ beforeEach(() => {
 
 // ─── Documented models (must match README Supported Models table) ─────────────
 
-const GEMINI_MODELS = [
-  'gemini-3-flash-preview',
-  'gemini-2.5-pro-preview-05-06',
-];
+const GEMINI_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-pro-preview-05-06'];
 
-const CLAUDE_MODELS = [
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-6',
-];
+const CLAUDE_MODELS = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-6'];
 
-const OPENAI_MODELS = [
-  'gpt-4o',
-  'gpt-4o-mini',
-];
+const OPENAI_MODELS = ['gpt-4o', 'gpt-4o-mini'];
 
-const OLLAMA_MODELS = [
-  'llama3.2',
-  'mistral',
-];
+const OLLAMA_MODELS = ['llama3.2', 'mistral'];
 
 // ─── Minimal provider stubs (mirrors real provider constructor logic) ──────────
 
@@ -86,9 +73,8 @@ class StubOllamaProvider {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('LLM Providers – documented models', () => {
-
   describe('GeminiProvider', () => {
-    it.each(GEMINI_MODELS)('accepts model "%s" without throwing', (model) => {
+    it.each(GEMINI_MODELS)('accepts model "%s" without throwing', model => {
       expect(() => new GeminiProvider({ apiKey: 'test-key', model })).not.toThrow();
     });
 
@@ -114,7 +100,9 @@ describe('LLM Providers – documented models', () => {
     // never touches the real Google SDK.
     it('reuses a single model instance per systemInstruction for prompt-cache hit continuity', () => {
       const provider = new GeminiProvider({ apiKey: 'test-key', model: 'gemini-3-flash-preview' }) as any;
-      const spy = jest.fn<any>().mockImplementation((args: any) => ({ _marker: args?.systemInstruction?.parts?.[0]?.text ?? 'no-sys' }));
+      const spy = jest
+        .fn<any>()
+        .mockImplementation((args: any) => ({ _marker: args?.systemInstruction?.parts?.[0]?.text ?? 'no-sys' }));
       provider.genAI.getGenerativeModel = spy;
 
       const sys = 'You are an autonomous browser agent. [... stable rules ...]';
@@ -146,7 +134,7 @@ describe('LLM Providers – documented models', () => {
   });
 
   describe('ClaudeProvider – model defaults (documented in README)', () => {
-    it.each(CLAUDE_MODELS)('accepts model "%s"', (model) => {
+    it.each(CLAUDE_MODELS)('accepts model "%s"', model => {
       const provider = new StubClaudeProvider({ apiKey: 'test-key', model });
       expect(provider.model).toBe(model);
     });
@@ -158,7 +146,7 @@ describe('LLM Providers – documented models', () => {
   });
 
   describe('OpenAIProvider – model defaults (documented in README)', () => {
-    it.each(OPENAI_MODELS)('accepts model "%s"', (model) => {
+    it.each(OPENAI_MODELS)('accepts model "%s"', model => {
       const provider = new StubOpenAIProvider({ apiKey: 'test-key', model });
       expect(provider.model).toBe(model);
     });
@@ -170,7 +158,7 @@ describe('LLM Providers – documented models', () => {
   });
 
   describe('OllamaProvider – model and baseURL defaults (documented in README)', () => {
-    it.each(OLLAMA_MODELS)('accepts model "%s"', (model) => {
+    it.each(OLLAMA_MODELS)('accepts model "%s"', model => {
       const provider = new StubOllamaProvider({ model });
       expect(provider.model).toBe(model);
     });
@@ -216,5 +204,4 @@ describe('LLM Providers – documented models', () => {
       expect(OLLAMA_MODELS).toContain('mistral');
     });
   });
-
 });

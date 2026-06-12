@@ -40,8 +40,14 @@ async function cleanup() {
   }
 }
 
-process.on('SIGINT', async () => { await cleanup(); process.exit(0); });
-process.on('SIGTERM', async () => { await cleanup(); process.exit(0); });
+process.on('SIGINT', async () => {
+  await cleanup();
+  process.exit(0);
+});
+process.on('SIGTERM', async () => {
+  await cleanup();
+  process.exit(0);
+});
 
 // ─── Tool registration (exported for testing) ─────────────────────────────
 
@@ -53,7 +59,6 @@ export function registerTools(
   sessionFactory: SessionFactory,
   cleanupFn: CleanupFn = async () => {}
 ): void {
-
   // ── goto ──────────────────────────────────────────────────────────────────
 
   server.tool(
@@ -78,19 +83,25 @@ export function registerTools(
     'Perform a natural language action on the current page (click, fill, scroll, press, etc.)',
     {
       instruction: z.string().describe('What to do, e.g. "Click the login button"'),
-      variables: z.record(z.string(), z.string()).optional().describe('Variable substitutions for %varName% placeholders'),
+      variables: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Variable substitutions for %varName% placeholders'),
     },
     async ({ instruction, variables }) => {
       try {
         const s = await sessionFactory();
-        const result = await s.act(instruction, variables ? { variables: variables as Record<string, string> } : undefined);
+        const result = await s.act(
+          instruction,
+          variables ? { variables: variables as Record<string, string> } : undefined
+        );
         return {
-          content: [{
-            type: 'text' as const,
-            text: result.success
-              ? `✅ ${result.message}`
-              : `❌ ${result.message}`,
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+            },
+          ],
         };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
@@ -112,10 +123,12 @@ export function registerTools(
         const s = await sessionFactory();
         const result = await s.extract(instruction, (schema ?? { type: 'object' }) as any);
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
         };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
@@ -136,10 +149,12 @@ export function registerTools(
         const s = await sessionFactory();
         const elements = await s.observe(instruction ?? undefined);
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(elements, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(elements, null, 2),
+            },
+          ],
         };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
@@ -168,10 +183,12 @@ export function registerTools(
           tokens: s.getTokenUsage(),
         };
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(summary, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(summary, null, 2),
+            },
+          ],
         };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
@@ -181,38 +198,30 @@ export function registerTools(
 
   // ── screenshot ────────────────────────────────────────────────────────────
 
-  server.tool(
-    'sentinel_screenshot',
-    'Take a screenshot of the current page and return it as base64',
-    {},
-    async () => {
-      try {
-        const s = await sessionFactory();
-        const buf = await s.screenshot();
-        return {
-          content: [{
+  server.tool('sentinel_screenshot', 'Take a screenshot of the current page and return it as base64', {}, async () => {
+    try {
+      const s = await sessionFactory();
+      const buf = await s.screenshot();
+      return {
+        content: [
+          {
             type: 'image' as const,
             data: buf.toString('base64'),
             mimeType: 'image/png',
-          }],
-        };
-      } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
-      }
+          },
+        ],
+      };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
     }
-  );
+  });
 
   // ── close ─────────────────────────────────────────────────────────────────
 
-  server.tool(
-    'sentinel_close',
-    'Close the browser session',
-    {},
-    async () => {
-      await cleanupFn();
-      return { content: [{ type: 'text' as const, text: 'Browser session closed.' }] };
-    }
-  );
+  server.tool('sentinel_close', 'Close the browser session', {}, async () => {
+    await cleanupFn();
+    return { content: [{ type: 'text' as const, text: 'Browser session closed.' }] };
+  });
 
   // ── token_usage ───────────────────────────────────────────────────────────
 
@@ -225,17 +234,18 @@ export function registerTools(
         const s = await sessionFactory();
         const usage = s.getTokenUsage();
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(usage, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(usage, null, 2),
+            },
+          ],
         };
       } catch (err) {
         return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
       }
     }
   );
-
 }
 
 // ─── MCP Server entry ──────────────────────────────────────────────────────
@@ -340,9 +350,9 @@ async function startHttpTransport(): Promise<void> {
     try {
       perReqServer = new McpServer({ name: 'sentinel', version: '4.1.6' });
       registerTools(perReqServer, getOrInit, cleanup);
-      perReqTransport = new StreamableHTTPServerTransport(
-        { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
-      );
+      perReqTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]);
       await perReqServer.connect(perReqTransport as unknown as Parameters<typeof perReqServer.connect>[0]);
 
       // Parse JSON body (pre-parsing lets the transport skip its own body reader).

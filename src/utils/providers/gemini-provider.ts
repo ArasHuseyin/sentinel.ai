@@ -7,10 +7,7 @@ import { withRetry } from '../with-retry.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
   return (
-    typeof schema === 'object' &&
-    schema !== null &&
-    '_def' in schema &&
-    typeof (schema as any).parse === 'function'
+    typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function'
   );
 }
 
@@ -74,11 +71,7 @@ export class GeminiProvider implements LLMProvider {
     return model;
   }
 
-  async generateStructuredData<T>(
-    prompt: string,
-    schema: SchemaInput<T>,
-    options?: GenerateOptions
-  ): Promise<T> {
+  async generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
     const jsonSchema = resolveJsonSchema(schema);
     const model = this.getModelFor(options?.systemInstruction);
     const requestedCap = options?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
@@ -132,10 +125,7 @@ export class GeminiProvider implements LLMProvider {
         contents: [
           {
             role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType, data: imageBase64 } },
-            ],
+            parts: [{ text: prompt }, { inlineData: { mimeType, data: imageBase64 } }],
           },
         ],
       });

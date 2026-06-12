@@ -105,12 +105,12 @@ export class RateLimitError extends SentinelError {
  * CAPTCHAs fall under `'unknown'`.
  */
 export type CaptchaType =
-  | 'recaptcha-v2'   // checkbox + (optional) image challenge — clickable
-  | 'recaptcha-v3'   // invisible score-based — no UI to interact with
-  | 'hcaptcha'       // image challenge — requires external solver
-  | 'turnstile'      // Cloudflare proof-of-work — usually auto-resolves
-  | 'funcaptcha'     // Arkose Labs interactive puzzle — external solver only
-  | 'unknown';       // Unrecognised CAPTCHA widget
+  | 'recaptcha-v2' // checkbox + (optional) image challenge — clickable
+  | 'recaptcha-v3' // invisible score-based — no UI to interact with
+  | 'hcaptcha' // image challenge — requires external solver
+  | 'turnstile' // Cloudflare proof-of-work — usually auto-resolves
+  | 'funcaptcha' // Arkose Labs interactive puzzle — external solver only
+  | 'unknown'; // Unrecognised CAPTCHA widget
 
 /**
  * Thrown when Sentinel detects a CAPTCHA blocking the current interaction

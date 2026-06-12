@@ -164,19 +164,19 @@ describe('buildPromptCacheKey()', () => {
   });
 
   it('Zod z.string() and z.number() produce different keys (same prompt)', () => {
-        const k1 = buildPromptCacheKey('Extract the value', z.string());
+    const k1 = buildPromptCacheKey('Extract the value', z.string());
     const k2 = buildPromptCacheKey('Extract the value', z.number());
     expect(k1).not.toBe(k2);
   });
 
   it('two z.string() instances produce the same key', () => {
-        const k1 = buildPromptCacheKey('Extract title', z.string());
+    const k1 = buildPromptCacheKey('Extract title', z.string());
     const k2 = buildPromptCacheKey('Extract title', z.string());
     expect(k1).toBe(k2);
   });
 
   it('z.object() with different shapes produces different keys', () => {
-        const k1 = buildPromptCacheKey('Extract', z.object({ name: z.string() }));
+    const k1 = buildPromptCacheKey('Extract', z.object({ name: z.string() }));
     const k2 = buildPromptCacheKey('Extract', z.object({ count: z.number() }));
     expect(k1).not.toBe(k2);
   });
@@ -245,9 +245,7 @@ describe('createCachingProvider()', () => {
 
   it('different system instructions for generateText produce separate entries', async () => {
     const p = makeMockProvider();
-    (p.generateText as jest.Mock<any>)
-      .mockResolvedValueOnce('result A')
-      .mockResolvedValueOnce('result B');
+    (p.generateText as jest.Mock<any>).mockResolvedValueOnce('result A').mockResolvedValueOnce('result B');
 
     const cached = createCachingProvider(p, new InMemoryPromptCache());
     const r1 = await cached.generateText('p', 'sys A');

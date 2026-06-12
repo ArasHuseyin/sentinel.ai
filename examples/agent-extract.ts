@@ -24,20 +24,17 @@ async function run() {
   await sentinel.init();
   await sentinel.goto('https://news.ycombinator.com');
 
-  const result = await sentinel.run(
-    'Extract the top 5 stories from the front page: title, score, and comment count',
-    {
-      maxSteps: 5,
-      onStep: step => {
-        const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
-        console.log(`\n[Step ${step.stepNumber}] ${icon} ${step.instruction}`);
-        if (step.reasoning) console.log(`  → ${step.reasoning}`);
-        if (step.type === 'extract' && step.data) {
-          console.log('  📦 Extracted:', JSON.stringify(step.data, null, 2));
-        }
-      },
-    }
-  );
+  const result = await sentinel.run('Extract the top 5 stories from the front page: title, score, and comment count', {
+    maxSteps: 5,
+    onStep: step => {
+      const icon = step.type === 'extract' ? '🔍' : step.success ? '✅' : '❌';
+      console.log(`\n[Step ${step.stepNumber}] ${icon} ${step.instruction}`);
+      if (step.reasoning) console.log(`  → ${step.reasoning}`);
+      if (step.type === 'extract' && step.data) {
+        console.log('  📦 Extracted:', JSON.stringify(step.data, null, 2));
+      }
+    },
+  });
 
   console.log('\n─────────────────────────────────────────');
   console.log(`🎯 Goal achieved: ${result.goalAchieved}`);
@@ -54,11 +51,13 @@ async function run() {
   const stories = await sentinel.extract(
     'Get the top 5 Hacker News stories',
     z.object({
-      stories: z.array(z.object({
-        title: z.string(),
-        score: z.number().optional(),
-        comments: z.number().optional(),
-      })),
+      stories: z.array(
+        z.object({
+          title: z.string(),
+          score: z.number().optional(),
+          comments: z.number().optional(),
+        })
+      ),
     })
   );
 

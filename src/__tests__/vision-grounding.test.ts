@@ -31,10 +31,16 @@ const FAKE_PNG = Buffer.from('fakepng');
 function makePngWithDimensions(width: number, height: number): Buffer {
   const buf = Buffer.alloc(24);
   // PNG signature
-  buf.writeUInt8(0x89, 0); buf.writeUInt8(0x50, 1); buf.writeUInt8(0x4e, 2); buf.writeUInt8(0x47, 3);
-  buf.writeUInt8(0x0d, 4); buf.writeUInt8(0x0a, 5); buf.writeUInt8(0x1a, 6); buf.writeUInt8(0x0a, 7);
+  buf.writeUInt8(0x89, 0);
+  buf.writeUInt8(0x50, 1);
+  buf.writeUInt8(0x4e, 2);
+  buf.writeUInt8(0x47, 3);
+  buf.writeUInt8(0x0d, 4);
+  buf.writeUInt8(0x0a, 5);
+  buf.writeUInt8(0x1a, 6);
+  buf.writeUInt8(0x0a, 7);
   // IHDR chunk: length(4) + type(4) + width(4) + height(4)
-  buf.writeUInt32BE(13, 8);           // IHDR data length
+  buf.writeUInt32BE(13, 8); // IHDR data length
   buf.write('IHDR', 12, 'ascii');
   buf.writeUInt32BE(width, 16);
   buf.writeUInt32BE(height, 20);
@@ -44,7 +50,6 @@ function makePngWithDimensions(width: number, height: number): Buffer {
 // ─── VisionGrounding ──────────────────────────────────────────────────────────
 
 describe('VisionGrounding', () => {
-
   describe('constructor', () => {
     it('logs a warning when provider lacks analyzeImage', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});

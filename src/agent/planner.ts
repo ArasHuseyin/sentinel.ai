@@ -65,24 +65,41 @@ Current page:
 - Title: ${state.title}${pageDescription ? `\n- Visual layout: ${pageDescription}` : ''}
 - Interactive elements, sorted top-to-bottom:
 ${(() => {
-  const sorted = filterRelevantElements(state.elements, goal, 50).slice().sort((a, b) => a.boundingClientRect.y - b.boundingClientRect.y);
-  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker', 'file']);
+  const sorted = filterRelevantElements(state.elements, goal, 50)
+    .slice()
+    .sort((a, b) => a.boundingClientRect.y - b.boundingClientRect.y);
+  const FORM_ROLES = new Set([
+    'textbox',
+    'combobox',
+    'searchbox',
+    'spinbutton',
+    'listbox',
+    'radio',
+    'checkbox',
+    'slider',
+    'switch',
+    'datepicker',
+    'timepicker',
+    'file',
+  ]);
   const formFields = sorted.filter(e => FORM_ROLES.has(e.role));
   const others = sorted.filter(e => !FORM_ROLES.has(e.role));
-  const fmtEl = (e: typeof sorted[0], prefix = '') => `${prefix}${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}${e.error ? ` | ⚠ "${e.error}"` : ''}`;
-  const fmt = (e: typeof sorted[0]) => fmtEl(e);
+  const fmtEl = (e: (typeof sorted)[0], prefix = '') =>
+    `${prefix}${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.region}` : ''}${e.value !== undefined ? ` | value="${e.value}"` : ''}${e.error ? ` | ⚠ "${e.error}"` : ''}`;
+  const fmt = (e: (typeof sorted)[0]) => fmtEl(e);
   const sections: string[] = [];
   if (formFields.length > 0) {
     // Mark the first UNFILLED form field as the next target.
     // Fields with values are already filled — skip them for the >> marker.
     // A field is "unfilled" if it has no value or its value matches a placeholder pattern.
-    const isUnfilled = (e: typeof formFields[0]) =>
-      e.value === undefined || e.value === '' ||
-      /auswählen|select|choose|bitte|please|suchen|search/i.test(e.value);
-    const fieldLines = formFields.map((e) => {
+    const isUnfilled = (e: (typeof formFields)[0]) =>
+      e.value === undefined || e.value === '' || /auswählen|select|choose|bitte|please|suchen|search/i.test(e.value);
+    const fieldLines = formFields.map(e => {
       return isUnfilled(e) ? fmtEl(e, '○ ') : fmtEl(e, '● ');
     });
-    sections.push(`Form fields (● = filled, ○ = empty — fill empty fields relevant to the goal, skip irrelevant ones):\n${fieldLines.join('\n')}`);
+    sections.push(
+      `Form fields (● = filled, ○ = empty — fill empty fields relevant to the goal, skip irrelevant ones):\n${fieldLines.join('\n')}`
+    );
     // When form fields exist, only show buttons NEAR the form (likely submit/proceed).
     // Buttons far above or far below the form area are hidden to prevent the LLM
     // from clicking irrelevant navigation buttons instead of filling the form.
