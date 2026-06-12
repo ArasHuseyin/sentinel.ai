@@ -1,5 +1,5 @@
-import { SentinelDriver } from './core/driver.js';
-import { StateParser } from './core/state-parser.js';
+import { SentinelDriver } from '../src/core/driver.js';
+import { StateParser } from '../src/core/state-parser.js';
 import dotenv from 'dotenv';
 import fs from 'fs';
 

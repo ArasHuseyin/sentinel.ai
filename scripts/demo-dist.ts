@@ -1,6 +1,5 @@
 import 'dotenv/config';
-import { Sentinel } from './dist/index.js';
-// @ts-ignore
+import { Sentinel } from '../dist/index.js';
 import process from "process";
 
 async function main() {
