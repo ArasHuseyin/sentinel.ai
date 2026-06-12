@@ -1,0 +1,7 @@
+dist/
+dist-test/
+coverage/
+package-lock.json
+*.md
+*.gif
+*.png
