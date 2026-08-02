@@ -53,8 +53,12 @@ describe('detectCaptcha', () => {
 
 describe('describeCaptcha', () => {
   const types: CaptchaType[] = [
-    'recaptcha-v2', 'recaptcha-v3', 'hcaptcha',
-    'turnstile', 'funcaptcha', 'unknown',
+    'recaptcha-v2',
+    'recaptcha-v3',
+    'hcaptcha',
+    'turnstile',
+    'funcaptcha',
+    'unknown',
   ];
 
   it('produces a non-empty message for every captcha type', () => {

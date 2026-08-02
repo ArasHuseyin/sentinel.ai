@@ -66,7 +66,9 @@ describe('InMemoryLocatorCache', () => {
   let cache: InMemoryLocatorCache;
   const entry: CachedLocator = { action: 'click', role: 'button', name: 'Login' };
 
-  beforeEach(() => { cache = new InMemoryLocatorCache(); });
+  beforeEach(() => {
+    cache = new InMemoryLocatorCache();
+  });
 
   it('returns undefined for an unknown key', () => {
     expect(cache.get('https://example.com', 'click login')).toBeUndefined();
@@ -108,7 +110,12 @@ describe('InMemoryLocatorCache', () => {
   });
 
   it('stores value field when present', () => {
-    const withValue: CachedLocator = { action: 'fill', role: 'textbox', name: 'Email', value: 'user@test.com' };
+    const withValue: CachedLocator = {
+      action: 'fill',
+      role: 'textbox',
+      name: 'Email',
+      value: 'user@test.com',
+    };
     cache.set('https://example.com', 'fill email', withValue);
     expect(cache.get('https://example.com', 'fill email')).toEqual(withValue);
   });
@@ -121,9 +128,21 @@ describe('FileLocatorCache', () => {
   const entry: CachedLocator = { action: 'click', role: 'button', name: 'Submit' };
 
   afterEach(() => {
-    try { fs.unlinkSync(filePath); } catch { /* already gone */ }
-    try { fs.unlinkSync(`${filePath}.${process.pid}.tmp`); } catch { /* ok */ }
-    try { fs.unlinkSync(`${filePath}.${process.pid}.sync.tmp`); } catch { /* ok */ }
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      /* already gone */
+    }
+    try {
+      fs.unlinkSync(`${filePath}.${process.pid}.tmp`);
+    } catch {
+      /* ok */
+    }
+    try {
+      fs.unlinkSync(`${filePath}.${process.pid}.sync.tmp`);
+    } catch {
+      /* ok */
+    }
     jest.restoreAllMocks();
   });
 
@@ -171,7 +190,12 @@ describe('FileLocatorCache', () => {
   });
 
   it('round-trips a CachedLocator with value through JSON', async () => {
-    const withValue: CachedLocator = { action: 'fill', role: 'textbox', name: 'Email', value: 'a@b.com' };
+    const withValue: CachedLocator = {
+      action: 'fill',
+      role: 'textbox',
+      name: 'Email',
+      value: 'a@b.com',
+    };
     const cache = new FileLocatorCache(filePath);
     cache.set('https://example.com', 'fill email', withValue);
     await cache.flush();
@@ -245,7 +269,11 @@ describe('createLocatorCache', () => {
     const cache = createLocatorCache('/tmp/sentinel-test-factory.json');
     expect(cache).toBeInstanceOf(FileLocatorCache);
     (cache as FileLocatorCache).close();
-    try { fs.unlinkSync('/tmp/sentinel-test-factory.json'); } catch { /* ok */ }
+    try {
+      fs.unlinkSync('/tmp/sentinel-test-factory.json');
+    } catch {
+      /* ok */
+    }
   });
 });
 
@@ -268,7 +296,9 @@ function makeMockLocator() {
     evaluate: jest.fn<any>().mockResolvedValue(undefined),
     boundingBox: jest.fn<any>().mockResolvedValue({ x: 10, y: 10, width: 100, height: 40 }),
     isVisible: jest.fn<any>().mockResolvedValue(true),
-    first: jest.fn<any>(function() { return locator; }),
+    first: jest.fn<any>(function () {
+      return locator;
+    }),
   };
   return locator;
 }
@@ -283,8 +313,14 @@ function makeMockPage() {
     ),
     waitForNavigation: jest.fn<any>().mockResolvedValue(undefined),
     waitForLoadState: jest.fn<any>().mockResolvedValue(undefined),
-    mouse: { click: jest.fn<any>().mockResolvedValue(undefined), wheel: jest.fn<any>().mockResolvedValue(undefined) },
-    keyboard: { press: jest.fn<any>().mockResolvedValue(undefined), type: jest.fn<any>().mockResolvedValue(undefined) },
+    mouse: {
+      click: jest.fn<any>().mockResolvedValue(undefined),
+      wheel: jest.fn<any>().mockResolvedValue(undefined),
+    },
+    keyboard: {
+      press: jest.fn<any>().mockResolvedValue(undefined),
+      type: jest.fn<any>().mockResolvedValue(undefined),
+    },
     viewportSize: jest.fn<any>().mockReturnValue({ width: 1280, height: 720 }),
     waitForTimeout: jest.fn<any>().mockResolvedValue(undefined),
     url: jest.fn<any>().mockReturnValue('https://example.com/page'),
@@ -321,10 +357,20 @@ function makeMockCache(): jest.Mocked<ILocatorCache> {
 
 describe('ActionEngine with LocatorCache', () => {
   it('calls LLM on first invocation', async () => {
-    const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
+    const elements = [
+      {
+        id: 0,
+        role: 'button',
+        name: 'Login',
+        boundingClientRect: { x: 10, y: 10, width: 100, height: 40 },
+      },
+    ];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
 
     await engine.act('click login button');
 
@@ -332,13 +378,23 @@ describe('ActionEngine with LocatorCache', () => {
   });
 
   it('skips LLM on second call when cache returns a hit', async () => {
-    const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
+    const elements = [
+      {
+        id: 0,
+        role: 'button',
+        name: 'Login',
+        boundingClientRect: { x: 10, y: 10, width: 100, height: 40 },
+      },
+    ];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
     const cache = makeMockCache();
     // Pre-populate cache with a hit for the second call
     cache.get.mockReturnValue({ action: 'click', role: 'button', name: 'Login' });
 
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
     const result = await engine.act('click login button');
 
     expect(llm.generateStructuredData).not.toHaveBeenCalled();
@@ -347,28 +403,48 @@ describe('ActionEngine with LocatorCache', () => {
   });
 
   it('populates cache after successful LLM call', async () => {
-    const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
+    const elements = [
+      {
+        id: 0,
+        role: 'button',
+        name: 'Login',
+        boundingClientRect: { x: 10, y: 10, width: 100, height: 40 },
+      },
+    ];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
 
     await engine.act('click login button');
 
-    expect(cache.set).toHaveBeenCalledWith(
-      'https://example.com/page',
-      'click login button',
-      { action: 'click', role: 'button', name: 'Login' }
-    );
+    expect(cache.set).toHaveBeenCalledWith('https://example.com/page', 'click login button', {
+      action: 'click',
+      role: 'button',
+      name: 'Login',
+    });
   });
 
   it('invalidates entry when cached element is gone from state', async () => {
     // State has no matching element
-    const elements = [{ id: 0, role: 'link', name: 'Home', boundingClientRect: { x: 0, y: 0, width: 50, height: 20 } }];
+    const elements = [
+      {
+        id: 0,
+        role: 'link',
+        name: 'Home',
+        boundingClientRect: { x: 0, y: 0, width: 50, height: 20 },
+      },
+    ];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'fallback' });
     const cache = makeMockCache();
     cache.get.mockReturnValue({ action: 'click', role: 'button', name: 'Login' }); // stale entry
 
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
     await engine.act('click login button');
 
     expect(cache.invalidate).toHaveBeenCalledWith('https://example.com/page', 'click login button');
@@ -382,12 +458,22 @@ describe('ActionEngine with LocatorCache', () => {
     // so the cache entry is invalidated and LLM is called for the retry.
     page.mouse.click.mockRejectedValue(new Error('element detached'));
 
-    const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
+    const elements = [
+      {
+        id: 0,
+        role: 'button',
+        name: 'Login',
+        boundingClientRect: { x: 10, y: 10, width: 100, height: 40 },
+      },
+    ];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
     const cache = makeMockCache();
     cache.get.mockReturnValue({ action: 'click', role: 'button', name: 'Login' });
 
-    const engine = new ActionEngine(page, makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(page, makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
     await engine.act('click login button');
 
     expect(cache.invalidate).toHaveBeenCalled();
@@ -395,9 +481,18 @@ describe('ActionEngine with LocatorCache', () => {
   });
 
   it('does not use cache when locatorCache is null', async () => {
-    const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
+    const elements = [
+      {
+        id: 0,
+        role: 'button',
+        name: 'Login',
+        boundingClientRect: { x: 10, y: 10, width: 100, height: 40 },
+      },
+    ];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100 });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+    });
 
     await engine.act('click login button');
     await engine.act('click login button');
@@ -408,7 +503,10 @@ describe('ActionEngine with LocatorCache', () => {
   it('does not cache scroll-without-target actions', async () => {
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'scroll' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser([]), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser([]), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
 
     await engine.act('scroll down');
 
@@ -416,17 +514,33 @@ describe('ActionEngine with LocatorCache', () => {
   });
 
   it('preserves value in cached entry for fill actions', async () => {
-    const elements = [{ id: 0, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 10, width: 200, height: 40 } }];
-    const llm = makeMockLLM({ elementId: 0, action: 'fill', value: 'user@test.com', reasoning: 'fill' });
+    const elements = [
+      {
+        id: 0,
+        role: 'textbox',
+        name: 'Email',
+        boundingClientRect: { x: 10, y: 10, width: 200, height: 40 },
+      },
+    ];
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'fill',
+      value: 'user@test.com',
+      reasoning: 'fill',
+    });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, {
+      domSettleTimeoutMs: 100,
+      locatorCache: cache,
+    });
 
     await engine.act('fill email field');
 
-    expect(cache.set).toHaveBeenCalledWith(
-      'https://example.com/page',
-      'fill email field',
-      { action: 'fill', role: 'textbox', name: 'Email', value: 'user@test.com' }
-    );
+    expect(cache.set).toHaveBeenCalledWith('https://example.com/page', 'fill email field', {
+      action: 'fill',
+      role: 'textbox',
+      name: 'Email',
+      value: 'user@test.com',
+    });
   });
 });

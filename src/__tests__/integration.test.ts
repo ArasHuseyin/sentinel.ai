@@ -13,8 +13,18 @@ function makeState(overrides: Partial<SimplifiedState> = {}): SimplifiedState {
     url: 'https://example.com',
     title: 'Example',
     elements: [
-      { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-      { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+      {
+        id: 0,
+        role: 'button',
+        name: 'Submit',
+        boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+      },
+      {
+        id: 1,
+        role: 'textbox',
+        name: 'Email',
+        boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+      },
     ],
     ...overrides,
   };
@@ -115,7 +125,11 @@ describe('Integration: ActionEngine + Verifier', () => {
 
     const beforeState = stateBefore;
     const afterState = await stateParser.parse();
-    const verification = await verifier.verifyAction('Click the submit button', beforeState, afterState);
+    const verification = await verifier.verifyAction(
+      'Click the submit button',
+      beforeState,
+      afterState
+    );
 
     expect(verification.success).toBe(true);
     expect(verification.confidence).toBeGreaterThanOrEqual(0.9);
@@ -127,7 +141,12 @@ describe('Integration: ActionEngine + Verifier', () => {
     const stateChanged = makeState({
       title: 'Updated Page',
       elements: [
-        { id: 0, role: 'button', name: 'Done', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Done',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
       ],
     });
 
@@ -143,7 +162,8 @@ describe('Integration: ActionEngine + Verifier', () => {
     };
 
     const verifierLLM: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         .mockResolvedValueOnce({ success: false, confidence: 0.3, explanation: 'Nothing changed' })
         .mockResolvedValueOnce({ success: true, confidence: 0.85, explanation: 'State changed' }),
       generateText: jest.fn(async () => ''),
@@ -191,26 +211,57 @@ describe('Integration: AgentLoop', () => {
     // Pattern per step: planner.planNextStep → actionEngine.act
     // After 3 steps: planner marks goal complete
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         // Step 1: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click search field', reasoning: 'Need to search', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click search field',
+          reasoning: 'Need to search',
+          isGoalComplete: false,
+        })
         // Step 1: action engine
         .mockResolvedValueOnce({ elementId: 1, action: 'click', reasoning: 'Search field found' })
         // Step 2: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Type query', reasoning: 'Enter search term', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Type query',
+          reasoning: 'Enter search term',
+          isGoalComplete: false,
+        })
         // Step 2: action engine
-        .mockResolvedValueOnce({ elementId: 1, action: 'fill', value: 'test', reasoning: 'Fill search' })
+        .mockResolvedValueOnce({
+          elementId: 1,
+          action: 'fill',
+          value: 'test',
+          reasoning: 'Fill search',
+        })
         // Step 3: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click submit', reasoning: 'Submit search', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click submit',
+          reasoning: 'Submit search',
+          isGoalComplete: false,
+        })
         // Step 3: action engine
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Step 4: planner marks goal complete
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Done', reasoning: 'Search completed', isGoalComplete: true }),
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Done',
+          reasoning: 'Search completed',
+          isGoalComplete: true,
+        }),
       generateText: jest.fn(async () => ''),
     };
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
-    const agentLoop = new AgentLoop(engine, { extract: jest.fn(async () => ({})) } as any, stateParser as any, llm);
+    const agentLoop = new AgentLoop(
+      engine,
+      { extract: jest.fn(async () => ({})) } as any,
+      stateParser as any,
+      llm
+    );
     const result = await agentLoop.run('Search for test', { maxSteps: 10 });
 
     expect(result.goalAchieved).toBe(true);
@@ -226,17 +277,33 @@ describe('Integration: AgentLoop', () => {
     // Planner always returns an instruction; action engine always returns
     // an element ID that doesn't exist (empty elements list → failure)
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         // Step 1: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click login', reasoning: 'Need login', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click login',
+          reasoning: 'Need login',
+          isGoalComplete: false,
+        })
         // Step 1: action → element 5 not in empty list
         .mockResolvedValueOnce({ elementId: 5, action: 'click', reasoning: 'Login button' })
         // Step 2: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click sign in', reasoning: 'Try sign in', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click sign in',
+          reasoning: 'Try sign in',
+          isGoalComplete: false,
+        })
         // Step 2: action → element 5 not in empty list
         .mockResolvedValueOnce({ elementId: 5, action: 'click', reasoning: 'Sign in button' })
         // Step 3: planner
-        .mockResolvedValueOnce({ type: 'act', instruction: 'Click enter', reasoning: 'Try enter', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: 'Click enter',
+          reasoning: 'Try enter',
+          isGoalComplete: false,
+        })
         // Step 3: action → element 5 not in empty list
         .mockResolvedValueOnce({ elementId: 5, action: 'click', reasoning: 'Enter button' })
         // Reflection after abort
@@ -245,7 +312,12 @@ describe('Integration: AgentLoop', () => {
     };
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
-    const agentLoop = new AgentLoop(engine, { extract: jest.fn(async () => ({})) } as any, stateParser as any, llm);
+    const agentLoop = new AgentLoop(
+      engine,
+      { extract: jest.fn(async () => ({})) } as any,
+      stateParser as any,
+      llm
+    );
     const result = await agentLoop.run('Log in to the site', { maxSteps: 10 });
 
     expect(result.goalAchieved).toBe(false);
@@ -261,15 +333,31 @@ describe('Integration: AgentLoop', () => {
     // Planner always returns the same instruction, action engine always succeeds
     const repeatedInstruction = 'Click the submit button';
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
         // Step 1
-        .mockResolvedValueOnce({ type: 'act', instruction: repeatedInstruction, reasoning: 'Submit form', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: repeatedInstruction,
+          reasoning: 'Submit form',
+          isGoalComplete: false,
+        })
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Step 2
-        .mockResolvedValueOnce({ type: 'act', instruction: repeatedInstruction, reasoning: 'Submit form', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: repeatedInstruction,
+          reasoning: 'Submit form',
+          isGoalComplete: false,
+        })
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Step 3
-        .mockResolvedValueOnce({ type: 'act', instruction: repeatedInstruction, reasoning: 'Submit form', isGoalComplete: false })
+        .mockResolvedValueOnce({
+          type: 'act',
+          instruction: repeatedInstruction,
+          reasoning: 'Submit form',
+          isGoalComplete: false,
+        })
         .mockResolvedValueOnce({ elementId: 0, action: 'click', reasoning: 'Submit button' })
         // Reflection after loop detection
         .mockResolvedValueOnce({ goalAchieved: false, reason: 'Stuck in loop' }),
@@ -277,7 +365,12 @@ describe('Integration: AgentLoop', () => {
     };
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
-    const agentLoop = new AgentLoop(engine, { extract: jest.fn(async () => ({})) } as any, stateParser as any, llm);
+    const agentLoop = new AgentLoop(
+      engine,
+      { extract: jest.fn(async () => ({})) } as any,
+      stateParser as any,
+      llm
+    );
     const result = await agentLoop.run('Submit the form', { maxSteps: 10 });
 
     expect(result.goalAchieved).toBe(false);
@@ -291,8 +384,18 @@ describe('Integration: ExtractionEngine', () => {
   it('combines AOM state and page text in prompt', async () => {
     const state = makeState({
       elements: [
-        { id: 0, role: 'heading', name: 'Products', boundingClientRect: { x: 0, y: 0, width: 200, height: 40 } },
-        { id: 1, role: 'link', name: 'Widget A', boundingClientRect: { x: 0, y: 50, width: 100, height: 20 } },
+        {
+          id: 0,
+          role: 'heading',
+          name: 'Products',
+          boundingClientRect: { x: 0, y: 0, width: 200, height: 40 },
+        },
+        {
+          id: 1,
+          role: 'link',
+          name: 'Widget A',
+          boundingClientRect: { x: 0, y: 50, width: 100, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
@@ -356,7 +459,9 @@ describe('Integration: ExtractionEngine', () => {
 
     expect(result).toEqual({ title: 'Example' });
 
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     expect(promptArg).toContain('[Could not extract page text]');
   });
 });

@@ -77,8 +77,7 @@ describeE2E('E2E: Cross-frame action routing', () => {
     await sentinel.goto(outerUrl);
     await sentinel.act('Fill the Card number field with 4242 4242 4242 4242');
 
-    const value = await sentinel.page.frameLocator('#payment-frame')
-      .locator('#card').inputValue();
+    const value = await sentinel.page.frameLocator('#payment-frame').locator('#card').inputValue();
     expect(value).toBe('4242 4242 4242 4242');
   }, 60_000);
 
@@ -87,8 +86,10 @@ describeE2E('E2E: Cross-frame action routing', () => {
     await sentinel.act('Fill the Card number field with 1111 2222 3333 4444');
     await sentinel.act('Click the Pay now button');
 
-    const status = await sentinel.page.frameLocator('#payment-frame')
-      .locator('#status').textContent();
+    const status = await sentinel.page
+      .frameLocator('#payment-frame')
+      .locator('#status')
+      .textContent();
     expect(status).toMatch(/^paid:/);
     expect(status).toContain('1111');
   }, 90_000);

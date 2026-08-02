@@ -48,16 +48,16 @@ describeE2E('E2E: Amazon Filter + Sort', () => {
     // a proper fix requires aria-valuetext binary-search. See TODO.md.
     const result = await sentinel.run(
       'Find Sony over-ear bluetooth headphones on Amazon using search, filter and sort:\n' +
-      '\n' +
-      '1. Accept any cookie/consent banners first\n' +
-      '2. Search for "bluetooth kopfhörer over-ear" in the search field and submit\n' +
-      '3. On the results page, filter by brand: Sony (use the brand/Marke filter in the left sidebar)\n' +
-      '4. Sort the results by "Durchschn. Kundenrezension" (average customer rating) via the sort dropdown at the top right\n' +
-      '5. When the filtered + sorted results are visible, extract the first 3 products with: product name, price, and star rating',
+        '\n' +
+        '1. Accept any cookie/consent banners first\n' +
+        '2. Search for "bluetooth kopfhörer over-ear" in the search field and submit\n' +
+        '3. On the results page, filter by brand: Sony (use the brand/Marke filter in the left sidebar)\n' +
+        '4. Sort the results by "Durchschn. Kundenrezension" (average customer rating) via the sort dropdown at the top right\n' +
+        '5. When the filtered + sorted results are visible, extract the first 3 products with: product name, price, and star rating',
       {
         maxSteps: 15,
         onStep: step => {
-          const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
+          const icon = step.type === 'extract' ? '🔍' : step.success ? '✅' : '❌';
           console.log(`[Amazon ${step.stepNumber}] ${icon} ${step.instruction}`);
         },
       }

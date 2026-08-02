@@ -132,16 +132,23 @@ describeE2E('MUI Benchmark — 12 components', () => {
       const icon = r.passed ? '✅' : '❌';
       const dur = `${(r.durationMs / 1000).toFixed(1)}s`;
       const tok = r.tokens > 0 ? `${r.tokens}t` : '0t';
-      console.log(`  ${icon} ${r.component.padEnd(16)} ${dur.padStart(6)}  ${tok.padStart(7)}${r.note ? `  — ${r.note}` : ''}`);
+      console.log(
+        `  ${icon} ${r.component.padEnd(16)} ${dur.padStart(6)}  ${tok.padStart(7)}${r.note ? `  — ${r.note}` : ''}`
+      );
     }
     console.log('───────────────────────────────────────────────────────');
-    console.log(`  Score: ${passed}/${total} (${Math.round((passed / Math.max(total, 1)) * 100)}%)`);
+    console.log(
+      `  Score: ${passed}/${total} (${Math.round((passed / Math.max(total, 1)) * 100)}%)`
+    );
     console.log(`  Total: ${totalTokens} tokens, ${(totalDuration / 1000).toFixed(1)}s`);
     const avgTokens = Math.round(totalTokens / Math.max(total, 1));
     console.log(`  Avg:   ${avgTokens} tokens/component`);
-    if (passed >= total * 0.92) console.log('  Verdict: 🏆 EXCELLENT — ready for Pattern Store Phase 2');
-    else if (passed >= total * 0.83) console.log('  Verdict: ✅ GOOD — production-ready for form-heavy sites');
-    else if (passed >= total * 0.67) console.log('  Verdict: 🟡 ACCEPTABLE — address gaps before shipping');
+    if (passed >= total * 0.92)
+      console.log('  Verdict: 🏆 EXCELLENT — ready for Pattern Store Phase 2');
+    else if (passed >= total * 0.83)
+      console.log('  Verdict: ✅ GOOD — production-ready for form-heavy sites');
+    else if (passed >= total * 0.67)
+      console.log('  Verdict: 🟡 ACCEPTABLE — address gaps before shipping');
     else console.log('  Verdict: ❌ NEEDS WORK — significant gaps in widget coverage');
     console.log('═══════════════════════════════════════════════════════\n');
   }, 15_000);

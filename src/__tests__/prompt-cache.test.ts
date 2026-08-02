@@ -164,19 +164,19 @@ describe('buildPromptCacheKey()', () => {
   });
 
   it('Zod z.string() and z.number() produce different keys (same prompt)', () => {
-        const k1 = buildPromptCacheKey('Extract the value', z.string());
+    const k1 = buildPromptCacheKey('Extract the value', z.string());
     const k2 = buildPromptCacheKey('Extract the value', z.number());
     expect(k1).not.toBe(k2);
   });
 
   it('two z.string() instances produce the same key', () => {
-        const k1 = buildPromptCacheKey('Extract title', z.string());
+    const k1 = buildPromptCacheKey('Extract title', z.string());
     const k2 = buildPromptCacheKey('Extract title', z.string());
     expect(k1).toBe(k2);
   });
 
   it('z.object() with different shapes produces different keys', () => {
-        const k1 = buildPromptCacheKey('Extract', z.object({ name: z.string() }));
+    const k1 = buildPromptCacheKey('Extract', z.object({ name: z.string() }));
     const k2 = buildPromptCacheKey('Extract', z.object({ count: z.number() }));
     expect(k1).not.toBe(k2);
   });
@@ -322,7 +322,11 @@ describe('Sentinel promptCache integration', () => {
       verbose: 0,
       ...(promptCache !== undefined ? { promptCache } : {}),
       provider: {
-        generateStructuredData: jest.fn(async () => ({ action: 'click', elementId: 0, reasoning: 'ok' })) as any,
+        generateStructuredData: jest.fn(async () => ({
+          action: 'click',
+          elementId: 0,
+          reasoning: 'ok',
+        })) as any,
         generateText: jest.fn(async () => ''),
       },
     };

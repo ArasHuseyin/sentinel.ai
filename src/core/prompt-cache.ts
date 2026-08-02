@@ -18,9 +18,7 @@ export interface IPromptCache {
  * Fast, non-cryptographic, good enough for cache keys on strings up to ~100 KB.
  */
 function hash(...parts: unknown[]): string {
-  const input = parts
-    .map(p => (typeof p === 'string' ? p : JSON.stringify(p)))
-    .join('\x00');
+  const input = parts.map(p => (typeof p === 'string' ? p : JSON.stringify(p))).join('\x00');
   let h = 5381;
   for (let i = 0; i < input.length; i++) {
     h = ((h << 5) + h) ^ input.charCodeAt(i);
@@ -145,15 +143,10 @@ export function createPromptCache(option: false | true | string): IPromptCache |
  * Only `generateStructuredData` and `generateText` are cached.
  * `analyzeImage` (vision) is always passed through — screenshots change.
  */
-export function createCachingProvider(
-  provider: LLMProvider,
-  cache: IPromptCache
-): LLMProvider {
+export function createCachingProvider(provider: LLMProvider, cache: IPromptCache): LLMProvider {
   const caching = {
     // analyzeImage is vision — always live, never cached
-    ...(provider.analyzeImage
-      ? { analyzeImage: provider.analyzeImage.bind(provider) }
-      : {}),
+    ...(provider.analyzeImage ? { analyzeImage: provider.analyzeImage.bind(provider) } : {}),
 
     async generateStructuredData<T>(
       prompt: string,

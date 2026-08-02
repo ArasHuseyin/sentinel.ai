@@ -145,9 +145,10 @@ export class AgentLoop {
     // it's the user's own interaction state (the planner just clicked a
     // combobox to see options). Running recovery on it would dismiss the
     // popover right before the next step tries to pick an option from it.
-    const hasOpenListbox = state.elements.some(e =>
-      (e.role === 'listbox' || e.role === 'option' || e.role === 'menuitem') &&
-      (e.region === 'popup' || e.region === 'modal')
+    const hasOpenListbox = state.elements.some(
+      e =>
+        (e.role === 'listbox' || e.role === 'option' || e.role === 'menuitem') &&
+        (e.region === 'popup' || e.region === 'modal')
     );
     if (hasOpenListbox) return false;
 
@@ -157,22 +158,30 @@ export class AgentLoop {
     // inputs and cannot be dismissed — pressing Escape or removing the
     // widget would only close OUR own popovers on subsequent steps.
     const INTERACTIVE_ROLES = new Set([
-      'button', 'link', 'textbox', 'combobox', 'searchbox',
-      'checkbox', 'radio', 'switch', 'menuitem', 'tab',
+      'button',
+      'link',
+      'textbox',
+      'combobox',
+      'searchbox',
+      'checkbox',
+      'radio',
+      'switch',
+      'menuitem',
+      'tab',
     ]);
-    const hasInteractiveModal = state.elements.some(e =>
-      (e.region === 'modal' || e.region === 'popup') &&
-      INTERACTIVE_ROLES.has(e.role)
+    const hasInteractiveModal = state.elements.some(
+      e => (e.region === 'modal' || e.region === 'popup') && INTERACTIVE_ROLES.has(e.role)
     );
     if (hasInteractiveModal) return true;
 
     // Standalone accept/consent control — cookie banners sometimes aren't
     // regioned as modal but their accept button is still prominent.
-    return state.elements.some(e =>
-      (e.role === 'button' || e.role === 'link') &&
-      ACCEPT_INTENT_PATTERN.test(e.name) &&
-      e.region !== 'footer' &&
-      e.region !== 'nav'
+    return state.elements.some(
+      e =>
+        (e.role === 'button' || e.role === 'link') &&
+        ACCEPT_INTENT_PATTERN.test(e.name) &&
+        e.region !== 'footer' &&
+        e.region !== 'nav'
     );
   }
 
@@ -185,7 +194,9 @@ export class AgentLoop {
    */
   private blockerFingerprint(state: SimplifiedState): string {
     const names = state.elements
-      .filter(e => COOKIE_BLOCKER_PATTERN.test(e.name) || e.region === 'modal' || e.region === 'popup')
+      .filter(
+        e => COOKIE_BLOCKER_PATTERN.test(e.name) || e.region === 'modal' || e.region === 'popup'
+      )
       .map(e => `${e.role}:${e.name}`)
       .sort()
       .slice(0, 10);
@@ -255,18 +266,20 @@ export class AgentLoop {
             // explicit `window.scroll` listeners), and the next step's
             // interaction needs the popover to stay open.
             if (this.page) {
-              const popoverOpen = await this.page.evaluate(() => {
-                const nodes = document.querySelectorAll(
-                  '[role="option"], [role="listbox"], [role="menu"]'
-                );
-                for (const n of Array.from(nodes) as HTMLElement[]) {
-                  if (n.offsetParent !== null) {
-                    const r = n.getBoundingClientRect();
-                    if (r.width >= 1 && r.height >= 1) return true;
+              const popoverOpen = await this.page
+                .evaluate(() => {
+                  const nodes = document.querySelectorAll(
+                    '[role="option"], [role="listbox"], [role="menu"]'
+                  );
+                  for (const n of Array.from(nodes) as HTMLElement[]) {
+                    if (n.offsetParent !== null) {
+                      const r = n.getBoundingClientRect();
+                      if (r.width >= 1 && r.height >= 1) return true;
+                    }
                   }
-                }
-                return false;
-              }).catch(() => false);
+                  return false;
+                })
+                .catch(() => false);
               if (!popoverOpen) {
                 await this.page.evaluate(() => window.scrollTo(0, 0)).catch(ignoreRejection);
               }
@@ -296,13 +309,22 @@ export class AgentLoop {
       // Generate TOTP code if MFA is configured — inject into goal so planner can use it
       let effectiveGoal = goal;
       if (this.mfaConfig?.type === 'totp') {
-        const code = generateTOTP(this.mfaConfig.secret, this.mfaConfig.digits, this.mfaConfig.period);
+        const code = generateTOTP(
+          this.mfaConfig.secret,
+          this.mfaConfig.digits,
+          this.mfaConfig.period
+        );
         effectiveGoal = `${goal}\n\nIMPORTANT: If you see a 2FA/verification code/OTP field, fill it with: ${code}`;
       }
 
       let planned;
       try {
-        planned = await this.planner.planNextStep(effectiveGoal, state, this.memory, pageDescription);
+        planned = await this.planner.planNextStep(
+          effectiveGoal,
+          state,
+          this.memory,
+          pageDescription
+        );
       } catch (err: any) {
         this.logger.warn(`Planner error: ${err.message}`, { error: err.message });
         break;
@@ -325,10 +347,13 @@ export class AgentLoop {
             this.logger.info(`✅ Goal complete — executing final extraction.`);
             try {
               const extracted = await this.extractionEngine.extract(
-                planned.instruction, planned.extractionSchema as any
+                planned.instruction,
+                planned.extractionSchema as any
               );
               extractedData = extracted;
-              this.logger.info(`📊 Extracted: ${JSON.stringify(extracted).slice(0, 500)}`, { extracted });
+              this.logger.info(`📊 Extracted: ${JSON.stringify(extracted).slice(0, 500)}`, {
+                extracted,
+              });
             } catch (err: any) {
               this.logger.warn(`Extraction failed: ${err.message}`, { error: err.message });
             }
@@ -365,122 +390,163 @@ export class AgentLoop {
       let stepData: any = undefined;
 
       if (stepType === 'extract') {
-        result = await withSpan('sentinel.agent.step', {
-          'sentinel.step':        stepNumber,
-          'sentinel.type':        'extract',
-          'sentinel.instruction': planned.instruction,
-          'sentinel.url':         state.url,
-        }, async (span) => {
-          try {
-            const schema = planned.extractionSchema ?? { type: 'object' };
-            const extracted = await this.extractionEngine.extract(planned.instruction, schema);
-            extractedData = extracted;
-            stepData = extracted;
-            this.logger.info(`📊 Extracted: ${JSON.stringify(extracted).slice(0, 500)}`, { extracted });
-            span.setAttributes({ 'sentinel.success': true });
-            return { success: true, message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`, action: `extract: ${planned.instruction}` };
-          } catch (err: any) {
-            span.setAttributes({ 'sentinel.success': false });
-            return { success: false, message: err.message, action: `extract: ${planned.instruction}` };
+        result = await withSpan(
+          'sentinel.agent.step',
+          {
+            'sentinel.step': stepNumber,
+            'sentinel.type': 'extract',
+            'sentinel.instruction': planned.instruction,
+            'sentinel.url': state.url,
+          },
+          async span => {
+            try {
+              const schema = planned.extractionSchema ?? { type: 'object' };
+              const extracted = await this.extractionEngine.extract(planned.instruction, schema);
+              extractedData = extracted;
+              stepData = extracted;
+              this.logger.info(`📊 Extracted: ${JSON.stringify(extracted).slice(0, 500)}`, {
+                extracted,
+              });
+              span.setAttributes({ 'sentinel.success': true });
+              return {
+                success: true,
+                message: `Extracted data: ${JSON.stringify(extracted).slice(0, 200)}`,
+                action: `extract: ${planned.instruction}`,
+              };
+            } catch (err: any) {
+              span.setAttributes({ 'sentinel.success': false });
+              return {
+                success: false,
+                message: err.message,
+                action: `extract: ${planned.instruction}`,
+              };
+            }
           }
-        });
+        );
       } else {
-        result = await withSpan('sentinel.agent.step', {
-          'sentinel.step':        stepNumber,
-          'sentinel.type':        'act',
-          'sentinel.instruction': planned.instruction,
-          'sentinel.url':         state.url,
-        }, async (span) => {
-          try {
-            const r = await this.actionEngine.act(planned.instruction);
+        result = await withSpan(
+          'sentinel.agent.step',
+          {
+            'sentinel.step': stepNumber,
+            'sentinel.type': 'act',
+            'sentinel.instruction': planned.instruction,
+            'sentinel.url': state.url,
+          },
+          async span => {
+            try {
+              const r = await this.actionEngine.act(planned.instruction);
 
-            // Post-action verification: if act() reports success, check that
-            // the page actually changed. Catches false-positives from semantic
-            // fallback where the locator "clicks" but nothing happens.
-            if (r.success && !/scroll/i.test(r.action ?? '')) {
-              this.stateParser.invalidateCache();
-              const stateAfter = await this.stateParser.parse();
+              // Post-action verification: if act() reports success, check that
+              // the page actually changed. Catches false-positives from semantic
+              // fallback where the locator "clicks" but nothing happens.
+              if (r.success && !/scroll/i.test(r.action ?? '')) {
+                this.stateParser.invalidateCache();
+                const stateAfter = await this.stateParser.parse();
 
-              const isFillLike = /fill|append|press|type|select/i.test(r.action ?? '');
+                const isFillLike = /fill|append|press|type|select/i.test(r.action ?? '');
 
-              // Structural progress signals — shared by click AND fill/select.
-              // Computing these unconditionally lets fill/select accept any
-              // observable change (navigation, list refresh, focus shift) as
-              // success, not only a value-diff. Crucial for selects that trigger
-              // page transitions or AJAX list updates without writing back to
-              // the bound input element.
-              const urlChanged = state.url !== stateAfter.url;
-              const titleChanged = state.title !== stateAfter.title;
-              const countChanged = state.elements.length !== stateAfter.elements.length;
+                // Structural progress signals — shared by click AND fill/select.
+                // Computing these unconditionally lets fill/select accept any
+                // observable change (navigation, list refresh, focus shift) as
+                // success, not only a value-diff. Crucial for selects that trigger
+                // page transitions or AJAX list updates without writing back to
+                // the bound input element.
+                const urlChanged = state.url !== stateAfter.url;
+                const titleChanged = state.title !== stateAfter.title;
+                const countChanged = state.elements.length !== stateAfter.elements.length;
 
-              const fingerprintLine = (e: typeof state.elements[number]) =>
-                `${e.role}|${e.name}|${e.region ?? ''}|${e.value ?? ''}|${e.error ?? ''}|${e.state?.focused ? 'F' : ''}${e.state?.checked ?? ''}${e.state?.disabled ? 'D' : ''}`;
+                const fingerprintLine = (e: (typeof state.elements)[number]) =>
+                  `${e.role}|${e.name}|${e.region ?? ''}|${e.value ?? ''}|${e.error ?? ''}|${e.state?.focused ? 'F' : ''}${e.state?.checked ?? ''}${e.state?.disabled ? 'D' : ''}`;
 
-              // Count element-level fingerprint diffs by index. A single diff is
-              // usually incidental noise (ad re-render, live counter, animated label);
-              // a real click typically moves focus AND toggles target state, or opens
-              // a menu that adds rows — both produce ≥2 diffs (or trigger count change).
-              const beforeLines = state.elements.map(fingerprintLine);
-              const afterLines = stateAfter.elements.map(fingerprintLine);
-              let diffCount = 0;
-              const maxLen = Math.max(beforeLines.length, afterLines.length);
-              for (let i = 0; i < maxLen; i++) {
-                if (beforeLines[i] !== afterLines[i]) diffCount++;
-              }
+                // Count element-level fingerprint diffs by index. A single diff is
+                // usually incidental noise (ad re-render, live counter, animated label);
+                // a real click typically moves focus AND toggles target state, or opens
+                // a menu that adds rows — both produce ≥2 diffs (or trigger count change).
+                const beforeLines = state.elements.map(fingerprintLine);
+                const afterLines = stateAfter.elements.map(fingerprintLine);
+                let diffCount = 0;
+                const maxLen = Math.max(beforeLines.length, afterLines.length);
+                for (let i = 0; i < maxLen; i++) {
+                  if (beforeLines[i] !== afterLines[i]) diffCount++;
+                }
 
-              // Also accept interactive-state flips regardless of count — those are
-              // direct interaction signals (focus move, checkbox toggle, disable).
-              let interactionFlip = false;
-              const minLen = Math.min(state.elements.length, stateAfter.elements.length);
-              for (let i = 0; i < minLen; i++) {
-                const b = state.elements[i]?.state;
-                const a = stateAfter.elements[i]?.state;
-                if (b?.focused !== a?.focused || b?.checked !== a?.checked || b?.disabled !== a?.disabled) {
-                  interactionFlip = true;
-                  break;
+                // Also accept interactive-state flips regardless of count — those are
+                // direct interaction signals (focus move, checkbox toggle, disable).
+                let interactionFlip = false;
+                const minLen = Math.min(state.elements.length, stateAfter.elements.length);
+                for (let i = 0; i < minLen; i++) {
+                  const b = state.elements[i]?.state;
+                  const a = stateAfter.elements[i]?.state;
+                  if (
+                    b?.focused !== a?.focused ||
+                    b?.checked !== a?.checked ||
+                    b?.disabled !== a?.disabled
+                  ) {
+                    interactionFlip = true;
+                    break;
+                  }
+                }
+
+                const structuralChange =
+                  urlChanged || titleChanged || countChanged || interactionFlip || diffCount >= 2;
+
+                if (isFillLike) {
+                  // Value-diff is the strongest signal for fill/select, but not the
+                  // only one: selects that submit a form or trigger AJAX may leave
+                  // the input value unchanged while still producing real progress.
+                  // Accept either signal.
+                  const valuesBefore = state.elements
+                    .filter(e => e.value !== undefined)
+                    .map(e => `${e.name}=${e.value}`)
+                    .join('|');
+                  const valuesAfter = stateAfter.elements
+                    .filter(e => e.value !== undefined)
+                    .map(e => `${e.name}=${e.value}`)
+                    .join('|');
+                  const valueChanged = valuesBefore !== valuesAfter;
+                  if (!valueChanged && !structuralChange) {
+                    this.logger.warn(
+                      `Fill/select action reported success but page state and input values unchanged — treating as failed`
+                    );
+                    span.setAttributes({ 'sentinel.success': false });
+                    return {
+                      success: false,
+                      message: `${r.message} (but page state and input values unchanged)`,
+                      action: r.action ?? planned.instruction,
+                    };
+                  }
+                } else {
+                  // Click: structural change is the only signal available.
+                  if (!structuralChange) {
+                    this.logger.warn(
+                      `Action reported success but page state unchanged — treating as failed`
+                    );
+                    span.setAttributes({ 'sentinel.success': false });
+                    return {
+                      success: false,
+                      message: `${r.message} (but page state unchanged)`,
+                      action: r.action ?? planned.instruction,
+                    };
+                  }
                 }
               }
 
-              const structuralChange = urlChanged || titleChanged || countChanged || interactionFlip || diffCount >= 2;
-
-              if (isFillLike) {
-                // Value-diff is the strongest signal for fill/select, but not the
-                // only one: selects that submit a form or trigger AJAX may leave
-                // the input value unchanged while still producing real progress.
-                // Accept either signal.
-                const valuesBefore = state.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
-                const valuesAfter = stateAfter.elements.filter(e => e.value !== undefined).map(e => `${e.name}=${e.value}`).join('|');
-                const valueChanged = valuesBefore !== valuesAfter;
-                if (!valueChanged && !structuralChange) {
-                  this.logger.warn(`Fill/select action reported success but page state and input values unchanged — treating as failed`);
-                  span.setAttributes({ 'sentinel.success': false });
-                  return { success: false, message: `${r.message} (but page state and input values unchanged)`, action: r.action ?? planned.instruction };
-                }
-              } else {
-                // Click: structural change is the only signal available.
-                if (!structuralChange) {
-                  this.logger.warn(`Action reported success but page state unchanged — treating as failed`);
-                  span.setAttributes({ 'sentinel.success': false });
-                  return { success: false, message: `${r.message} (but page state unchanged)`, action: r.action ?? planned.instruction };
-                }
+              // Collect selector from successful act steps
+              if (r.success && r.selector) {
+                const slug = slugifyInstruction(planned.instruction);
+                collectedSelectors[uniqueKey(slug, collectedSelectors)] = r.selector;
               }
+              span.setAttributes({
+                'sentinel.success': r.success,
+                ...(r.selector ? { 'sentinel.selector': r.selector } : {}),
+              });
+              return r;
+            } catch (err: any) {
+              span.setAttributes({ 'sentinel.success': false });
+              return { success: false, message: err.message, action: planned.instruction };
             }
-
-            // Collect selector from successful act steps
-            if (r.success && r.selector) {
-              const slug = slugifyInstruction(planned.instruction);
-              collectedSelectors[uniqueKey(slug, collectedSelectors)] = r.selector;
-            }
-            span.setAttributes({
-              'sentinel.success': r.success,
-              ...(r.selector ? { 'sentinel.selector': r.selector } : {}),
-            });
-            return r;
-          } catch (err: any) {
-            span.setAttributes({ 'sentinel.success': false });
-            return { success: false, message: err.message, action: planned.instruction };
           }
-        });
+        );
       }
 
       const event: AgentStepEvent = {
@@ -513,7 +579,8 @@ export class AgentLoop {
       if (!result.success) {
         consecutiveFailures++;
         this.logger.warn(`Step failed (${consecutiveFailures} consecutive): ${result.message}`, {
-          consecutiveFailures, message: result.message,
+          consecutiveFailures,
+          message: result.message,
         });
         if (consecutiveFailures >= 3) {
           this.logger.warn(`❌ Aborting: 3 consecutive failures.`);
@@ -540,7 +607,9 @@ export class AgentLoop {
         };
 
         // Same action + same target 3 times = loop
-        const actionTargets = recentHistory.map(s => `${extractAction(s.action)}:${extractTarget(s.action)}`);
+        const actionTargets = recentHistory.map(
+          s => `${extractAction(s.action)}:${extractTarget(s.action)}`
+        );
         const targetLoop = actionTargets[0] !== ':' && new Set(actionTargets).size === 1;
 
         // Same TARGET 3 times regardless of action alternation. Catches the
@@ -550,10 +619,7 @@ export class AgentLoop {
         // interactions on the same element (focus + fill + press) aren't blocked.
         const targetsOnly = recentHistory.map(s => extractTarget(s.action));
         const anyFailed = recentHistory.some(s => !s.success);
-        const stuckOnTarget =
-          targetsOnly[0] !== '' &&
-          new Set(targetsOnly).size === 1 &&
-          anyFailed;
+        const stuckOnTarget = targetsOnly[0] !== '' && new Set(targetsOnly).size === 1 && anyFailed;
 
         // Exact instruction match = loop (regardless of target)
         const exactLoop = new Set(recentHistory.map(s => s.instruction)).size === 1;
@@ -580,8 +646,7 @@ export class AgentLoop {
         };
         const extractFingerprints = recentHistory.map(s => extractDataFingerprint(s.data));
         const extractLoop =
-          extractFingerprints.every(fp => fp !== null) &&
-          new Set(extractFingerprints).size === 1;
+          extractFingerprints.every(fp => fp !== null) && new Set(extractFingerprints).size === 1;
 
         if (exactLoop || targetLoop || extractLoop || stuckOnTarget) {
           const reason = extractLoop
@@ -620,7 +685,10 @@ export class AgentLoop {
         ? `Goal achieved in ${stepNumber} step(s).`
         : `Agent stopped after ${stepNumber} step(s) without fully achieving the goal.`;
 
-    this.logger.info(`${goalAchieved ? '✅' : '⚠️ '} ${message}`, { goalAchieved, ...(timedOut ? { timedOut: true } : {}) });
+    this.logger.info(`${goalAchieved ? '✅' : '⚠️ '} ${message}`, {
+      goalAchieved,
+      ...(timedOut ? { timedOut: true } : {}),
+    });
 
     return {
       success: goalAchieved,

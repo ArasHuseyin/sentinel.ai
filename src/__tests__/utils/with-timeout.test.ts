@@ -21,9 +21,7 @@ describe('withTimeout', () => {
 
   it('uses "operation" as default label when none is provided', async () => {
     const neverResolves = new Promise<never>(() => {});
-    await expect(withTimeout(neverResolves, 30)).rejects.toThrow(
-      'Timeout after 30ms: operation'
-    );
+    await expect(withTimeout(neverResolves, 30)).rejects.toThrow('Timeout after 30ms: operation');
   });
 
   it('resolves immediately when the promise is already settled', async () => {

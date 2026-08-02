@@ -29,7 +29,11 @@ export type {
   PatternCacheStats,
   FingerprintLayer,
 } from './core/pattern-cache.js';
-export { InMemoryPatternCache, FilePatternCache, createPatternCache } from './core/pattern-cache.js';
+export {
+  InMemoryPatternCache,
+  FilePatternCache,
+  createPatternCache,
+} from './core/pattern-cache.js';
 export type { PatternFingerprint } from './core/pattern-signature.js';
 export type { RecordedWorkflow } from './recorder/workflow-recorder.js';
 export { GeminiProvider } from './utils/providers/gemini-provider.js';
@@ -39,11 +43,7 @@ export { OllamaProvider } from './utils/providers/ollama-provider.js';
 export { generateTOTP } from './utils/totp.js';
 // Re-export z and types so users can do: import { Sentinel, z } from './index.js'
 export { z } from 'zod';
-export type {
-  ActOptions,
-  ActionResult,
-  ActionAttempt,
-} from './api/act.js';
+export type { ActOptions, ActionResult, ActionAttempt } from './api/act.js';
 export type { ObserveResult } from './api/observe.js';
 export type { AgentRunOptions, AgentResult, AgentStepEvent } from './agent/agent-loop.js';
 export type { BoundingBox } from './core/vision-grounding.js';

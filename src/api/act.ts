@@ -159,13 +159,13 @@ export class ActionEngine {
       options.patternCache ?? null,
       (l, m) => this.log(l, m),
       (l, m) => this.warn(l, m),
-      this.domSettleTimeoutMs,
+      this.domSettleTimeoutMs
     );
     this.blockerRecovery = new BlockerRecovery(
       this.page,
       (l, m) => this.log(l, m),
       (l, m) => this.warn(l, m),
-      this.domSettleTimeoutMs,
+      this.domSettleTimeoutMs
     );
   }
 
@@ -203,9 +203,8 @@ export class ActionEngine {
    * publicly because `Sentinel.goto()` invokes it once per navigation.
    */
   async tryRecoverFromBlocker(state: SimplifiedState): Promise<boolean> {
-    return this.blockerRecovery.tryRecover(
-      state,
-      (action, target) => this.performAction(action, target),
+    return this.blockerRecovery.tryRecover(state, (action, target) =>
+      this.performAction(action, target)
     );
   }
 
@@ -288,13 +287,19 @@ export class ActionEngine {
     dropTarget: UIElement
   ): Promise<void> {
     const FRAME_PREFIX = '[frame] ';
-    const strip = (s: string) => s.startsWith(FRAME_PREFIX) ? s.slice(FRAME_PREFIX.length) : s;
+    const strip = (s: string) => (s.startsWith(FRAME_PREFIX) ? s.slice(FRAME_PREFIX.length) : s);
 
     const srcLocator = ctx
-      .getByRole(source.role as Parameters<Page['getByRole']>[0], { name: strip(source.name), exact: false })
+      .getByRole(source.role as Parameters<Page['getByRole']>[0], {
+        name: strip(source.name),
+        exact: false,
+      })
       .first();
     const dstLocator = ctx
-      .getByRole(dropTarget.role as Parameters<Page['getByRole']>[0], { name: strip(dropTarget.name), exact: false })
+      .getByRole(dropTarget.role as Parameters<Page['getByRole']>[0], {
+        name: strip(dropTarget.name),
+        exact: false,
+      })
       .first();
 
     await srcLocator.dragTo(dstLocator, { timeout: 10_000 });
@@ -313,7 +318,10 @@ export class ActionEngine {
       : target.name;
 
     const locator = frame
-      .getByRole(target.role as Parameters<Frame['getByRole']>[0], { name: nameInFrame, exact: false })
+      .getByRole(target.role as Parameters<Frame['getByRole']>[0], {
+        name: nameInFrame,
+        exact: false,
+      })
       .first();
 
     await locator.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(ignoreRejection);
@@ -357,10 +365,14 @@ export class ActionEngine {
         }
         break;
       case 'scroll-down':
-        await frame.evaluate(() => { window.scrollBy(0, 300); });
+        await frame.evaluate(() => {
+          window.scrollBy(0, 300);
+        });
         break;
       case 'scroll-up':
-        await frame.evaluate(() => { window.scrollBy(0, -300); });
+        await frame.evaluate(() => {
+          window.scrollBy(0, -300);
+        });
         break;
       case 'scroll-to':
         // scrollIntoViewIfNeeded already ran above; nothing more to do.
@@ -394,9 +406,8 @@ export class ActionEngine {
     if (this.locatorCache && !(options?.previousFailures && options.previousFailures.length > 0)) {
       const cached = this.locatorCache.get(state.url, resolvedInstruction);
       if (cached) {
-        const target = state.elements.find(
-          e => e.role === cached.role && e.name === cached.name
-        ) ?? null;
+        const target =
+          state.elements.find(e => e.role === cached.role && e.name === cached.name) ?? null;
         if (target) {
           const actionLabel = `${cached.action} on "${target.name}" (${target.role}) [cached]`;
           this.log(1, `⚡ ${actionLabel}`);
@@ -439,10 +450,17 @@ export class ActionEngine {
     let preActionFingerprints: Map<number, PatternFingerprint> = new Map();
 
     for (let attempt = 0; attempt <= MAX_NOT_FOUND_SCROLL_RETRIES; attempt++) {
-      const visibleElements = filterRelevantElements(currentState.elements, resolvedInstruction, this.maxElements);
+      const visibleElements = filterRelevantElements(
+        currentState.elements,
+        resolvedInstruction,
+        this.maxElements
+      );
 
       if (currentState.elements.length > visibleElements.length) {
-        this.log(3, `chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
+        this.log(
+          3,
+          `chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`
+        );
       }
 
       // ── Pattern cache: cross-site learned widget interactions ───────────────
@@ -463,16 +481,20 @@ export class ActionEngine {
           visibleElements,
           preActionFingerprints,
           resolvedInstruction,
-          (action, t, value) => this.performAction(action, t, value),
+          (action, t, value) => this.performAction(action, t, value)
         );
         if (patternResult) return patternResult;
       } else {
-        this.log(2, `Skipping pattern cache — ${previousFailures.length} prior verification failure(s), forcing re-plan`);
+        this.log(
+          2,
+          `Skipping pattern cache — ${previousFailures.length} prior verification failure(s), forcing re-plan`
+        );
       }
 
-      const failureBlock = previousFailures.length > 0
-        ? `\n\nPrevious attempt(s) for THIS instruction failed verification. Do NOT repeat the same strategy — escalate or try a different approach (e.g. if "fill" didn't submit the form, try "press" Enter on the input; if "click" on a button name didn't open a target, try a different candidate):\n${previousFailures.map((f, i) => `  ${i + 1}. ${f}`).join('\n')}`
-        : '';
+      const failureBlock =
+        previousFailures.length > 0
+          ? `\n\nPrevious attempt(s) for THIS instruction failed verification. Do NOT repeat the same strategy — escalate or try a different approach (e.g. if "fill" didn't submit the form, try "press" Enter on the input; if "click" on a button name didn't open a target, try a different candidate):\n${previousFailures.map((f, i) => `  ${i + 1}. ${f}`).join('\n')}`
+          : '';
 
       const prompt = `
 Current Page URL: ${currentState.url}
@@ -500,10 +522,19 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
           action: {
             type: 'string',
             enum: [
-              'click', 'double-click', 'right-click',
-              'fill', 'append', 'hover', 'press', 'select',
-              'upload', 'drag',
-              'scroll-down', 'scroll-up', 'scroll-to',
+              'click',
+              'double-click',
+              'right-click',
+              'fill',
+              'append',
+              'hover',
+              'press',
+              'select',
+              'upload',
+              'drag',
+              'scroll-down',
+              'scroll-up',
+              'scroll-to',
             ],
           },
           value: { type: 'string' },
@@ -535,7 +566,10 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       }
 
       if (decision.notFound && attempt < MAX_NOT_FOUND_SCROLL_RETRIES) {
-        this.log(2, `LLM: target not in current view — scrolling ${Math.round(NOT_FOUND_SCROLL_FRACTION * 100)}% viewport and re-asking`);
+        this.log(
+          2,
+          `LLM: target not in current view — scrolling ${Math.round(NOT_FOUND_SCROLL_FRACTION * 100)}% viewport and re-asking`
+        );
         const vpHeight = await this.page.evaluate(() => window.innerHeight).catch(() => 720);
         await this.page.mouse.wheel(0, Math.floor(vpHeight * NOT_FOUND_SCROLL_FRACTION));
         await waitForPageSettle(this.page, 500);
@@ -546,15 +580,16 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       break;
     }
 
-
-
     // Scroll actions without a target element are valid with elementId = 0
     const isScrollWithoutTarget =
       (decision.action === 'scroll-down' || decision.action === 'scroll-up') &&
       candidateIds[0] === 0;
 
     this.log(2, `reasoning: ${decision.reasoning}`);
-    this.log(3, `decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`);
+    this.log(
+      3,
+      `decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`
+    );
 
     // ── Vision-primary mode: use screenshot + vision LLM before AOM coordinates ──
     if (this.mode === 'vision' && this.visionGrounding && !isScrollWithoutTarget) {
@@ -579,10 +614,14 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
               await this.page.waitForTimeout(150);
               await this.page.keyboard.type(decision.value || '', { delay: 90 });
             } else {
-              await withTimeout(this.page.mouse.click(cx, cy), 10_000, `vision click "${firstTarget.name}"`);
+              await withTimeout(
+                this.page.mouse.click(cx, cy),
+                10_000,
+                `vision click "${firstTarget.name}"`
+              );
             }
             await waitForPageSettle(this.page, this.domSettleTimeoutMs);
-            const selector = await generateSelector(this.page, firstTarget) ?? undefined;
+            const selector = (await generateSelector(this.page, firstTarget)) ?? undefined;
             return {
               success: true,
               message: `Successfully performed ${decision.action} on "${firstTarget.name}" (via Vision)`,
@@ -615,7 +654,12 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       else this.log(2, `Trying candidate #${ci + 1}: ${actionLabel}`);
 
       // Pre-action validation: check if element is actually clickable
-      if (target && (decision.action === 'click' || decision.action === 'double-click' || decision.action === 'right-click')) {
+      if (
+        target &&
+        (decision.action === 'click' ||
+          decision.action === 'double-click' ||
+          decision.action === 'right-click')
+      ) {
         const blockReason = await this.validateTarget(target);
         if (blockReason) {
           this.warn(2, `Target blocked: ${blockReason}`);
@@ -625,7 +669,9 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       }
 
       // Generate stable selector before action — DOM is still in pre-action state
-      const selector = target ? (await generateSelector(this.page, target) ?? undefined) : undefined;
+      const selector = target
+        ? ((await generateSelector(this.page, target)) ?? undefined)
+        : undefined;
 
       // Invalidate cache after action – state will change
       this.stateParser.invalidateCache();
@@ -640,9 +686,10 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       }
 
       // For drag, resolve the drop-target element alongside the source.
-      const dropTarget = decision.action === 'drag' && decision.targetElementId !== undefined
-        ? (currentState.elements.find(e => e.id === decision.targetElementId) ?? null)
-        : null;
+      const dropTarget =
+        decision.action === 'drag' && decision.targetElementId !== undefined
+          ? (currentState.elements.find(e => e.id === decision.targetElementId) ?? null)
+          : null;
 
       try {
         await this.performAction(decision.action, target, decision.value, dropTarget);
@@ -658,12 +705,17 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         }
         // ── Pattern cache: record widget-level success for cross-site reuse ──
         if (target && !isScrollWithoutTarget) {
-          await this.patternCoord.recordSuccess(target, {
-            action: decision.action,
-            role: target.role,
-            name: target.name,
-            ...(decision.value !== undefined ? { value: decision.value } : {}),
-          }, resolvedInstruction, preActionFingerprints);
+          await this.patternCoord.recordSuccess(
+            target,
+            {
+              action: decision.action,
+              role: target.role,
+              name: target.name,
+              ...(decision.value !== undefined ? { value: decision.value } : {}),
+            },
+            resolvedInstruction,
+            preActionFingerprints
+          );
         }
         return {
           success: true,
@@ -681,20 +733,29 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
           this.log(2, `Pointer-intercepting element detected — removing and retrying`);
           try {
             await this.page.evaluate(() => {
-              document.querySelectorAll(
-                'getsitecontrol-widget, [class*="popup"], [class*="overlay"], [id*="widget"], [class*="chat-widget"], [class*="intercom"]'
-              ).forEach(el => {
-                const s = window.getComputedStyle(el);
-                const z = parseInt(s.zIndex, 10);
-                if (s.position === 'fixed' || s.position === 'absolute' || (Number.isFinite(z) && z > 999)) el.remove();
-              });
+              document
+                .querySelectorAll(
+                  'getsitecontrol-widget, [class*="popup"], [class*="overlay"], [id*="widget"], [class*="chat-widget"], [class*="intercom"]'
+                )
+                .forEach(el => {
+                  const s = window.getComputedStyle(el);
+                  const z = parseInt(s.zIndex, 10);
+                  if (
+                    s.position === 'fixed' ||
+                    s.position === 'absolute' ||
+                    (Number.isFinite(z) && z > 999)
+                  )
+                    el.remove();
+                });
             });
             // Retry the same candidate after removing the blocker
             await this.performAction(decision.action, target, decision.value, dropTarget);
             await waitForPageSettle(this.page, this.domSettleTimeoutMs);
             if (this.locatorCache && target && !isScrollWithoutTarget) {
               this.locatorCache.set(currentState.url, resolvedInstruction, {
-                action: decision.action, role: target.role, name: target.name,
+                action: decision.action,
+                role: target.role,
+                name: target.name,
                 ...(decision.value !== undefined ? { value: decision.value } : {}),
               });
             }
@@ -704,7 +765,9 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
               action: actionLabel,
               ...(selector !== undefined ? { selector } : {}),
             };
-          } catch { /* retry also failed — continue to next candidate */ }
+          } catch {
+            /* retry also failed — continue to next candidate */
+          }
         }
       }
     }
@@ -733,8 +796,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       this.stateParser.invalidateCache();
       const freshState = await this.stateParser.parse();
       const retryTarget = fallbackTarget
-        ? (freshState.elements.find(e =>
-            e.role === fallbackTarget.role && e.name === fallbackTarget.name
+        ? (freshState.elements.find(
+            e => e.role === fallbackTarget.role && e.name === fallbackTarget.name
           ) ?? null)
         : null;
       if (retryTarget) {
@@ -746,14 +809,18 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             message: `Successfully performed ${decision.action} on "${retryTarget.name}" (after auto-recovery)`,
             action: `${decision.action} on "${retryTarget.name}" (${retryTarget.role})`,
           };
-        } catch { /* recovery retry also failed — continue to vision/semantic fallback */ }
+        } catch {
+          /* recovery retry also failed — continue to vision/semantic fallback */
+        }
       }
     }
 
     const actionLabel = fallbackTarget
       ? `${decision.action} on "${fallbackTarget.name}" (${fallbackTarget.role})`
       : `${decision.action} (page)`;
-    const selector = fallbackTarget ? (await generateSelector(this.page, fallbackTarget) ?? undefined) : undefined;
+    const selector = fallbackTarget
+      ? ((await generateSelector(this.page, fallbackTarget)) ?? undefined)
+      : undefined;
     const target = fallbackTarget;
 
     // Vision-Grounding als zweite Stufe (nur wenn aktiviert)
@@ -796,7 +863,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         decision.action,
         target,
         decision.value,
-        (t) => this.findBestLocator(t),
+        t => this.findBestLocator(t)
       );
       await waitForPageSettle(this.page, this.domSettleTimeoutMs);
 
@@ -807,11 +874,15 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         stateBeforeFallback.url !== stateAfterFallback.url ||
         stateBeforeFallback.title !== stateAfterFallback.title ||
         Math.abs(stateBeforeFallback.elements.length - stateAfterFallback.elements.length) >= 2 ||
-        stateBeforeFallback.elements.some(e => e.state?.focused) !== stateAfterFallback.elements.some(e => e.state?.focused);
+        stateBeforeFallback.elements.some(e => e.state?.focused) !==
+          stateAfterFallback.elements.some(e => e.state?.focused);
 
       if (!pageChanged) {
         this.warn(2, `Semantic fallback completed but page state unchanged — marking as failed`);
-        attempts.push({ path: 'locator-fallback', error: 'action completed but page state unchanged' });
+        attempts.push({
+          path: 'locator-fallback',
+          error: 'action completed but page state unchanged',
+        });
         const message = buildFailureMessage(resolvedInstruction, target, attempts);
         return { success: false, message, action: actionLabel, attempts };
       }
@@ -866,7 +937,10 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         return;
       } catch (err) {
         if (attempt < RETRY_DELAYS.length && isTransient(err)) {
-          this.warn(2, `Transient failure (attempt ${attempt + 1}), retrying in ${RETRY_DELAYS[attempt]}ms...`);
+          this.warn(
+            2,
+            `Transient failure (attempt ${attempt + 1}), retrying in ${RETRY_DELAYS[attempt]}ms...`
+          );
           await this.page.waitForTimeout(RETRY_DELAYS[attempt]!);
         } else {
           throw err;
@@ -954,7 +1028,10 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     // Skip coordinate-based clicking entirely when coordinates are clearly impossible
     // (e.g. y=-3184 on Booking.com autocomplete). Go straight to locator fallback.
     if (cy < -500 || cx < -500) {
-      this.warn(2, `Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`);
+      this.warn(
+        2,
+        `Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`
+      );
       const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
       if (action === 'fill') {
         await locator.fill(value || '', { timeout: 5000 });
@@ -965,7 +1042,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     }
 
     // Get scroll position to convert document coords to viewport coords
-    let scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+    let scrollOffset = await this.page
+      .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
       .catch(() => ({ x: 0, y: 0 }));
     let vpCx = cx - (scrollOffset?.x ?? 0);
     let vpCy = cy - (scrollOffset?.y ?? 0);
@@ -984,7 +1062,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       );
       await this.page.waitForTimeout(100);
 
-      scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+      scrollOffset = await this.page
+        .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
         .catch(() => ({ x: 0, y: 0 }));
       vpCx = cx - (scrollOffset?.x ?? 0);
       vpCy = cy - (scrollOffset?.y ?? 0);
@@ -995,7 +1074,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
       await this.page.evaluate(() => window.scrollTo(0, 0)).catch(ignoreRejection);
       await this.page.waitForTimeout(100);
-      scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
+      scrollOffset = await this.page
+        .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
         .catch(() => ({ x: 0, y: 0 }));
       vpCx = cx - (scrollOffset?.x ?? 0);
       vpCy = cy - (scrollOffset?.y ?? 0);
@@ -1020,7 +1100,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     // sliders, but the dedicated slider-fill logic in the switch below has its own
     // locator-based element lookup with 3 fallback strategies.
     const isSliderFill = target?.role === 'slider' && action === 'fill';
-    const isDatepickerFill = (target?.role === 'datepicker' || target?.role === 'timepicker') && action === 'fill';
+    const isDatepickerFill =
+      (target?.role === 'datepicker' || target?.role === 'timepicker') && action === 'fill';
 
     // For `select` with a visible listbox popover: skip the coord-mismatch
     // check. The popover structurally covers the trigger area with its first
@@ -1028,46 +1109,61 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     // an option element — not a real target mismatch. The switch-case below
     // handles this via `isListboxPopoverVisible` → `clickBestMatchingOption`.
     const skipCoordCheckForOpenSelect =
-      action === 'select' && await isListboxPopoverVisible(this.page);
+      action === 'select' && (await isListboxPopoverVisible(this.page));
 
-    if (target && !isSliderFill && !isDatepickerFill && !skipCoordCheckForOpenSelect &&
-        (action === 'fill' || action === 'click' || action === 'select')) {
-      const hitName = await this.page.evaluate(
-        ({ x, y }: { x: number; y: number }) => {
-          const el = document.elementFromPoint(x, y) as HTMLElement | null;
-          if (!el) return '';
-          // Walk up to find the nearest labeled container
-          let node: HTMLElement | null = el;
-          for (let d = 0; d < 5 && node; d++) {
-            const label = node.getAttribute('aria-label') ||
-              node.getAttribute('placeholder') ||
-              node.getAttribute('name') || '';
-            if (label) return label.toLowerCase();
-            const labelledBy = node.getAttribute('aria-labelledby');
-            if (labelledBy) {
-              const ref = document.getElementById(labelledBy);
-              if (ref) return ref.textContent?.trim().toLowerCase() || '';
+    if (
+      target &&
+      !isSliderFill &&
+      !isDatepickerFill &&
+      !skipCoordCheckForOpenSelect &&
+      (action === 'fill' || action === 'click' || action === 'select')
+    ) {
+      const hitName = await this.page
+        .evaluate(
+          ({ x, y }: { x: number; y: number }) => {
+            const el = document.elementFromPoint(x, y) as HTMLElement | null;
+            if (!el) return '';
+            // Walk up to find the nearest labeled container
+            let node: HTMLElement | null = el;
+            for (let d = 0; d < 5 && node; d++) {
+              const label =
+                node.getAttribute('aria-label') ||
+                node.getAttribute('placeholder') ||
+                node.getAttribute('name') ||
+                '';
+              if (label) return label.toLowerCase();
+              const labelledBy = node.getAttribute('aria-labelledby');
+              if (labelledBy) {
+                const ref = document.getElementById(labelledBy);
+                if (ref) return ref.textContent?.trim().toLowerCase() || '';
+              }
+              node = node.parentElement;
             }
-            node = node.parentElement;
-          }
-          return el.textContent?.trim().slice(0, 40).toLowerCase() || '';
-        },
-        { x: clickX, y: clickY }
-      ).catch(() => '');
+            return el.textContent?.trim().slice(0, 40).toLowerCase() || '';
+          },
+          { x: clickX, y: clickY }
+        )
+        .catch(() => '');
 
       if (hitName && target.name) {
         const targetLower = target.name.toLowerCase();
         // Technical IDs (contain dots, no spaces) are container/group names, not real mismatches.
         // e.g. "auto.fahrzeug.erstbesitzv-radiogroup" is the radiogroup containing the radio button.
         const hitIsTechnicalId = /^[\w.-]+$/.test(hitName) && hitName.includes('.');
-        const mismatch = !hitIsTechnicalId &&
-          hitName.length > 2 && targetLower.length > 2 &&
-          !hitName.includes(targetLower) && !targetLower.includes(hitName);
+        const mismatch =
+          !hitIsTechnicalId &&
+          hitName.length > 2 &&
+          targetLower.length > 2 &&
+          !hitName.includes(targetLower) &&
+          !targetLower.includes(hitName);
         if (mismatch) {
           // Coordinates point to wrong element — use Playwright locator as direct fallback.
           // This is more reliable than coordinate-based clicking for dynamically positioned
           // elements (dropdown options, conditional form fields, etc.).
-          this.warn(2, `Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`);
+          this.warn(
+            2,
+            `Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`
+          );
           // Try multiple locator strategies: full name, short name (after ':'), just last word
           const nameVariants = [target.name];
           if (target.name.includes(':')) {
@@ -1096,19 +1192,31 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     }
 
     // Human-like: move mouse along a Bézier curve to the target
-    if (this.humanLike && (
-      action === 'click' || action === 'double-click' || action === 'right-click' ||
-      action === 'hover' || action === 'fill' || action === 'append'
-    )) {
-      const cur = await this.page.evaluate(() => ({
-        x: (window as any).__sentinelMouseX ?? 0,
-        y: (window as any).__sentinelMouseY ?? 0,
-      })).catch(() => ({ x: 0, y: 0 }));
+    if (
+      this.humanLike &&
+      (action === 'click' ||
+        action === 'double-click' ||
+        action === 'right-click' ||
+        action === 'hover' ||
+        action === 'fill' ||
+        action === 'append')
+    ) {
+      const cur = await this.page
+        .evaluate(() => ({
+          x: (window as any).__sentinelMouseX ?? 0,
+          y: (window as any).__sentinelMouseY ?? 0,
+        }))
+        .catch(() => ({ x: 0, y: 0 }));
       await moveMouse(this.page, cur.x, cur.y, clickX, clickY);
-      await this.page.evaluate(
-        ({ x, y }) => { (window as any).__sentinelMouseX = x; (window as any).__sentinelMouseY = y; },
-        { x: clickX, y: clickY }
-      ).catch(ignoreRejection);
+      await this.page
+        .evaluate(
+          ({ x, y }) => {
+            (window as any).__sentinelMouseX = x;
+            (window as any).__sentinelMouseY = y;
+          },
+          { x: clickX, y: clickY }
+        )
+        .catch(ignoreRejection);
       await this.page.waitForTimeout(80 + Math.round(Math.random() * 120));
     }
 
@@ -1119,25 +1227,45 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             ({ x, y }: { x: number; y: number }) => {
               const el = document.elementFromPoint(x, y) as HTMLElement | null;
               if (!el) return;
-              const hiddenInput = el.querySelector('input[type="radio"], input[type="checkbox"]') as HTMLInputElement | null;
-              if (hiddenInput) { hiddenInput.click(); return; }
+              const hiddenInput = el.querySelector(
+                'input[type="radio"], input[type="checkbox"]'
+              ) as HTMLInputElement | null;
+              if (hiddenInput) {
+                hiddenInput.click();
+                return;
+              }
               const label = el.closest('label') as HTMLLabelElement | null;
-              if (label) { label.click(); return; }
+              if (label) {
+                label.click();
+                return;
+              }
               el.click();
             },
             { x: clickX, y: clickY }
           );
         } else {
-          await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `click "${target.name}"`);
+          await withTimeout(
+            this.page.mouse.click(clickX, clickY),
+            10_000,
+            `click "${target.name}"`
+          );
         }
         break;
 
       case 'double-click':
-        await withTimeout(this.page.mouse.dblclick(clickX, clickY), 10_000, `double-click "${target.name}"`);
+        await withTimeout(
+          this.page.mouse.dblclick(clickX, clickY),
+          10_000,
+          `double-click "${target.name}"`
+        );
         break;
 
       case 'right-click':
-        await withTimeout(this.page.mouse.click(clickX, clickY, { button: 'right' }), 10_000, `right-click "${target.name}"`);
+        await withTimeout(
+          this.page.mouse.click(clickX, clickY, { button: 'right' }),
+          10_000,
+          `right-click "${target.name}"`
+        );
         break;
 
       case 'fill': {
@@ -1155,17 +1283,22 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
           try {
             const loc = this.page.getByRole('slider', { name: target.name, exact: false }).first();
             sliderHandle = await loc.elementHandle({ timeout: 2000 });
-          } catch { /* fall through to coord-based lookup */ }
+          } catch {
+            /* fall through to coord-based lookup */
+          }
 
           const handled = await this.page.evaluate(
             ({ slider, x, y, val }: { slider: Node | null; x: number; y: number; val: string }) => {
-              const sliderEl = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
+              const sliderEl =
+                (slider as HTMLElement | null) ??
+                (document.elementFromPoint(x, y) as HTMLElement | null);
               if (!sliderEl) return 'none';
 
               // Strategy 1: native range input
-              const rangeInput = sliderEl.tagName === 'INPUT' && (sliderEl as HTMLInputElement).type === 'range'
-                ? (sliderEl as HTMLInputElement)
-                : sliderEl.querySelector('input[type="range"]') as HTMLInputElement | null;
+              const rangeInput =
+                sliderEl.tagName === 'INPUT' && (sliderEl as HTMLInputElement).type === 'range'
+                  ? (sliderEl as HTMLInputElement)
+                  : (sliderEl.querySelector('input[type="range"]') as HTMLInputElement | null);
               if (rangeInput) {
                 // Controlled-input bypass: frameworks (React, Preact, Solid,
                 // Vue with v-model) replace the value descriptor on the input
@@ -1180,7 +1313,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                 // Detaching the setter is the point — re-bound via .call() below.
                 // eslint-disable-next-line @typescript-eslint/unbound-method
                 const nativeSetter = Object.getOwnPropertyDescriptor(
-                  window.HTMLInputElement.prototype, 'value'
+                  window.HTMLInputElement.prototype,
+                  'value'
                 )?.set;
                 rangeInput.focus();
                 nativeSetter?.call(rangeInput, val);
@@ -1193,9 +1327,11 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
               // Walk up until we find a container with numeric text inputs
               let container: HTMLElement | null = sliderEl;
               for (let depth = 0; depth < 8 && container; depth++) {
-                const inputs = Array.from(container.querySelectorAll<HTMLInputElement>(
-                  'input[type="text"], input[type="tel"], input[type="number"], input:not([type])'
-                )).filter(inp => inp.offsetParent !== null && !inp.disabled && !inp.readOnly);
+                const inputs = Array.from(
+                  container.querySelectorAll<HTMLInputElement>(
+                    'input[type="text"], input[type="tel"], input[type="number"], input:not([type])'
+                  )
+                ).filter(inp => inp.offsetParent !== null && !inp.disabled && !inp.readOnly);
 
                 if (inputs.length > 0) {
                   // Pick the input closest to the slider's centroid
@@ -1216,7 +1352,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                     // Detaching the setter is the point — re-bound via .call() below.
                     // eslint-disable-next-line @typescript-eslint/unbound-method
                     const nativeSetter = Object.getOwnPropertyDescriptor(
-                      window.HTMLInputElement.prototype, 'value'
+                      window.HTMLInputElement.prototype,
+                      'value'
                     )?.set;
                     input.focus();
                     nativeSetter?.call(input, val);
@@ -1244,65 +1381,81 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             // element to the nearest `[role="slider"]` descendant/ancestor and
             // focus it explicitly — arrow keys only move the thumb if it's the
             // active element.
-            const sliderInfo = await this.page.evaluate(
-              ({ slider, x, y }: { slider: Node | null; x: number; y: number }) => {
-                const hit = (slider as HTMLElement | null) ?? (document.elementFromPoint(x, y) as HTMLElement | null);
-                if (!hit) return null;
-                // Ancestor-walk to find the focusable slider element. The hit
-                // target may be a track, rail, label, or styled wrapper that
-                // doesn't itself respond to arrow keys. We walk UP (bounded)
-                // and at each level check current + descendants.
-                //
-                // Preference order when both exist in the same subtree:
-                //   1. input[type="range"] — native keyboard handler, reliable
-                //      focus target, value stays in sync with aria-valuenow.
-                //   2. [role="slider"] — explicit ARIA role on a custom element
-                //      (span, div) that the library listens to for keydown.
-                //
-                // ARIA attributes may live on either element; we read them
-                // from whichever we focus.
-                let sliderEl: HTMLElement | null = null;
-                let cursor: HTMLElement | null = hit;
-                for (let depth = 0; depth < 8 && cursor && !sliderEl; depth++) {
-                  // Native range input wins — directly focusable and keyboard-native
-                  const nativeInput = cursor.matches?.('input[type="range"]')
-                    ? (cursor as HTMLInputElement)
-                    : cursor.querySelector<HTMLInputElement>('input[type="range"]');
-                  if (nativeInput) { sliderEl = nativeInput; break; }
-                  // Fall back to explicit ARIA slider role
-                  if (cursor.matches?.('[role="slider"]')) { sliderEl = cursor; break; }
-                  sliderEl = cursor.querySelector<HTMLElement>('[role="slider"]');
-                  if (!sliderEl) cursor = cursor.parentElement;
-                }
-                if (!sliderEl) return null;
-                // Focus inside the evaluate so page.keyboard.press arrow
-                // events land on the active element without a round-trip.
-                sliderEl.focus();
-                // Read ARIA values from sliderEl directly; if missing (e.g. we
-                // focused the native input and ARIA lives on a sibling thumb),
-                // fall back to ancestor/descendant lookup within a small window.
-                const readAria = (attr: string): string | null => {
-                  const own = sliderEl!.getAttribute(attr);
-                  if (own !== null) return own;
-                  const parent = sliderEl!.parentElement;
-                  const sibling = parent?.querySelector(`[${attr}]`);
-                  return sibling?.getAttribute(attr) ?? null;
-                };
-                const min = parseFloat(readAria('aria-valuemin') ?? '0');
-                const max = parseFloat(readAria('aria-valuemax') ?? '100');
-                // When the focused element is a native range input, its .value
-                // is the authoritative current value (always a number).
-                const inputValue = (sliderEl as HTMLInputElement).value;
-                const parsedInput = inputValue !== undefined ? parseFloat(inputValue) : NaN;
-                const now = !isNaN(parsedInput) ? parsedInput : parseFloat(readAria('aria-valuenow') ?? String(min));
-                return { min, max, now };
-              },
-              { slider: sliderHandle, x: clickX, y: clickY }
-            ).catch(() => null);
+            const sliderInfo = await this.page
+              .evaluate(
+                ({ slider, x, y }: { slider: Node | null; x: number; y: number }) => {
+                  const hit =
+                    (slider as HTMLElement | null) ??
+                    (document.elementFromPoint(x, y) as HTMLElement | null);
+                  if (!hit) return null;
+                  // Ancestor-walk to find the focusable slider element. The hit
+                  // target may be a track, rail, label, or styled wrapper that
+                  // doesn't itself respond to arrow keys. We walk UP (bounded)
+                  // and at each level check current + descendants.
+                  //
+                  // Preference order when both exist in the same subtree:
+                  //   1. input[type="range"] — native keyboard handler, reliable
+                  //      focus target, value stays in sync with aria-valuenow.
+                  //   2. [role="slider"] — explicit ARIA role on a custom element
+                  //      (span, div) that the library listens to for keydown.
+                  //
+                  // ARIA attributes may live on either element; we read them
+                  // from whichever we focus.
+                  let sliderEl: HTMLElement | null = null;
+                  let cursor: HTMLElement | null = hit;
+                  for (let depth = 0; depth < 8 && cursor && !sliderEl; depth++) {
+                    // Native range input wins — directly focusable and keyboard-native
+                    const nativeInput = cursor.matches?.('input[type="range"]')
+                      ? (cursor as HTMLInputElement)
+                      : cursor.querySelector<HTMLInputElement>('input[type="range"]');
+                    if (nativeInput) {
+                      sliderEl = nativeInput;
+                      break;
+                    }
+                    // Fall back to explicit ARIA slider role
+                    if (cursor.matches?.('[role="slider"]')) {
+                      sliderEl = cursor;
+                      break;
+                    }
+                    sliderEl = cursor.querySelector<HTMLElement>('[role="slider"]');
+                    if (!sliderEl) cursor = cursor.parentElement;
+                  }
+                  if (!sliderEl) return null;
+                  // Focus inside the evaluate so page.keyboard.press arrow
+                  // events land on the active element without a round-trip.
+                  sliderEl.focus();
+                  // Read ARIA values from sliderEl directly; if missing (e.g. we
+                  // focused the native input and ARIA lives on a sibling thumb),
+                  // fall back to ancestor/descendant lookup within a small window.
+                  const readAria = (attr: string): string | null => {
+                    const own = sliderEl!.getAttribute(attr);
+                    if (own !== null) return own;
+                    const parent = sliderEl!.parentElement;
+                    const sibling = parent?.querySelector(`[${attr}]`);
+                    return sibling?.getAttribute(attr) ?? null;
+                  };
+                  const min = parseFloat(readAria('aria-valuemin') ?? '0');
+                  const max = parseFloat(readAria('aria-valuemax') ?? '100');
+                  // When the focused element is a native range input, its .value
+                  // is the authoritative current value (always a number).
+                  const inputValue = (sliderEl as HTMLInputElement).value;
+                  const parsedInput = inputValue !== undefined ? parseFloat(inputValue) : NaN;
+                  const now = !isNaN(parsedInput)
+                    ? parsedInput
+                    : parseFloat(readAria('aria-valuenow') ?? String(min));
+                  return { min, max, now };
+                },
+                { slider: sliderHandle, x: clickX, y: clickY }
+              )
+              .catch(() => null);
 
             if (sliderInfo && !isNaN(sliderInfo.min) && !isNaN(sliderInfo.max)) {
               const targetValue = parseFloat(value);
-              if (!isNaN(targetValue) && targetValue >= sliderInfo.min && targetValue <= sliderInfo.max) {
+              if (
+                !isNaN(targetValue) &&
+                targetValue >= sliderInfo.min &&
+                targetValue <= sliderInfo.max
+              ) {
                 // Extra focus attempt via the Playwright handle if we have one —
                 // belt-and-suspenders for cases where the in-evaluate focus() is
                 // overridden by framework effects after return.
@@ -1351,11 +1504,15 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                   : node.querySelector<HTMLInputElement>(NATIVE_SEL);
                 if (nativeHere) return { kind: 'native' as const, type: nativeHere.type };
 
-                const writable = Array.from(node.querySelectorAll<HTMLInputElement>('input'))
-                  .find(i =>
-                    i.offsetParent !== null && !i.disabled && !i.readOnly &&
-                    i.type !== 'hidden' && i.type !== 'button' && i.type !== 'submit'
-                  );
+                const writable = Array.from(node.querySelectorAll<HTMLInputElement>('input')).find(
+                  i =>
+                    i.offsetParent !== null &&
+                    !i.disabled &&
+                    !i.readOnly &&
+                    i.type !== 'hidden' &&
+                    i.type !== 'button' &&
+                    i.type !== 'submit'
+                );
                 if (writable) return { kind: 'writable' as const };
                 node = node.parentElement;
               }
@@ -1384,7 +1541,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                   // Detaching the setter is the point — re-bound via .call() below.
                   // eslint-disable-next-line @typescript-eslint/unbound-method
                   const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value'
+                    window.HTMLInputElement.prototype,
+                    'value'
                   )?.set;
                   input.focus();
                   setter?.call(input, val);
@@ -1393,7 +1551,9 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                   input.blur();
                 },
                 {
-                  x: clickX, y: clickY, val: formatted,
+                  x: clickX,
+                  y: clickY,
+                  val: formatted,
                   sel: 'input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]',
                 }
               );
@@ -1403,7 +1563,11 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
 
           // Strategy 2: writable wrapped input — click, clear, type, commit via Tab.
           if (classification.kind === 'writable') {
-            await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
+            await withTimeout(
+              this.page.mouse.click(clickX, clickY),
+              10_000,
+              `focus "${target.name}"`
+            );
             await this.page.waitForTimeout(150);
             await this.page.keyboard.press('Control+a');
             await this.page.waitForTimeout(50);
@@ -1451,7 +1615,9 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         await this.page.keyboard.press('Control+a');
         await this.page.waitForTimeout(150);
         if (this.humanLike) {
-          await this.page.keyboard.type(value || '', { delay: 90 + Math.round(Math.random() * 40) });
+          await this.page.keyboard.type(value || '', {
+            delay: 90 + Math.round(Math.random() * 40),
+          });
         } else {
           await this.page.keyboard.type(value || '', { delay: 90 });
         }
@@ -1472,7 +1638,9 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         await this.page.keyboard.press('Control+End');
         await this.page.waitForTimeout(150);
         if (this.humanLike) {
-          await this.page.keyboard.type(value || '', { delay: 90 + Math.round(Math.random() * 40) });
+          await this.page.keyboard.type(value || '', {
+            delay: 90 + Math.round(Math.random() * 40),
+          });
         } else {
           await this.page.keyboard.type(value || '', { delay: 90 });
         }
@@ -1516,20 +1684,26 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         // inputs on the page (e.g. a top-nav search bar) because a common
         // layout container lived within 5 levels. Bypass the click entirely
         // and drive the HTMLSelectElement via its native value setter.
-        if (value && await trySetNativeSelectValue(this.page, clickX, clickY, value)) {
+        if (value && (await trySetNativeSelectValue(this.page, clickX, clickY, value))) {
           break;
         }
 
         if (!popoverAlreadyOpen) {
-          await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `open select "${target.name}"`);
+          await withTimeout(
+            this.page.mouse.click(clickX, clickY),
+            10_000,
+            `open select "${target.name}"`
+          );
         }
 
         if (target.role === 'combobox' || target.role === 'listbox') {
           // Custom dropdown: open → focus popup-scoped input → type → click option.
-          const activeIsInput = await this.page.evaluate(() => {
-            const active = document.activeElement;
-            return active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
-          }).catch(() => false);
+          const activeIsInput = await this.page
+            .evaluate(() => {
+              const active = document.activeElement;
+              return active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
+            })
+            .catch(() => false);
 
           // Only type the value when we actually focused a search input inside
           // the popover. Listboxes WITHOUT a search input (plain <li>/<a
@@ -1576,7 +1750,10 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
               const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
               if (el && el.tagName === 'SELECT') {
                 const opt = Array.from(el.options).find(o => o.text === val || o.value === val);
-                if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', { bubbles: true })); }
+                if (opt) {
+                  el.value = opt.value;
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
               }
             },
             { x: clickX, y: clickY, val: value || '' }
@@ -1586,28 +1763,36 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       }
 
       case 'scroll-down':
-        await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
-          const el = document.elementFromPoint(x, y);
-          if (el) el.scrollBy(0, 300);
-        }, { x: clickX, y: clickY });
+        await this.page.evaluate(
+          ({ x, y }: { x: number; y: number }) => {
+            const el = document.elementFromPoint(x, y);
+            if (el) el.scrollBy(0, 300);
+          },
+          { x: clickX, y: clickY }
+        );
         break;
 
       case 'scroll-up':
-        await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
-          const el = document.elementFromPoint(x, y);
-          if (el) el.scrollBy(0, -300);
-        }, { x: clickX, y: clickY });
+        await this.page.evaluate(
+          ({ x, y }: { x: number; y: number }) => {
+            const el = document.elementFromPoint(x, y);
+            if (el) el.scrollBy(0, -300);
+          },
+          { x: clickX, y: clickY }
+        );
         break;
 
       case 'scroll-to':
-        await this.page.evaluate(({ x, y }: { x: number; y: number }) => {
-          const el = document.elementFromPoint(x, y);
-          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, { x: clickX, y: clickY });
+        await this.page.evaluate(
+          ({ x, y }: { x: number; y: number }) => {
+            const el = document.elementFromPoint(x, y);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          },
+          { x: clickX, y: clickY }
+        );
         break;
     }
   }
-
 
   /**
    * Tries multiple Playwright locator strategies in order of specificity.
@@ -1622,17 +1807,13 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         ? this.page.getByRole(target.role as any, { name: target.name, exact: true })
         : null,
       // 2. ARIA role + partial/case-insensitive name match
-      target.name
-        ? this.page.getByRole(target.role as any, { name: target.name })
-        : null,
+      target.name ? this.page.getByRole(target.role as any, { name: target.name }) : null,
       // 3. CSS role attribute + hasText (original strategy)
       target.name
         ? this.page.locator(`[role="${target.role}"]`, { hasText: target.name }).first()
         : this.page.locator(`[role="${target.role}"]`).first(),
       // 4. Plain text match as last resort
-      target.name
-        ? this.page.getByText(target.name, { exact: false }).first()
-        : null,
+      target.name ? this.page.getByText(target.name, { exact: false }).first() : null,
       // 5. If name contains ':' context prefix, try without it (e.g. "Info: Weiter" → "Weiter")
       target.name?.includes(':')
         ? this.page.getByRole(target.role as any, { name: target.name.split(':').pop()!.trim() })
@@ -1662,54 +1843,66 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     const cx = target.boundingClientRect.x + target.boundingClientRect.width / 2;
     const cy = target.boundingClientRect.y + target.boundingClientRect.height / 2;
 
-    return this.page.evaluate(
-      ({ x, y }: { x: number; y: number }) => {
-        // AOM coordinates are in document (layout) space.
-        // If the element is below the fold, scroll it into view first
-        // so elementFromPoint can actually find it.
-        const vpX = x - window.scrollX;
-        const vpY = y - window.scrollY;
-        const inViewport = vpX >= 0 && vpY >= 0 && vpX < window.innerWidth && vpY < window.innerHeight;
+    return this.page
+      .evaluate(
+        ({ x, y }: { x: number; y: number }) => {
+          // AOM coordinates are in document (layout) space.
+          // If the element is below the fold, scroll it into view first
+          // so elementFromPoint can actually find it.
+          const vpX = x - window.scrollX;
+          const vpY = y - window.scrollY;
+          const inViewport =
+            vpX >= 0 && vpY >= 0 && vpX < window.innerWidth && vpY < window.innerHeight;
 
-        if (!inViewport) {
-          // Scroll the point into view before checking
-          window.scrollTo({ left: Math.max(0, x - window.innerWidth / 2), top: Math.max(0, y - window.innerHeight / 2), behavior: 'instant' });
-        }
-
-        // Re-calculate viewport coords after possible scroll
-        const finalVpX = x - window.scrollX;
-        const finalVpY = y - window.scrollY;
-        const el = document.elementFromPoint(finalVpX, finalVpY);
-        if (!el) return null; // can't determine — let the action try
-
-        // Check disabled state
-        if ((el as HTMLElement).hasAttribute('disabled') ||
-            el.getAttribute('aria-disabled') === 'true') {
-          return 'element is disabled';
-        }
-
-        // Check if hidden
-        if ((el as HTMLElement).offsetParent === null &&
-            getComputedStyle(el).position !== 'fixed') {
-          return 'element is hidden (display:none)';
-        }
-
-        // Check if an overlay/modal is covering the target
-        const role = el.getAttribute('role');
-        const tag = el.tagName.toLowerCase();
-        if (role === 'dialog' || role === 'alertdialog' || tag === 'dialog') {
-          const ariaLabel = el.getAttribute('aria-label') || '';
-          if (/cookie|consent|privacy|datenschutz/i.test(ariaLabel) ||
-              /cookie|consent|privacy|datenschutz/i.test(el.textContent?.slice(0, 200) || '')) {
-            return 'blocked by cookie/consent overlay';
+          if (!inViewport) {
+            // Scroll the point into view before checking
+            window.scrollTo({
+              left: Math.max(0, x - window.innerWidth / 2),
+              top: Math.max(0, y - window.innerHeight / 2),
+              behavior: 'instant',
+            });
           }
-          return 'blocked by dialog/modal overlay';
-        }
 
-        return null; // valid
-      },
-      { x: cx, y: cy }
-    ).catch(() => null); // on error, assume valid
+          // Re-calculate viewport coords after possible scroll
+          const finalVpX = x - window.scrollX;
+          const finalVpY = y - window.scrollY;
+          const el = document.elementFromPoint(finalVpX, finalVpY);
+          if (!el) return null; // can't determine — let the action try
+
+          // Check disabled state
+          if (
+            (el as HTMLElement).hasAttribute('disabled') ||
+            el.getAttribute('aria-disabled') === 'true'
+          ) {
+            return 'element is disabled';
+          }
+
+          // Check if hidden
+          if (
+            (el as HTMLElement).offsetParent === null &&
+            getComputedStyle(el).position !== 'fixed'
+          ) {
+            return 'element is hidden (display:none)';
+          }
+
+          // Check if an overlay/modal is covering the target
+          const role = el.getAttribute('role');
+          const tag = el.tagName.toLowerCase();
+          if (role === 'dialog' || role === 'alertdialog' || tag === 'dialog') {
+            const ariaLabel = el.getAttribute('aria-label') || '';
+            if (
+              /cookie|consent|privacy|datenschutz/i.test(ariaLabel) ||
+              /cookie|consent|privacy|datenschutz/i.test(el.textContent?.slice(0, 200) || '')
+            ) {
+              return 'blocked by cookie/consent overlay';
+            }
+            return 'blocked by dialog/modal overlay';
+          }
+
+          return null; // valid
+        },
+        { x: cx, y: cy }
+      )
+      .catch(() => null); // on error, assume valid
   }
-
 }

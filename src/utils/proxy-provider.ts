@@ -33,7 +33,8 @@ export class RoundRobinProxyProvider implements IProxyProvider {
   private index = 0;
 
   constructor(private readonly proxies: ProxyOptions[]) {
-    if (proxies.length === 0) throw new Error('RoundRobinProxyProvider: proxies array must not be empty');
+    if (proxies.length === 0)
+      throw new Error('RoundRobinProxyProvider: proxies array must not be empty');
   }
 
   getProxy(): ProxyOptions {
@@ -86,8 +87,8 @@ export class WebshareProxyProvider implements IProxyProvider {
   constructor(private readonly opts: WebshareProxyOptions) {}
 
   private async fetchProxies(): Promise<void> {
-    const limit  = this.opts.limit    ?? 25;
-    const proto  = this.opts.protocol ?? 'http';
+    const limit = this.opts.limit ?? 25;
+    const proto = this.opts.protocol ?? 'http';
     const params = new URLSearchParams({ page_size: String(limit), mode: 'direct' });
     if (this.opts.country) params.set('country_code__icontains', this.opts.country);
 
@@ -102,7 +103,7 @@ export class WebshareProxyProvider implements IProxyProvider {
     const data = (await resp.json()) as WebshareResponse;
 
     this.cache = data.results.map(p => ({
-      server:   `${proto}://${p.proxy_address}:${p.port}`,
+      server: `${proto}://${p.proxy_address}:${p.port}`,
       username: p.username,
       password: p.password,
     }));

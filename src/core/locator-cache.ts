@@ -25,8 +25,16 @@ export interface ILocatorCache {
 
 // UTM and other analytics params that don't affect page identity
 const IGNORED_PARAMS = new Set([
-  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-  'fbclid', 'gclid', 'msclkid', 'ref', 'source',
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+  'fbclid',
+  'gclid',
+  'msclkid',
+  'ref',
+  'source',
 ]);
 
 function normaliseUrl(raw: string): string {
@@ -111,7 +119,9 @@ export class FileLocatorCache implements ILocatorCache {
     this.filePath = filePath;
     this.debounceMs = options.debounceMs ?? 150;
     this.load();
-    this.exitHandler = () => { this.flushSync(); };
+    this.exitHandler = () => {
+      this.flushSync();
+    };
     process.once('beforeExit', this.exitHandler);
   }
 
@@ -133,7 +143,9 @@ export class FileLocatorCache implements ILocatorCache {
     this.writeTimer = setTimeout(() => {
       this.writeTimer = null;
       this.pendingFlush = this.pendingFlush
-        .catch(() => { /* reset chain; next write starts fresh */ })
+        .catch(() => {
+          /* reset chain; next write starts fresh */
+        })
         .then(() => this.writeAtomic());
     }, this.debounceMs);
     // Don't keep the event loop alive just to flush the cache — the exit hook handles it.
@@ -149,7 +161,11 @@ export class FileLocatorCache implements ILocatorCache {
       await fs.promises.writeFile(tmpPath, payload, 'utf-8');
       await fs.promises.rename(tmpPath, this.filePath);
     } catch (err) {
-      try { await fs.promises.unlink(tmpPath); } catch { /* stale tmp already gone */ }
+      try {
+        await fs.promises.unlink(tmpPath);
+      } catch {
+        /* stale tmp already gone */
+      }
       throw err;
     }
   }
@@ -176,7 +192,9 @@ export class FileLocatorCache implements ILocatorCache {
       this.writeTimer = null;
     }
     this.pendingFlush = this.pendingFlush
-      .catch(() => { /* reset */ })
+      .catch(() => {
+        /* reset */
+      })
       .then(() => this.writeAtomic());
     return this.pendingFlush;
   }

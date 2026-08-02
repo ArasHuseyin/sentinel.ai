@@ -23,8 +23,14 @@ async function* makeRunStream(
 
   const waitForItem = (): Promise<void> =>
     new Promise(resolve => {
-      if (queue.length > 0) { resolve(); return; }
-      notify = () => { notify = null; resolve(); };
+      if (queue.length > 0) {
+        resolve();
+        return;
+      }
+      notify = () => {
+        notify = null;
+        resolve();
+      };
     });
 
   // Simulate the async agent run
@@ -45,7 +51,10 @@ async function* makeRunStream(
     await waitForItem();
     const item = queue.shift()!;
     if (item === null) break;
-    if (item instanceof Error) { await runPromise; throw item; }
+    if (item instanceof Error) {
+      await runPromise;
+      throw item;
+    }
     yield item;
   }
 

@@ -5,7 +5,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http';
 import { Sentinel } from '../index.js';
 import { SENTINEL_VERSION } from '../version.js';
 import type { SentinelOptions } from '../index.js';
@@ -62,7 +66,6 @@ export function registerTools(
   sessionFactory: SessionFactory,
   cleanupFn: CleanupFn = async () => {}
 ): void {
-
   // ── goto ──────────────────────────────────────────────────────────────────
 
   server.tool(
@@ -75,7 +78,10 @@ export function registerTools(
         await s.goto(url);
         return { content: [{ type: 'text' as const, text: `Navigated to ${url}` }] };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
@@ -87,22 +93,28 @@ export function registerTools(
     'Perform a natural language action on the current page (click, fill, scroll, press, etc.)',
     {
       instruction: z.string().describe('What to do, e.g. "Click the login button"'),
-      variables: z.record(z.string(), z.string()).optional().describe('Variable substitutions for %varName% placeholders'),
+      variables: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Variable substitutions for %varName% placeholders'),
     },
     async ({ instruction, variables }) => {
       try {
         const s = await sessionFactory();
         const result = await s.act(instruction, variables ? { variables: variables } : undefined);
         return {
-          content: [{
-            type: 'text' as const,
-            text: result.success
-              ? `✅ ${result.message}`
-              : `❌ ${result.message}`,
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+            },
+          ],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
@@ -114,20 +126,28 @@ export function registerTools(
     'Extract structured data from the current page using a natural language instruction',
     {
       instruction: z.string().describe('What to extract, e.g. "Get all product names and prices"'),
-      schema: z.record(z.string(), z.any()).optional().describe('JSON Schema describing the expected output structure'),
+      schema: z
+        .record(z.string(), z.any())
+        .optional()
+        .describe('JSON Schema describing the expected output structure'),
     },
     async ({ instruction, schema }) => {
       try {
         const s = await sessionFactory();
         const result = await s.extract(instruction, (schema ?? { type: 'object' }) as any);
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
@@ -138,20 +158,28 @@ export function registerTools(
     'sentinel_observe',
     'List interactive elements visible on the current page',
     {
-      instruction: z.string().optional().describe('Optional focus hint, e.g. "Find login-related elements"'),
+      instruction: z
+        .string()
+        .optional()
+        .describe('Optional focus hint, e.g. "Find login-related elements"'),
     },
     async ({ instruction }) => {
       try {
         const s = await sessionFactory();
         const elements = await s.observe(instruction ?? undefined);
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(elements, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(elements, null, 2),
+            },
+          ],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
@@ -162,7 +190,9 @@ export function registerTools(
     'sentinel_run',
     'Run an autonomous multi-step agent to achieve a high-level goal',
     {
-      goal: z.string().describe('The goal to achieve, e.g. "Search for laptops and extract the top 3 results"'),
+      goal: z
+        .string()
+        .describe('The goal to achieve, e.g. "Search for laptops and extract the top 3 results"'),
       maxSteps: z.number().optional().describe('Maximum number of steps (default: 15)'),
     },
     async ({ goal, maxSteps }) => {
@@ -177,13 +207,18 @@ export function registerTools(
           tokens: s.getTokenUsage(),
         };
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(summary, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(summary, null, 2),
+            },
+          ],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
@@ -199,29 +234,29 @@ export function registerTools(
         const s = await sessionFactory();
         const buf = await s.screenshot();
         return {
-          content: [{
-            type: 'image' as const,
-            data: buf.toString('base64'),
-            mimeType: 'image/png',
-          }],
+          content: [
+            {
+              type: 'image' as const,
+              data: buf.toString('base64'),
+              mimeType: 'image/png',
+            },
+          ],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
 
   // ── close ─────────────────────────────────────────────────────────────────
 
-  server.tool(
-    'sentinel_close',
-    'Close the browser session',
-    {},
-    async () => {
-      await cleanupFn();
-      return { content: [{ type: 'text' as const, text: 'Browser session closed.' }] };
-    }
-  );
+  server.tool('sentinel_close', 'Close the browser session', {}, async () => {
+    await cleanupFn();
+    return { content: [{ type: 'text' as const, text: 'Browser session closed.' }] };
+  });
 
   // ── token_usage ───────────────────────────────────────────────────────────
 
@@ -234,17 +269,21 @@ export function registerTools(
         const s = await sessionFactory();
         const usage = s.getTokenUsage();
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(usage, null, 2),
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(usage, null, 2),
+            },
+          ],
         };
       } catch (err) {
-        return { content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
       }
     }
   );
-
 }
 
 // ─── MCP Server entry ──────────────────────────────────────────────────────
@@ -338,21 +377,23 @@ async function startHttpTransport(): Promise<void> {
       }, SSE_HEARTBEAT_INTERVAL_MS);
     };
     const origWriteHead = res.writeHead.bind(res);
-    res.writeHead = ((...args: unknown[]) => {
+    res.writeHead = (...args: unknown[]) => {
       // Headers may appear as the 2nd or 3rd positional argument; scan both.
       for (const arg of args) startHeartbeatIfSse(arg);
       return (origWriteHead as (...a: unknown[]) => ServerResponse)(...args);
-    });
+    };
 
     let perReqServer: McpServer | null = null;
     let perReqTransport: StreamableHTTPServerTransport | null = null;
     try {
       perReqServer = new McpServer({ name: 'sentinel', version: SENTINEL_VERSION });
       registerTools(perReqServer, getOrInit, cleanup);
-      perReqTransport = new StreamableHTTPServerTransport(
-        { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
+      perReqTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]);
+      await perReqServer.connect(
+        perReqTransport as unknown as Parameters<typeof perReqServer.connect>[0]
       );
-      await perReqServer.connect(perReqTransport as unknown as Parameters<typeof perReqServer.connect>[0]);
 
       // Parse JSON body (pre-parsing lets the transport skip its own body reader).
       const chunks: Buffer[] = [];

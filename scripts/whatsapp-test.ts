@@ -10,18 +10,20 @@ async function whatsappTest() {
   const sentinel = new Sentinel({
     apiKey: API_KEY,
     headless: false,
-    humanLike: true,           // v2: human-like delays between actions
+    humanLike: true, // v2: human-like delays between actions
     sessionPath: SESSION_PATH, // v2: persist session – scan QR code only once
     verbose: 1,
-    visionFallback: true,      // WhatsApp Web has no clean AOM – vision as fallback
+    visionFallback: true, // WhatsApp Web has no clean AOM – vision as fallback
   });
 
   // v2: events for observability
-  sentinel.on('action', (event) => {
-    console.log(`[Event] action: "${event.instruction}" → ${event.result.success ? '✅' : '❌'} ${event.result.message}`);
+  sentinel.on('action', event => {
+    console.log(
+      `[Event] action: "${event.instruction}" → ${event.result.success ? '✅' : '❌'} ${event.result.message}`
+    );
   });
 
-  sentinel.on('navigate', (event) => {
+  sentinel.on('navigate', event => {
     console.log(`[Event] navigate: ${event.url}`);
   });
 
@@ -31,7 +33,9 @@ async function whatsappTest() {
     console.log('1. Navigating to WhatsApp Web...');
     await sentinel.goto('https://web.whatsapp.com');
 
-    console.log('PLEASE SCAN THE QR CODE MANUALLY (only needed on first run – session will be saved).');
+    console.log(
+      'PLEASE SCAN THE QR CODE MANUALLY (only needed on first run – session will be saved).'
+    );
     console.log('Waiting for WhatsApp to fully load...');
 
     // Wait until Sentinel detects chat entries in the sidebar (no selector needed).
@@ -40,7 +44,9 @@ async function whatsappTest() {
     let sidebarReady = false;
     const deadline = Date.now() + 180000;
     while (!sidebarReady && Date.now() < deadline) {
-      const elements = await sentinel.observe('Find actual chat conversation entries (contact names, group names) in the left sidebar – NOT the QR code, NOT login buttons');
+      const elements = await sentinel.observe(
+        'Find actual chat conversation entries (contact names, group names) in the left sidebar – NOT the QR code, NOT login buttons'
+      );
       if (elements.length >= 3) {
         sidebarReady = true;
         // Short pause so WhatsApp fully renders the chat list
@@ -58,7 +64,10 @@ async function whatsappTest() {
     console.log('2. Logged in. Extracting top 2 chats...');
 
     const chatListSchema = z.object({
-      chats: z.array(z.object({ name: z.string() })).min(1).max(2)
+      chats: z
+        .array(z.object({ name: z.string() }))
+        .min(1)
+        .max(2),
     });
     type ChatList = z.infer<typeof chatListSchema>;
 
@@ -79,8 +88,8 @@ async function whatsappTest() {
 
       const opened = await sentinel.act(
         `Click the chat entry in the left sidebar with the name "${chat.name}". ` +
-        `Do NOT click any "Archiviert" (archived) button or label. ` +
-        `Click only the actual conversation row.`
+          `Do NOT click any "Archiviert" (archived) button or label. ` +
+          `Click only the actual conversation row.`
       );
 
       if (!opened.success) {
@@ -89,14 +98,18 @@ async function whatsappTest() {
       }
 
       // Sentinel detects on its own whether the chat loaded – no selector needed
-      const chatElements = await sentinel.observe(`Find messages and conversation content in the currently open chat "${chat.name}" on the right side`);
+      const chatElements = await sentinel.observe(
+        `Find messages and conversation content in the currently open chat "${chat.name}" on the right side`
+      );
       console.log(`[Observe] ${chatElements.length} elements found in chat area`);
 
       const msgSchema = z.object({
-        msgs: z.array(z.object({
-          text: z.string(),
-          sender: z.enum(['me', 'other'])
-        }))
+        msgs: z.array(
+          z.object({
+            text: z.string(),
+            sender: z.enum(['me', 'other']),
+          })
+        ),
       });
       type MsgResult = z.infer<typeof msgSchema>;
 
@@ -113,8 +126,9 @@ async function whatsappTest() {
 
     // v2: report token usage
     const usage = sentinel.getTokenUsage();
-    console.log(`\n📊 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(4)})`);
-
+    console.log(
+      `\n📊 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(4)})`
+    );
   } catch (error) {
     console.error('WhatsApp Test Error:', error);
   } finally {

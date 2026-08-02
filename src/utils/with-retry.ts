@@ -32,9 +32,15 @@ export async function withRetry<T>(
       // Gemini/OpenAI error messages can span multiple lines; keep the first
       // line + status code.
       const status = err?.status ? ` [${err.status}]` : '';
-      const reason = String(err?.message ?? err).split('\n')[0]?.slice(0, 160) ?? 'unknown';
-      (logger ?? createLogger(false, 1)).child(label)
-        .warn(`Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`);
+      const reason =
+        String(err?.message ?? err)
+          .split('\n')[0]
+          ?.slice(0, 160) ?? 'unknown';
+      (logger ?? createLogger(false, 1))
+        .child(label)
+        .warn(
+          `Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`
+        );
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

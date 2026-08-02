@@ -194,9 +194,9 @@ describe('clickBestMatchingOption', () => {
   it('returns false when nothing scores above the threshold', async () => {
     restoreDom = installDom({ explicitOptions: [option('Bananas'), option('Oranges')] });
 
-    await expect(
-      clickBestMatchingOption(evaluatingPage() as any, 'Sort by rating')
-    ).resolves.toBe(false);
+    await expect(clickBestMatchingOption(evaluatingPage() as any, 'Sort by rating')).resolves.toBe(
+      false
+    );
   });
 
   it('falls back to the structural pool only when no explicit option exists', async () => {
@@ -231,7 +231,11 @@ describe('clickBestMatchingOption', () => {
   });
 
   it('resolves false instead of throwing when evaluate rejects', async () => {
-    const page = { evaluate: jest.fn(async () => { throw new Error('context destroyed'); }) };
+    const page = {
+      evaluate: jest.fn(async () => {
+        throw new Error('context destroyed');
+      }),
+    };
     await expect(clickBestMatchingOption(page as any, 'Rating')).resolves.toBe(false);
   });
 });
@@ -266,7 +270,11 @@ describe('isListboxPopoverVisible', () => {
   });
 
   it('is false when evaluate rejects', async () => {
-    const page = { evaluate: jest.fn(async () => { throw new Error('boom'); }) };
+    const page = {
+      evaluate: jest.fn(async () => {
+        throw new Error('boom');
+      }),
+    };
     await expect(isListboxPopoverVisible(page as any)).resolves.toBe(false);
   });
 });
@@ -274,13 +282,17 @@ describe('isListboxPopoverVisible', () => {
 describe('trySetNativeSelectValue', () => {
   it('returns false when no element is under the click point', async () => {
     restoreDom = installDom({});
-    await expect(
-      trySetNativeSelectValue(evaluatingPage() as any, 10, 10, 'Rating')
-    ).resolves.toBe(false);
+    await expect(trySetNativeSelectValue(evaluatingPage() as any, 10, 10, 'Rating')).resolves.toBe(
+      false
+    );
   });
 
   it('resolves false instead of throwing when evaluate rejects', async () => {
-    const page = { evaluate: jest.fn(async () => { throw new Error('detached'); }) };
+    const page = {
+      evaluate: jest.fn(async () => {
+        throw new Error('detached');
+      }),
+    };
     await expect(trySetNativeSelectValue(page as any, 1, 1, 'x')).resolves.toBe(false);
   });
 });

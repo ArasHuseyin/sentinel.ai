@@ -39,7 +39,7 @@ export class VisionGrounding {
     if (!provider.analyzeImage && this.verbose >= 1) {
       this.logger.warn(
         'The configured LLM provider does not implement analyzeImage. ' +
-        'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
+          'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
       );
     }
   }
@@ -70,8 +70,12 @@ export class VisionGrounding {
     // Guard against degenerate viewports (headless context misconfig, detached page, etc.).
     // Without this, scaleX/scaleY become Infinity or NaN and later bounds checks would
     // silently reject every bbox with an unclear error.
-    if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) ||
-        viewportWidth < 1 || viewportHeight < 1) {
+    if (
+      !Number.isFinite(viewportWidth) ||
+      !Number.isFinite(viewportHeight) ||
+      viewportWidth < 1 ||
+      viewportHeight < 1
+    ) {
       this.warnMsg(1, `Refusing to run with invalid viewport ${viewportWidth}x${viewportHeight}`);
       return null;
     }
@@ -110,7 +114,10 @@ If you cannot confidently locate the element, set found to false and omit the co
       const parsed = extractJSON(raw);
 
       if (!parsed?.found) {
-        this.warnMsg(1, `Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`);
+        this.warnMsg(
+          1,
+          `Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`
+        );
         return null;
       }
 
@@ -128,7 +135,10 @@ If you cannot confidently locate the element, set found to false and omit the co
 
       const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 1;
       if (confidence < MIN_CONFIDENCE) {
-        this.warnMsg(1, `Low confidence (${confidence.toFixed(2)}) for "${instruction}" — rejecting`);
+        this.warnMsg(
+          1,
+          `Low confidence (${confidence.toFixed(2)}) for "${instruction}" — rejecting`
+        );
         return null;
       }
 
@@ -147,7 +157,10 @@ If you cannot confidently locate the element, set found to false and omit the co
         return null;
       }
 
-      this.log(2, `Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`);
+      this.log(
+        2,
+        `Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`
+      );
       return { x: cssX, y: cssY, width: cssW, height: cssH };
     } catch (err: any) {
       this.logger.warn(`findElement failed: ${err.message}`);
@@ -160,7 +173,8 @@ If you cannot confidently locate the element, set found to false and omit the co
    * Useful for debugging and agent context building.
    */
   async describeScreen(screenshot: Buffer): Promise<string> {
-    if (!this.provider.analyzeImage) return 'Vision not available — provider does not support analyzeImage.';
+    if (!this.provider.analyzeImage)
+      return 'Vision not available — provider does not support analyzeImage.';
 
     const base64 = screenshot.toString('base64');
     try {
@@ -210,7 +224,11 @@ function extractJSON(text: string): any {
   } catch {
     const match = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
     if (match) {
-      try { return JSON.parse(match[1]!.trim()); } catch { /* fall through */ }
+      try {
+        return JSON.parse(match[1]!.trim());
+      } catch {
+        /* fall through */
+      }
     }
     return null;
   }

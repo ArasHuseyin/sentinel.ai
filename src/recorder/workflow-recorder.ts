@@ -89,10 +89,14 @@ export class WorkflowRecorder {
           lines.push(`  await sentinel.act('${step.instruction?.replace(/'/g, "\\'")}');`);
           break;
         case 'extract':
-          lines.push(`  // await sentinel.extract('${step.instruction?.replace(/'/g, "\\'")}', schema);`);
+          lines.push(
+            `  // await sentinel.extract('${step.instruction?.replace(/'/g, "\\'")}', schema);`
+          );
           break;
         case 'observe':
-          lines.push(`  await sentinel.observe(${step.instruction ? `'${step.instruction.replace(/'/g, "\\'")}'` : ''});`);
+          lines.push(
+            `  await sentinel.observe(${step.instruction ? `'${step.instruction.replace(/'/g, "\\'")}'` : ''});`
+          );
           break;
         case 'scroll':
           lines.push(`  await sentinel.act('${step.instruction?.replace(/'/g, "\\'")}');`);

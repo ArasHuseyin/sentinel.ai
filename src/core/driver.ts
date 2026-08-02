@@ -63,9 +63,8 @@ export class SentinelDriver {
    * Reduces CAPTCHA encounter rates by roughly 90% on bot-gated sites.
    */
   private async resolveLauncher(browserType: BrowserType): Promise<typeof chromium> {
-    const stock = browserType === 'firefox' ? firefox
-      : browserType === 'webkit' ? webkit
-      : chromium;
+    const stock =
+      browserType === 'firefox' ? firefox : browserType === 'webkit' ? webkit : chromium;
     if (!this.options.stealth) return stock as typeof chromium;
 
     try {
@@ -77,9 +76,12 @@ export class SentinelDriver {
         import('playwright-extra' as string),
         import('puppeteer-extra-plugin-stealth' as string),
       ]);
-      const extraLauncher = browserType === 'firefox' ? extraMod.firefox
-        : browserType === 'webkit' ? extraMod.webkit
-        : extraMod.chromium;
+      const extraLauncher =
+        browserType === 'firefox'
+          ? extraMod.firefox
+          : browserType === 'webkit'
+            ? extraMod.webkit
+            : extraMod.chromium;
       const stealthFactory = (stealthMod.default ?? stealthMod) as () => unknown;
       extraLauncher.use(stealthFactory());
       this.logger.info(`Stealth plugin enabled — anti-bot patches active`);
@@ -87,9 +89,9 @@ export class SentinelDriver {
     } catch (err: any) {
       this.logger.warn(
         `[Driver] stealth: true requested but 'playwright-extra' / 'puppeteer-extra-plugin-stealth' ` +
-        `are not installed. Install them to enable anti-bot patches:\n` +
-        `  npm install playwright-extra puppeteer-extra-plugin-stealth\n` +
-        `Falling back to plain Playwright. (${err?.message ?? 'unknown import error'})`
+          `are not installed. Install them to enable anti-bot patches:\n` +
+          `  npm install playwright-extra puppeteer-extra-plugin-stealth\n` +
+          `Falling back to plain Playwright. (${err?.message ?? 'unknown import error'})`
       );
       return stock as typeof chromium;
     }
@@ -99,9 +101,14 @@ export class SentinelDriver {
     const browserType = this.options.browser ?? 'chromium';
     const launcher = await this.resolveLauncher(browserType);
 
-    const launchArgs = browserType === 'chromium'
-      ? ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-dev-shm-usage']
-      : [];
+    const launchArgs =
+      browserType === 'chromium'
+        ? [
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+          ]
+        : [];
 
     // Resolve proxy: plain ProxyOptions or IProxyProvider (fetches dynamically)
     let resolvedProxy: ProxyOptions | undefined;
@@ -143,9 +150,10 @@ export class SentinelDriver {
         args: launchArgs,
       });
 
-      const storageState = this.options.sessionPath && fs.existsSync(this.options.sessionPath)
-        ? JSON.parse(fs.readFileSync(this.options.sessionPath, 'utf-8'))
-        : undefined;
+      const storageState =
+        this.options.sessionPath && fs.existsSync(this.options.sessionPath)
+          ? JSON.parse(fs.readFileSync(this.options.sessionPath, 'utf-8'))
+          : undefined;
 
       this.context = await this.browser.newContext({
         ...contextOptions,
@@ -227,7 +235,8 @@ export class SentinelDriver {
     const loginIndicators = await page.evaluate(() => {
       const inputs = Array.from(document.querySelectorAll('input'));
       return inputs.some(
-        i => i.type === 'password' ||
+        i =>
+          i.type === 'password' ||
           i.name?.toLowerCase().includes('password') ||
           i.id?.toLowerCase().includes('password')
       );

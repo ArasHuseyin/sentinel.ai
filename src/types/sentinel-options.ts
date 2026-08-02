@@ -261,7 +261,8 @@ export interface SentinelOptions {
    *
    * Or pass an object to override the per-attempt `timeoutMs` (default 20s).
    */
-  captcha?: 'auto' | 'skip' | 'manual' | { strategy: 'auto' | 'skip' | 'manual'; timeoutMs?: number };
+  captcha?:
+    'auto' | 'skip' | 'manual' | { strategy: 'auto' | 'skip' | 'manual'; timeoutMs?: number };
   /**
    * Cross-site widget-pattern cache. Fingerprints interactive widgets by
    * ARIA / library-class / DOM-topology and reuses successful interaction

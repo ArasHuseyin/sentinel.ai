@@ -112,17 +112,19 @@ async function solveRecaptchaV2Checkbox(page: Page, timeoutMs: number): Promise<
 async function waitForTurnstileResolve(page: Page, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const done = await page.evaluate(() => {
-      const tokenInputs = document.querySelectorAll<HTMLInputElement>(
-        'input[name="cf-turnstile-response"], input[name="cf_challenge_response"]'
-      );
-      for (const input of Array.from(tokenInputs)) {
-        if (input.value && input.value.length > 0) return true;
-      }
-      const wrapper = document.querySelector('.cf-turnstile, [data-sitekey]');
-      if (wrapper?.getAttribute('data-turnstile-status') === 'success') return true;
-      return false;
-    }).catch(() => false);
+    const done = await page
+      .evaluate(() => {
+        const tokenInputs = document.querySelectorAll<HTMLInputElement>(
+          'input[name="cf-turnstile-response"], input[name="cf_challenge_response"]'
+        );
+        for (const input of Array.from(tokenInputs)) {
+          if (input.value && input.value.length > 0) return true;
+        }
+        const wrapper = document.querySelector('.cf-turnstile, [data-sitekey]');
+        if (wrapper?.getAttribute('data-turnstile-status') === 'success') return true;
+        return false;
+      })
+      .catch(() => false);
     if (done) return true;
     await sleep(POLL_INTERVAL_MS);
   }
@@ -133,7 +135,11 @@ async function waitForTurnstileResolve(page: Page, timeoutMs: number): Promise<b
  * Manual strategy — polls for externally-provided solution. Useful in
  * headful mode where the human solves while Sentinel waits.
  */
-async function waitForHumanSolve(page: Page, type: CaptchaType, timeoutMs: number): Promise<boolean> {
+async function waitForHumanSolve(
+  page: Page,
+  type: CaptchaType,
+  timeoutMs: number
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (type === 'recaptcha-v2' || type === 'recaptcha-v3') {
@@ -145,29 +151,39 @@ async function waitForHumanSolve(page: Page, type: CaptchaType, timeoutMs: numbe
             .first()
             .getAttribute('aria-checked', { timeout: 1000 });
           if (checked === 'true') return true;
-        } catch { /* frame gone */ }
+        } catch {
+          /* frame gone */
+        }
       }
-      const resolved = await page.evaluate(() => {
-        const ta = document.querySelector<HTMLTextAreaElement>('textarea[name="g-recaptcha-response"]');
-        return !!(ta && ta.value && ta.value.length > 0);
-      }).catch(() => false);
+      const resolved = await page
+        .evaluate(() => {
+          const ta = document.querySelector<HTMLTextAreaElement>(
+            'textarea[name="g-recaptcha-response"]'
+          );
+          return !!(ta && ta.value && ta.value.length > 0);
+        })
+        .catch(() => false);
       if (resolved) return true;
     } else if (type === 'turnstile') {
-      const done = await page.evaluate(() => {
-        const inputs = document.querySelectorAll<HTMLInputElement>(
-          'input[name="cf-turnstile-response"], input[name="cf_challenge_response"]'
-        );
-        return Array.from(inputs).some(i => i.value && i.value.length > 0);
-      }).catch(() => false);
+      const done = await page
+        .evaluate(() => {
+          const inputs = document.querySelectorAll<HTMLInputElement>(
+            'input[name="cf-turnstile-response"], input[name="cf_challenge_response"]'
+          );
+          return Array.from(inputs).some(i => i.value && i.value.length > 0);
+        })
+        .catch(() => false);
       if (done) return true;
     } else {
-      const done = await page.evaluate(() => {
-        const inputs = document.querySelectorAll<HTMLInputElement>(
-          'textarea[name*="captcha-response" i], input[name*="captcha-response" i], ' +
-          'input[name="h-captcha-response"], input[name="fc-token"]'
-        );
-        return Array.from(inputs).some(i => i.value && i.value.length > 0);
-      }).catch(() => false);
+      const done = await page
+        .evaluate(() => {
+          const inputs = document.querySelectorAll<HTMLInputElement>(
+            'textarea[name*="captcha-response" i], input[name*="captcha-response" i], ' +
+              'input[name="h-captcha-response"], input[name="fc-token"]'
+          );
+          return Array.from(inputs).some(i => i.value && i.value.length > 0);
+        })
+        .catch(() => false);
       if (done) return true;
     }
     await sleep(POLL_INTERVAL_MS);

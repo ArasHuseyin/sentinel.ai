@@ -60,7 +60,10 @@ export class GeminiProvider implements LLMProvider {
   constructor(options: GeminiProviderOptions) {
     this.genAI = new GoogleGenerativeAI(options.apiKey);
     const modelName = options.model ?? process.env.GEMINI_VERSION;
-    if (!modelName) throw new LLMError('Gemini model name must be provided or GEMINI_VERSION must be set in .env');
+    if (!modelName)
+      throw new LLMError(
+        'Gemini model name must be provided or GEMINI_VERSION must be set in .env'
+      );
     this.modelName = modelName;
     this.structuredModel = this.genAI.getGenerativeModel({ model: modelName });
     this.textModel = this.genAI.getGenerativeModel({ model: modelName });
@@ -136,10 +139,7 @@ export class GeminiProvider implements LLMProvider {
         contents: [
           {
             role: 'user',
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType, data: imageBase64 } },
-            ],
+            parts: [{ text: prompt }, { inlineData: { mimeType, data: imageBase64 } }],
           },
         ],
       });

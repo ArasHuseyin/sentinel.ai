@@ -4,7 +4,16 @@ import { Sentinel } from '../index.js';
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeAomNodes(role: string, name: string) {
-  return [{ role: { value: role }, name: { value: name }, description: { value: '' }, backendDOMNodeId: 1, ignored: false, properties: [] }];
+  return [
+    {
+      role: { value: role },
+      name: { value: name },
+      description: { value: '' },
+      backendDOMNodeId: 1,
+      ignored: false,
+      properties: [],
+    },
+  ];
 }
 
 function makeBoxModel(x = 10, y = 20, w = 80, h = 30) {
@@ -34,11 +43,28 @@ function makePage(url = 'https://example.com') {
     }),
     viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
     waitForNavigation: jest.fn(async () => {}),
-    mouse: { click: jest.fn(async () => {}), wheel: jest.fn(async () => {}), move: jest.fn(async () => {}), dblclick: jest.fn(async () => {}) },
+    mouse: {
+      click: jest.fn(async () => {}),
+      wheel: jest.fn(async () => {}),
+      move: jest.fn(async () => {}),
+      dblclick: jest.fn(async () => {}),
+    },
     keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
-    locator: jest.fn(() => { const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) }; l.first = jest.fn(() => l); return l; }),
-    getByRole: jest.fn(() => { const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) }; l.first = jest.fn(() => l); return l; }),
-    getByText: jest.fn(() => { const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) }; l.first = jest.fn(() => l); return l; }),
+    locator: jest.fn(() => {
+      const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) };
+      l.first = jest.fn(() => l);
+      return l;
+    }),
+    getByRole: jest.fn(() => {
+      const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) };
+      l.first = jest.fn(() => l);
+      return l;
+    }),
+    getByText: jest.fn(() => {
+      const l: any = { click: jest.fn(async () => {}), isVisible: jest.fn(async () => true) };
+      l.first = jest.fn(() => l);
+      return l;
+    }),
     context: jest.fn(),
   };
   self.mainFrame = () => self;
@@ -147,7 +173,9 @@ describe('sentinel.extend(page)', () => {
     (mockLLM.generateStructuredData as jest.Mock<any>).mockResolvedValueOnce(extractResult);
 
     const extended = await sentinel.extend(page);
-    const result = await extended.extract('Get the page title and count', { type: 'object' } as any);
+    const result = await extended.extract('Get the page title and count', {
+      type: 'object',
+    } as any);
 
     expect(result).toEqual(extractResult);
     expect(mockLLM.generateStructuredData).toHaveBeenCalled();
@@ -156,9 +184,7 @@ describe('sentinel.extend(page)', () => {
   it('observe() on extended page calls LLM and returns actions list', async () => {
     const { sentinel, page, mockLLM } = makeSentinel();
     const observeResult = {
-      actions: [
-        { description: 'Click login button', method: 'click', selector: 'button' },
-      ],
+      actions: [{ description: 'Click login button', method: 'click', selector: 'button' }],
     };
     (mockLLM.generateStructuredData as jest.Mock<any>).mockResolvedValueOnce(observeResult);
 
@@ -201,7 +227,7 @@ describe('sentinel.extend(page)', () => {
     // First extend — records the CDP session
     const cdp1 = await ctx.newCDPSession(page);
     const detachSpy = jest.fn(async () => {});
-    (cdp1).detach = detachSpy;
+    cdp1.detach = detachSpy;
     // Replace newCDPSession to return our spy-equipped cdp1 on first call
     ctx.newCDPSession.mockResolvedValueOnce(cdp1);
 
@@ -220,7 +246,11 @@ describe('sentinel.extend(page)', () => {
     const cdp = makeMockCDP(nodes);
     const page = makePage();
     const mockLLM = {
-      generateStructuredData: jest.fn(async () => ({ elementId: 0, action: 'click', reasoning: 'Found it' })) as any,
+      generateStructuredData: jest.fn(async () => ({
+        elementId: 0,
+        action: 'click',
+        reasoning: 'Found it',
+      })) as any,
       generateText: jest.fn(async () => ''),
     };
     page.context.mockReturnValue({ newCDPSession: jest.fn(async () => cdp) });

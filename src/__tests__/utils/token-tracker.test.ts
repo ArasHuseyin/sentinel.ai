@@ -136,7 +136,7 @@ describe('TokenTracker', () => {
     it('throws BudgetExceededError when maxCostUsd is crossed', () => {
       // gpt-4o: $2.50/1M input, $10.00/1M output
       // 100k input + 100k output = $0.25 + $1.00 = $1.25
-      const tracker = new TokenTracker('gpt-4o', { maxCostUsd: 1.00 });
+      const tracker = new TokenTracker('gpt-4o', { maxCostUsd: 1.0 });
       expect(() => tracker.track('expensive', 100_000, 100_000)).toThrow(BudgetExceededError);
     });
 
@@ -182,7 +182,10 @@ describe('TokenTracker', () => {
 
   describe('persistent cost audit', () => {
     function tempPath(label = 'audit'): string {
-      return path.join(os.tmpdir(), `sentinel-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+      return path.join(
+        os.tmpdir(),
+        `sentinel-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+      );
     }
 
     it('writes entries to disk on each track()', () => {
@@ -197,7 +200,11 @@ describe('TokenTracker', () => {
         expect(entries[0]!.operation).toBe('plan');
         expect(entries[1]!.inputTokens).toBe(200);
       } finally {
-        try { fs.unlinkSync(file); } catch { /* ok */ }
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          /* ok */
+        }
       }
     });
 
@@ -213,7 +220,11 @@ describe('TokenTracker', () => {
         expect(usage.entries).toHaveLength(2);
         expect(usage.totalTokens).toBe(450);
       } finally {
-        try { fs.unlinkSync(file); } catch { /* ok */ }
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          /* ok */
+        }
       }
     });
 
@@ -225,7 +236,11 @@ describe('TokenTracker', () => {
         tracker.track('op', 10, 10);
         expect(fs.existsSync(file)).toBe(true);
       } finally {
-        try { fs.rmSync(path.dirname(dir), { recursive: true, force: true }); } catch { /* ok */ }
+        try {
+          fs.rmSync(path.dirname(dir), { recursive: true, force: true });
+        } catch {
+          /* ok */
+        }
       }
     });
 
@@ -241,7 +256,11 @@ describe('TokenTracker', () => {
         const reloaded = new TokenTracker('gpt-4o', { persistPath: file });
         expect(reloaded.getUsage().entries).toHaveLength(1);
       } finally {
-        try { fs.unlinkSync(file); } catch { /* ok */ }
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          /* ok */
+        }
       }
     });
 
@@ -254,20 +273,31 @@ describe('TokenTracker', () => {
         const reloaded = new TokenTracker('gpt-4o', { persistPath: file });
         expect(reloaded.getUsage().entries).toHaveLength(0);
       } finally {
-        try { fs.unlinkSync(file); } catch { /* ok */ }
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          /* ok */
+        }
       }
     });
 
     it('combined budget + persist: throws after flush so next run sees the prior spend', () => {
       const file = tempPath('combined');
       try {
-        const tracker = new TokenTracker('gpt-4o', { budget: { maxTokens: 50 }, persistPath: file });
+        const tracker = new TokenTracker('gpt-4o', {
+          budget: { maxTokens: 50 },
+          persistPath: file,
+        });
         expect(() => tracker.track('over', 60, 10)).toThrow(BudgetExceededError);
         // The crossing entry is flushed before the throw — survives restart
         const reloaded = new TokenTracker('gpt-4o', { persistPath: file });
         expect(reloaded.getUsage().totalTokens).toBe(70);
       } finally {
-        try { fs.unlinkSync(file); } catch { /* ok */ }
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          /* ok */
+        }
       }
     });
   });

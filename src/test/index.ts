@@ -1,10 +1,26 @@
 import { test as base, expect } from '@playwright/test';
 import { Sentinel } from '../index.js';
-import type { AgentRunOptions, AgentResult, AgentStepEvent, ActOptions, ActionResult, ObserveResult, SentinelOptions } from '../index.js';
+import type {
+  AgentRunOptions,
+  AgentResult,
+  AgentStepEvent,
+  ActOptions,
+  ActionResult,
+  ObserveResult,
+  SentinelOptions,
+} from '../index.js';
 import type { SchemaInput } from '../utils/llm-provider.js';
 import type { Page } from 'playwright';
 
-export type { AgentRunOptions, AgentResult, AgentStepEvent, ActOptions, ActionResult, ObserveResult, SentinelOptions };
+export type {
+  AgentRunOptions,
+  AgentResult,
+  AgentStepEvent,
+  ActOptions,
+  ActionResult,
+  ObserveResult,
+  SentinelOptions,
+};
 
 // ─── AI fixture type ──────────────────────────────────────────────────────────
 
@@ -78,15 +94,18 @@ export async function runAiFixture(
   await sentinel.init();
 
   const ai: AIFixture = {
-    goto: (url) => sentinel.goto(url),
+    goto: url => sentinel.goto(url),
     act: (instruction, options) => sentinel.act(instruction, options),
-    extract: <T>(instruction: string, schema: unknown) => sentinel.extract<T>(instruction, schema as any),
-    observe: (instruction) => sentinel.observe(instruction),
+    extract: <T>(instruction: string, schema: unknown) =>
+      sentinel.extract<T>(instruction, schema as any),
+    observe: instruction => sentinel.observe(instruction),
     run: (goal, options) => sentinel.run(goal, options),
     runStream: (goal, options) => sentinel.runStream(goal, options),
     screenshot: () => sentinel.screenshot(),
     describeScreen: () => sentinel.describeScreen(),
-    get page() { return sentinel.page; },
+    get page() {
+      return sentinel.page;
+    },
     getTokenUsage: () => sentinel.getTokenUsage(),
   };
 
@@ -103,12 +122,12 @@ export const test = base.extend<{
   ai: AIFixture;
   sentinelOptions: Partial<SentinelOptions>;
 }>({
-  sentinelOptions: [
-    {},
-    { option: true },
-  ] as any,
+  sentinelOptions: [{}, { option: true }] as any,
 
-  ai: async ({ sentinelOptions }: { sentinelOptions: Partial<SentinelOptions> }, use: (ai: AIFixture) => Promise<void>) => {
+  ai: async (
+    { sentinelOptions }: { sentinelOptions: Partial<SentinelOptions> },
+    use: (ai: AIFixture) => Promise<void>
+  ) => {
     await runAiFixture(sentinelOptions, use);
   },
 });

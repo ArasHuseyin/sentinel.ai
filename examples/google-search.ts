@@ -60,7 +60,9 @@ async function run() {
 
   // Show token usage
   const usage = sentinel.getTokenUsage();
-  console.log(`\n💰 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(5)})`);
+  console.log(
+    `\n💰 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(5)})`
+  );
 
   await sentinel.close();
 }

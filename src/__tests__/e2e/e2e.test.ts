@@ -39,7 +39,6 @@ describeE2E('E2E: Real Browser Tests', () => {
       viewport: { width: 1920, height: 1080 },
       domSettleTimeoutMs: 3000,
       // plannerModel: 'gemini-3.1-pro-preview', // uncomment when RPD limit allows
-
     });
     await sentinel.init();
   }, 30_000);
@@ -55,7 +54,9 @@ describeE2E('E2E: Real Browser Tests', () => {
       await sentinel.goto('https://www.google.com');
 
       // Handle possible cookie consent (EU)
-      await sentinel.act('Accept cookies if a consent dialog is visible, otherwise do nothing').catch(() => {});
+      await sentinel
+        .act('Accept cookies if a consent dialog is visible, otherwise do nothing')
+        .catch(() => {});
 
       await sentinel.act('Fill "Playwright browser automation" into the search field');
       await sentinel.act('Press Enter');
@@ -271,10 +272,10 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       const result = await sentinel.run(
         'Search for "mechanical keyboard" on Amazon.\n' +
-        '- Accept any cookie/consent banners first\n' +
-        '- Type "mechanical keyboard" into the search field\n' +
-        '- Click the search button or press Enter\n' +
-        '- When search results appear, extract the first 3 product names and their prices',
+          '- Accept any cookie/consent banners first\n' +
+          '- Type "mechanical keyboard" into the search field\n' +
+          '- Click the search button or press Enter\n' +
+          '- When search results appear, extract the first 3 product names and their prices',
         { maxSteps: 10 }
       );
 
@@ -298,11 +299,11 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       const result = await sentinel.run(
         'Search for a hotel on Booking.com:\n' +
-        '- Accept any cookie/consent banners first\n' +
-        '- Enter "Wien" (Vienna) as the destination\n' +
-        '- Select the first suggestion from the autocomplete dropdown\n' +
-        '- Click the search button\n' +
-        '- When results appear, extract the names and prices of the first 3 hotels',
+          '- Accept any cookie/consent banners first\n' +
+          '- Enter "Wien" (Vienna) as the destination\n' +
+          '- Select the first suggestion from the autocomplete dropdown\n' +
+          '- Click the search button\n' +
+          '- When results appear, extract the names and prices of the first 3 hotels',
         { maxSteps: 12 }
       );
 
@@ -325,9 +326,9 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       const result = await sentinel.run(
         'On this Wikipedia page:\n' +
-        '- Type "Künstliche Intelligenz" into the search field\n' +
-        '- Press Enter or click the search button\n' +
-        '- When the article appears, extract the first paragraph of the article text and the number of references',
+          '- Type "Künstliche Intelligenz" into the search field\n' +
+          '- Press Enter or click the search button\n' +
+          '- When the article appears, extract the first paragraph of the article text and the number of references',
         { maxSteps: 8 }
       );
 
@@ -350,10 +351,10 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       const result = await sentinel.run(
         'Search for "playwright" on npmjs.com:\n' +
-        '- Type "playwright" into the search field\n' +
-        '- Press Enter or click search\n' +
-        '- Click on the first result\n' +
-        '- Extract the package name, description, weekly downloads, and latest version',
+          '- Type "playwright" into the search field\n' +
+          '- Press Enter or click search\n' +
+          '- Click on the first result\n' +
+          '- Extract the package name, description, weekly downloads, and latest version',
         { maxSteps: 10 }
       );
 
@@ -419,7 +420,7 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       console.log(`\nintercept: captured ${responses.length} API response(s)`);
       if (responses.length > 0) {
-        console.log("responses: " + JSON.stringify(responses));
+        console.log('responses: ' + JSON.stringify(responses));
         console.log('First response keys:', Object.keys(responses[0]).slice(0, 10));
       }
 
@@ -439,21 +440,21 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       const result = await sentinel.run(
         'Complete the car insurance comparison form on durchblicker.at. Use these details:\n' +
-        '- Accept any cookie/consent banners first\n' +
-        '- Car brand: BMW\n' +
-        '- Car model: 4er (or 4 Series, 420i, or similar)\n' +
-        '- First registration: January 2020\n' +
-        '- Engine power: 190 PS\n' +
-        '- Fuel type: Benzin\n' +
-        '- Birth year of policyholder: 1990\n' +
-        '- Postal code: 1010 (Wien)\n' +
-        '- Name: Max Mustermann\n' +
-        '- Fill all required fields, click through all form steps\n' +
-        '- When results/offers appear, extract the first 3 insurance providers with their prices',
+          '- Accept any cookie/consent banners first\n' +
+          '- Car brand: BMW\n' +
+          '- Car model: 4er (or 4 Series, 420i, or similar)\n' +
+          '- First registration: January 2020\n' +
+          '- Engine power: 190 PS\n' +
+          '- Fuel type: Benzin\n' +
+          '- Birth year of policyholder: 1990\n' +
+          '- Postal code: 1010 (Wien)\n' +
+          '- Name: Max Mustermann\n' +
+          '- Fill all required fields, click through all form steps\n' +
+          '- When results/offers appear, extract the first 3 insurance providers with their prices',
         {
           maxSteps: 25,
           onStep: step => {
-            const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
+            const icon = step.type === 'extract' ? '🔍' : step.success ? '✅' : '❌';
             console.log(`[Durchblicker ${step.stepNumber}] ${icon} ${step.instruction}`);
           },
         }

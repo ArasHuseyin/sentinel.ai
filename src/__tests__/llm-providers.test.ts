@@ -40,26 +40,13 @@ beforeEach(() => {
 
 // ─── Documented models (must match README Supported Models table) ─────────────
 
-const GEMINI_MODELS = [
-  'gemini-3-flash-preview',
-  'gemini-2.5-pro-preview-05-06',
-];
+const GEMINI_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-pro-preview-05-06'];
 
-const CLAUDE_MODELS = [
-  'claude-opus-5',
-  'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
-];
+const CLAUDE_MODELS = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'];
 
-const OPENAI_MODELS = [
-  'gpt-4o',
-  'gpt-4o-mini',
-];
+const OPENAI_MODELS = ['gpt-4o', 'gpt-4o-mini'];
 
-const OLLAMA_MODELS = [
-  'llama3.2',
-  'mistral',
-];
+const OLLAMA_MODELS = ['llama3.2', 'mistral'];
 
 // These tests construct the REAL providers. They used to run against local stub
 // classes that re-implemented the constructor logic, so they asserted a copy of
@@ -72,9 +59,8 @@ const readBaseURL = (provider: object): string => (provider as { baseURL: string
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('LLM Providers – documented models', () => {
-
   describe('GeminiProvider', () => {
-    it.each(GEMINI_MODELS)('accepts model "%s" without throwing', (model) => {
+    it.each(GEMINI_MODELS)('accepts model "%s" without throwing', model => {
       expect(() => new GeminiProvider({ apiKey: 'test-key', model })).not.toThrow();
     });
 
@@ -99,8 +85,13 @@ describe('LLM Providers – documented models', () => {
     // hoisting (which is flaky with ts-jest + ESM + injectGlobals: false) and
     // never touches the real Google SDK.
     it('reuses a single model instance per systemInstruction for prompt-cache hit continuity', () => {
-      const provider = new GeminiProvider({ apiKey: 'test-key', model: 'gemini-3-flash-preview' }) as any;
-      const spy = jest.fn<any>().mockImplementation((args: any) => ({ _marker: args?.systemInstruction?.parts?.[0]?.text ?? 'no-sys' }));
+      const provider = new GeminiProvider({
+        apiKey: 'test-key',
+        model: 'gemini-3-flash-preview',
+      }) as any;
+      const spy = jest.fn<any>().mockImplementation((args: any) => ({
+        _marker: args?.systemInstruction?.parts?.[0]?.text ?? 'no-sys',
+      }));
       provider.genAI.getGenerativeModel = spy;
 
       const sys = 'You are an autonomous browser agent. [... stable rules ...]';
@@ -114,11 +105,16 @@ describe('LLM Providers – documented models', () => {
       // A different systemInstruction produces its own cached instance.
       provider.getModelFor('different text');
       expect(spy).toHaveBeenCalledTimes(2);
-      expect((spy.mock.calls as any[][])[1]?.[0]?.systemInstruction?.parts?.[0]?.text).toBe('different text');
+      expect((spy.mock.calls as any[][])[1]?.[0]?.systemInstruction?.parts?.[0]?.text).toBe(
+        'different text'
+      );
     });
 
     it('returns the pre-built structuredModel when options.systemInstruction is undefined', () => {
-      const provider = new GeminiProvider({ apiKey: 'test-key', model: 'gemini-3-flash-preview' }) as any;
+      const provider = new GeminiProvider({
+        apiKey: 'test-key',
+        model: 'gemini-3-flash-preview',
+      }) as any;
       const spy = jest.fn<any>().mockReturnValue({});
       provider.genAI.getGenerativeModel = spy;
 
@@ -230,5 +226,4 @@ describe('LLM Providers – documented models', () => {
       expect(OLLAMA_MODELS).toContain('mistral');
     });
   });
-
 });

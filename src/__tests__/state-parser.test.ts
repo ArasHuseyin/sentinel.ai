@@ -29,9 +29,7 @@ function makeMockCDP(nodes: any[], boxModels: any[]) {
     send: jest.fn(async (method: string, params?: any) => {
       if (method === 'Accessibility.getFullAXTree') return { nodes };
       if (method === 'DOM.getBoxModel') {
-        const idx = nodes.findIndex(
-          (n) => n.backendDOMNodeId === params?.backendNodeId
-        );
+        const idx = nodes.findIndex(n => n.backendDOMNodeId === params?.backendNodeId);
         return boxModels[idx] ?? makeBoxModel();
       }
       return {};
@@ -149,8 +147,8 @@ describe('StateParser', () => {
 
   it('filters out nameless non-textbox elements', async () => {
     const nodes = [
-      makeNode('button', '', 1),   // no name → filtered
-      makeNode('textbox', '', 2),  // textbox without name → kept
+      makeNode('button', '', 1), // no name → filtered
+      makeNode('textbox', '', 2), // textbox without name → kept
     ];
     const cdp = makeMockCDP(nodes, [makeBoxModel(), makeBoxModel()]);
     const page = makeMockPage();
@@ -224,7 +222,7 @@ describe('StateParser', () => {
     const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
-    expect(state.elements.map((e) => e.id)).toEqual([0, 1, 2]);
+    expect(state.elements.map(e => e.id)).toEqual([0, 1, 2]);
   });
 
   // ─── enrichWithDOMContext ──────────────────────────────────────────────────
@@ -269,12 +267,15 @@ describe('StateParser', () => {
       const nodes = [
         makeNode('button', 'Tarif auswählen', 1),
         makeNode('button', 'Tarif auswählen', 2),
-        makeNode('link',   'Details',         3),
+        makeNode('link', 'Details', 3),
         makeNode('button', 'Tarif auswählen', 4),
-        makeNode('link',   'Informationen',   5),
-        makeNode('button', 'weiter',          6),
+        makeNode('link', 'Informationen', 5),
+        makeNode('button', 'weiter', 6),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map((_, i) => makeBoxModel(i * 50, 20)));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map((_, i) => makeBoxModel(i * 50, 20))
+      );
       // IDs are assigned in order: 0,1,2,3,4,5
       const page = makeEnrichmentPage({
         0: 'Kelag | Fixtarif',
@@ -320,7 +321,14 @@ describe('StateParser', () => {
     function makePageWithFrames(
       childFrames: Array<{
         iframeRect: { x: number; y: number; width: number; height: number } | null;
-        elements: Array<{ role: string; name: string; x: number; y: number; width: number; height: number }>;
+        elements: Array<{
+          role: string;
+          name: string;
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        }>;
         evaluateThrows?: boolean;
       }>
     ) {
@@ -330,18 +338,23 @@ describe('StateParser', () => {
         evaluate: jest.fn(async () => []),
       };
 
-      const frames: any[] = [mainFrame, ...childFrames.map((cf, idx) => {
-        const frameEl = cf.iframeRect
-          ? { boundingBox: jest.fn(async () => cf.iframeRect) }
-          : null;
-        return {
-          url: () => `https://example.com/frame-${idx}`,
-          frameElement: jest.fn(async () => frameEl),
-          evaluate: cf.evaluateThrows
-            ? jest.fn(async () => { throw new Error('cross-origin'); })
-            : jest.fn(async () => cf.elements),
-        };
-      })];
+      const frames: any[] = [
+        mainFrame,
+        ...childFrames.map((cf, idx) => {
+          const frameEl = cf.iframeRect
+            ? { boundingBox: jest.fn(async () => cf.iframeRect) }
+            : null;
+          return {
+            url: () => `https://example.com/frame-${idx}`,
+            frameElement: jest.fn(async () => frameEl),
+            evaluate: cf.evaluateThrows
+              ? jest.fn(async () => {
+                  throw new Error('cross-origin');
+                })
+              : jest.fn(async () => cf.elements),
+          };
+        }),
+      ];
 
       mainFrame.mainFrame = () => mainFrame;
       mainFrame.frames = () => frames;
@@ -362,10 +375,12 @@ describe('StateParser', () => {
     it('collects elements from a same-origin child frame', async () => {
       const nodes = [makeNode('button', 'Main Button', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 100, y: 200, width: 400, height: 300 },
-        elements: [{ role: 'button', name: 'Frame Button', x: 5, y: 10, width: 80, height: 30 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 100, y: 200, width: 400, height: 300 },
+          elements: [{ role: 'button', name: 'Frame Button', x: 5, y: 10, width: 80, height: 30 }],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -377,10 +392,12 @@ describe('StateParser', () => {
     it('offsets frame element coordinates by iframe bounding rect', async () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 100, y: 200, width: 400, height: 300 },
-        elements: [{ role: 'button', name: 'Offset Button', x: 5, y: 10, width: 80, height: 30 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 100, y: 200, width: 400, height: 300 },
+          elements: [{ role: 'button', name: 'Offset Button', x: 5, y: 10, width: 80, height: 30 }],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -396,11 +413,13 @@ describe('StateParser', () => {
     it('silently skips frame when evaluate() throws (cross-origin)', async () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
-        elements: [],
-        evaluateThrows: true,
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [],
+          evaluateThrows: true,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       // Should not throw
@@ -411,10 +430,12 @@ describe('StateParser', () => {
     it('skips frame when frameElement() returns null', async () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: null, // frameElement() → null → iframeRect will not be reached
-        elements: [{ role: 'button', name: 'Frame Button', x: 0, y: 0, width: 10, height: 10 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: null, // frameElement() → null → iframeRect will not be reached
+          elements: [{ role: 'button', name: 'Frame Button', x: 0, y: 0, width: 10, height: 10 }],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -424,10 +445,14 @@ describe('StateParser', () => {
     it('skips frame when iframe bounding box is zero-size', async () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 0, y: 0, width: 0, height: 0 }, // zero height
-        elements: [{ role: 'button', name: 'Invisible Frame', x: 0, y: 0, width: 10, height: 10 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 0, height: 0 }, // zero height
+          elements: [
+            { role: 'button', name: 'Invisible Frame', x: 0, y: 0, width: 10, height: 10 },
+          ],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -438,10 +463,12 @@ describe('StateParser', () => {
       // Main page already has an element called "Login" — frame version should be skipped
       const nodes = [makeNode('button', 'Login', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
-        elements: [{ role: 'button', name: 'Login', x: 5, y: 5, width: 80, height: 30 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'Login', x: 5, y: 5, width: 80, height: 30 }],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -479,10 +506,12 @@ describe('StateParser', () => {
     it('populates frameId and frameUrl on frame elements', async () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
-        elements: [{ role: 'button', name: 'Inner Button', x: 5, y: 5, width: 80, height: 30 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'Inner Button', x: 5, y: 5, width: 80, height: 30 }],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -510,10 +539,12 @@ describe('StateParser', () => {
     it('getFrame(frameId) resolves the Playwright Frame object after parse', async () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
-      const page = makePageWithFrames([{
-        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
-        elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
-      }]);
+      const page = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       await parser.parse();
@@ -564,10 +595,12 @@ describe('StateParser', () => {
       const nodes = [makeNode('button', 'Main', 1)];
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       // First parse: one child frame
-      const pageWithFrame = makePageWithFrames([{
-        iframeRect: { x: 0, y: 0, width: 200, height: 100 },
-        elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
-      }]);
+      const pageWithFrame = makePageWithFrames([
+        {
+          iframeRect: { x: 0, y: 0, width: 200, height: 100 },
+          elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
+        },
+      ]);
 
       const parser = new StateParser(pageWithFrame, cdp as any);
       await parser.parse();
@@ -615,7 +648,10 @@ describe('StateParser', () => {
         makeNode('link', 'Profile', 4),
         makeNode('textbox', 'Search', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
@@ -642,7 +678,10 @@ describe('StateParser', () => {
         makeNode('link', 'Insert', 4),
         makeNode('textbox', 'Title', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
@@ -650,7 +689,9 @@ describe('StateParser', () => {
           return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
         }
         // Mock returns element derived from data-placeholder
-        return [{ role: 'textbox', name: 'Write something...', x: 10, y: 300, width: 500, height: 60 }];
+        return [
+          { role: 'textbox', name: 'Write something...', x: 10, y: 300, width: 500, height: 60 },
+        ];
       });
 
       const parser = new StateParser(page, cdp as any);
@@ -669,7 +710,10 @@ describe('StateParser', () => {
         makeNode('link', 'Profile', 4),
         makeNode('textbox', 'Search', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
@@ -699,7 +743,10 @@ describe('StateParser', () => {
         makeNode('link', 'Profile', 4),
         makeNode('textbox', 'Search', 5), // form input exists → parseFormElements skipped
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
@@ -708,14 +755,16 @@ describe('StateParser', () => {
           return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
         }
         // parseContentEditableElements
-        return [{
-          role: 'textbox',
-          name: 'Type a message',
-          x: 10,
-          y: 500,
-          width: 400,
-          height: 40,
-        }];
+        return [
+          {
+            role: 'textbox',
+            name: 'Type a message',
+            x: 10,
+            y: 500,
+            width: 400,
+            height: 40,
+          },
+        ];
       });
 
       const parser = new StateParser(page, cdp as any);
@@ -734,7 +783,10 @@ describe('StateParser', () => {
         makeNode('button', 'D', 4),
         makeNode('textbox', 'Message input', 5), // same name as contenteditable below
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
@@ -742,14 +794,16 @@ describe('StateParser', () => {
           return (params.items as any[]).map((item: any) => ({ id: item.id, context: '' }));
         }
         // parseContentEditableElements — same name AND same position as AOM textbox
-        return [{
-          role: 'textbox',
-          name: 'Message input',
-          x: 10,
-          y: 20,
-          width: 100,
-          height: 30,
-        }];
+        return [
+          {
+            role: 'textbox',
+            name: 'Message input',
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 30,
+          },
+        ];
       });
 
       const parser = new StateParser(page, cdp as any);
@@ -792,7 +846,10 @@ describe('StateParser', () => {
         makeNode('button', 'Save', 4),
         makeNode('button', 'Close', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
@@ -835,12 +892,19 @@ describe('StateParser', () => {
         makeNode('link', 'Back', 4),
         makeNode('button', 'Close', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
         if (params?.items && params?.genericNames) {
-          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '', region: 'modal' }));
+          return (params.items as any[]).map((item: any) => ({
+            id: item.id,
+            context: '',
+            region: 'modal',
+          }));
         }
         return [];
       });
@@ -859,12 +923,19 @@ describe('StateParser', () => {
         makeNode('link', 'Home', 4),
         makeNode('button', 'Close', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
 
       const page = makeMockPage();
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, params?: any) => {
         if (params?.items && params?.genericNames) {
-          return (params.items as any[]).map((item: any) => ({ id: item.id, context: '', region: 'popup' }));
+          return (params.items as any[]).map((item: any) => ({
+            id: item.id,
+            context: '',
+            region: 'popup',
+          }));
         }
         return [];
       });
@@ -887,11 +958,7 @@ describe('StateParser', () => {
      *   3. parseWidgetPatterns (parameterless) → widgetData
      *   4. enrichAndDetectRegions (params.items + params.genericNames) → regions
      */
-    function makeWidgetPage(
-      widgetData: any[],
-      url = 'https://example.com',
-      title = 'Example'
-    ) {
+    function makeWidgetPage(widgetData: any[], url = 'https://example.com', title = 'Example') {
       let parameterlessCallCount = 0;
       const self: any = {
         url: () => url,
@@ -935,13 +1002,21 @@ describe('StateParser', () => {
 
     it('detects button + combobox dropdown widget', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Baujahr auswählen',
-        value: '2020',
-        x: 200, y: 100, width: 250, height: 40,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Baujahr auswählen',
+          value: '2020',
+          x: 200,
+          y: 100,
+          width: 250,
+          height: 40,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -956,12 +1031,20 @@ describe('StateParser', () => {
 
     it('detects aria-haspopup menu trigger', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'button',
-        name: 'Sort by',
-        x: 300, y: 50, width: 120, height: 35,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'button',
+          name: 'Sort by',
+          x: 300,
+          y: 50,
+          width: 120,
+          height: 35,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -975,12 +1058,20 @@ describe('StateParser', () => {
 
     it('detects label-associated hidden input widget', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'button',
-        name: 'Marke',
-        x: 100, y: 200, width: 200, height: 40,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'button',
+          name: 'Marke',
+          x: 100,
+          y: 200,
+          width: 200,
+          height: 40,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -993,13 +1084,21 @@ describe('StateParser', () => {
 
     it('detects native datalist autocomplete widget', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Browser',
-        value: 'Chrome',
-        x: 50, y: 300, width: 200, height: 30,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Browser',
+          value: 'Chrome',
+          x: 50,
+          y: 300,
+          width: 200,
+          height: 30,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1014,13 +1113,21 @@ describe('StateParser', () => {
 
     it('detects tablist as composite widget', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'tablist',
-        name: 'Overview | Details | Reviews',
-        value: 'Details',
-        x: 0, y: 50, width: 600, height: 45,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'tablist',
+          name: 'Overview | Details | Reviews',
+          value: 'Details',
+          x: 0,
+          y: 50,
+          width: 600,
+          height: 45,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1035,13 +1142,21 @@ describe('StateParser', () => {
 
     it('detects date picker input', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'datepicker',
-        name: 'Geburtsdatum',
-        value: '1990-01-15',
-        x: 100, y: 250, width: 200, height: 35,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'datepicker',
+          name: 'Geburtsdatum',
+          value: '1990-01-15',
+          x: 100,
+          y: 250,
+          width: 200,
+          height: 35,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1054,12 +1169,20 @@ describe('StateParser', () => {
 
     it('detects time picker input', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'timepicker',
-        name: 'Uhrzeit',
-        x: 100, y: 300, width: 150, height: 35,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'timepicker',
+          name: 'Uhrzeit',
+          x: 100,
+          y: 300,
+          width: 150,
+          height: 35,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1073,13 +1196,21 @@ describe('StateParser', () => {
 
     it('detects CSS-class based library widget (React Select, Ant Design, etc.)', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Country',
-        value: 'Germany',
-        x: 50, y: 400, width: 300, height: 38,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Country',
+          value: 'Germany',
+          x: 50,
+          y: 400,
+          width: 300,
+          height: 38,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1094,13 +1225,21 @@ describe('StateParser', () => {
 
     it('detects hidden select with custom trigger widget', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Größe',
-        value: 'M',
-        x: 200, y: 350, width: 180, height: 40,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Größe',
+          value: 'M',
+          x: 200,
+          y: 350,
+          width: 180,
+          height: 40,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1122,14 +1261,22 @@ describe('StateParser', () => {
         makeNode('link', 'About', 4),
         makeNode('textbox', 'Search', 5),
       ];
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
       // Widget also has "Baujahr" at same position → should REPLACE the button
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Baujahr',
-        value: '2020',
-        x: 10, y: 20, width: 100, height: 30,
-      }]);
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Baujahr',
+          value: '2020',
+          x: 10,
+          y: 20,
+          width: 100,
+          height: 30,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1143,12 +1290,20 @@ describe('StateParser', () => {
 
     it('widget at unique position is added alongside existing elements', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Color',
-        x: 500, y: 500, width: 200, height: 40,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Color',
+          x: 500,
+          y: 500,
+          width: 200,
+          height: 40,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1160,7 +1315,10 @@ describe('StateParser', () => {
 
     it('multiple widgets can be detected simultaneously', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
       const page = makeWidgetPage([
         { role: 'combobox', name: 'Size', x: 100, y: 400, width: 200, height: 40 },
         { role: 'tablist', name: 'Tab A | Tab B', x: 0, y: 0, width: 400, height: 50 },
@@ -1177,12 +1335,20 @@ describe('StateParser', () => {
 
     it('widgets without value omit value field', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
-      const page = makeWidgetPage([{
-        role: 'combobox',
-        name: 'Empty Select',
-        x: 100, y: 500, width: 200, height: 40,
-      }]);
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
+      const page = makeWidgetPage([
+        {
+          role: 'combobox',
+          name: 'Empty Select',
+          x: 100,
+          y: 500,
+          width: 200,
+          height: 40,
+        },
+      ]);
 
       const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
@@ -1194,7 +1360,10 @@ describe('StateParser', () => {
 
     it('returns no widgets when evaluate returns empty', async () => {
       const nodes = fiveAOMNodes();
-      const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
+      const cdp = makeMockCDP(
+        nodes,
+        nodes.map(() => makeBoxModel())
+      );
       const page = makeWidgetPage([]);
 
       const parser = new StateParser(page, cdp as any);
@@ -1222,10 +1391,13 @@ describe('StateParser', () => {
       // Mock page.evaluate to simulate the browser-side output shape
       (page.evaluate as jest.Mock).mockImplementation(async (_fn: any, targets?: any) => {
         if (!targets) return [];
-        return (targets as { id: number }[]).reduce((acc, t) => {
-          acc[t.id] = { aria: `role-${t.id}||`, topology: `0:div-${t.id}` };
-          return acc;
-        }, {} as Record<number, unknown>);
+        return (targets as { id: number }[]).reduce(
+          (acc, t) => {
+            acc[t.id] = { aria: `role-${t.id}||`, topology: `0:div-${t.id}` };
+            return acc;
+          },
+          {} as Record<number, unknown>
+        );
       });
 
       const parser = new StateParser(page, cdp as any);

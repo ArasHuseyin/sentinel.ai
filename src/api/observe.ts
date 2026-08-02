@@ -48,7 +48,10 @@ export class ObservationEngine {
             properties: {
               description: { type: 'string' },
               selector: { type: 'string' },
-              method: { type: 'string', enum: ['click', 'fill', 'hover', 'select', 'check', 'press'] },
+              method: {
+                type: 'string',
+                enum: ['click', 'fill', 'hover', 'select', 'check', 'press'],
+              },
               arguments: { type: 'array', items: { type: 'string' } },
             },
             required: ['description', 'method'],
@@ -58,7 +61,10 @@ export class ObservationEngine {
       required: ['actions'],
     };
 
-    const result = await this.gemini.generateStructuredData<{ actions: ObserveResult[] }>(prompt, schema);
+    const result = await this.gemini.generateStructuredData<{ actions: ObserveResult[] }>(
+      prompt,
+      schema
+    );
     return result.actions;
   }
 }

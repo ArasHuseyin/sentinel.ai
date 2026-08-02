@@ -30,12 +30,14 @@ describe('AgentMemory', () => {
 
   it('includes extracted data in the summary so the planner sees prior results', () => {
     const m = new AgentMemory();
-    m.add(makeStep({
-      stepNumber: 1,
-      instruction: 'extract selected plan',
-      action: 'extract: extract selected plan',
-      data: { plan: 'Pro', message: 'You selected the Pro plan.' },
-    }));
+    m.add(
+      makeStep({
+        stepNumber: 1,
+        instruction: 'extract selected plan',
+        action: 'extract: extract selected plan',
+        data: { plan: 'Pro', message: 'You selected the Pro plan.' },
+      })
+    );
     const summary = m.getSummary();
     expect(summary).toContain(':: data=');
     expect(summary).toContain('Pro');
@@ -45,12 +47,14 @@ describe('AgentMemory', () => {
   it('truncates long data previews to keep the summary compact', () => {
     const m = new AgentMemory();
     const bigText = 'x'.repeat(5000);
-    m.add(makeStep({
-      stepNumber: 1,
-      instruction: 'extract page',
-      action: 'extract: extract page',
-      data: { text: bigText },
-    }));
+    m.add(
+      makeStep({
+        stepNumber: 1,
+        instruction: 'extract page',
+        action: 'extract: extract page',
+        data: { text: bigText },
+      })
+    );
     const summary = m.getSummary();
     // Preview is hard-capped at 300 chars per step; whole summary stays small.
     expect(summary.length).toBeLessThan(600);

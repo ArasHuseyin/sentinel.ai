@@ -66,9 +66,15 @@ export class ConsoleLogger implements Logger {
     }
   }
 
-  info(message: string): void { this.emitIfVisible(1, 'log', message); }
-  notice(message: string): void { this.emitIfVisible(2, 'log', message); }
-  debug(message: string): void { this.emitIfVisible(3, 'log', message); }
+  info(message: string): void {
+    this.emitIfVisible(1, 'log', message);
+  }
+  notice(message: string): void {
+    this.emitIfVisible(2, 'log', message);
+  }
+  debug(message: string): void {
+    this.emitIfVisible(3, 'log', message);
+  }
   warn(message: string): void {
     // Warnings always surface — matches old `console.warn` behaviour which
     // did not respect the verbose filter.
@@ -113,9 +119,15 @@ export class JsonLogger implements Logger {
     }
   }
 
-  info(message: string, fields?: Record<string, unknown>): void { this.emit(1, message, fields); }
-  notice(message: string, fields?: Record<string, unknown>): void { this.emit(2, message, fields); }
-  debug(message: string, fields?: Record<string, unknown>): void { this.emit(3, message, fields); }
+  info(message: string, fields?: Record<string, unknown>): void {
+    this.emit(1, message, fields);
+  }
+  notice(message: string, fields?: Record<string, unknown>): void {
+    this.emit(2, message, fields);
+  }
+  debug(message: string, fields?: Record<string, unknown>): void {
+    this.emit(3, message, fields);
+  }
   warn(message: string, fields?: Record<string, unknown>): void {
     // Warnings bypass the verbose filter, consistent with ConsoleLogger.
     const event: LogEvent = {
@@ -128,7 +140,9 @@ export class JsonLogger implements Logger {
     };
     try {
       this.sink(JSON.stringify(event));
-    } catch { /* non-fatal */ }
+    } catch {
+      /* non-fatal */
+    }
   }
 
   child(scope: string): Logger {

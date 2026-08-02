@@ -39,17 +39,31 @@ export async function withSpan<T>(
 const _m = metrics.getMeter(TRACER_NAME, VERSION);
 
 /** act() call count — label: `success` ('true' | 'false') */
-export const actCounter   = _m.createCounter('sentinel.act.requests',       { description: 'Number of act() calls' });
+export const actCounter = _m.createCounter('sentinel.act.requests', {
+  description: 'Number of act() calls',
+});
 /** act() duration in ms */
-export const actDuration  = _m.createHistogram('sentinel.act.duration_ms',  { description: 'act() call duration', unit: 'ms' });
+export const actDuration = _m.createHistogram('sentinel.act.duration_ms', {
+  description: 'act() call duration',
+  unit: 'ms',
+});
 /** LLM API call count — labels: `llm.model`, `success` */
-export const llmCounter   = _m.createCounter('sentinel.llm.requests',       { description: 'Number of LLM API calls' });
+export const llmCounter = _m.createCounter('sentinel.llm.requests', {
+  description: 'Number of LLM API calls',
+});
 /** LLM token count — labels: `llm.model`, `direction` ('input' | 'output') */
-export const llmTokens    = _m.createCounter('sentinel.llm.tokens',         { description: 'LLM token usage' });
+export const llmTokens = _m.createCounter('sentinel.llm.tokens', {
+  description: 'LLM token usage',
+});
 /** LLM call duration in ms — label: `llm.model` */
-export const llmDuration  = _m.createHistogram('sentinel.llm.duration_ms',  { description: 'LLM API call duration', unit: 'ms' });
+export const llmDuration = _m.createHistogram('sentinel.llm.duration_ms', {
+  description: 'LLM API call duration',
+  unit: 'ms',
+});
 /** Steps per agent run — label: `goal_achieved` ('true' | 'false') */
-export const agentSteps   = _m.createHistogram('sentinel.agent.steps',      { description: 'Steps per agent run' });
+export const agentSteps = _m.createHistogram('sentinel.agent.steps', {
+  description: 'Steps per agent run',
+});
 
 // ─── Tracing LLM provider wrapper ────────────────────────────────────────────
 
@@ -72,7 +86,6 @@ export const agentSteps   = _m.createHistogram('sentinel.agent.steps',      { de
  * token tracker keeps working. No-op when no OTel SDK is configured.
  */
 export function createTracingProvider(provider: LLMProvider, modelName: string): LLMProvider {
-
   async function wrap<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     // NOTE: We intentionally do NOT intercept provider.onTokenUsage here.
     // Modifying a shared property would cause a race condition when multiple
@@ -84,10 +97,10 @@ export function createTracingProvider(provider: LLMProvider, modelName: string):
     return withSpan(
       'sentinel.llm',
       { 'llm.system': modelName, 'gen_ai.operation.name': operation },
-      async (_span) => {
+      async _span => {
         try {
           const result = await fn();
-          llmCounter.add(1,  { 'llm.model': modelName, success: 'true' });
+          llmCounter.add(1, { 'llm.model': modelName, success: 'true' });
           llmDuration.record(Date.now() - t0, { 'llm.model': modelName });
           return result;
         } catch (err) {
@@ -101,8 +114,14 @@ export function createTracingProvider(provider: LLMProvider, modelName: string):
   // Build the traced wrapper. Use Object.defineProperty for onTokenUsage so the
   // get/set types don't run into exactOptionalPropertyTypes conflicts.
   const traced = {
-    generateStructuredData<T>(prompt: string, schema: SchemaInput<T>, options?: GenerateOptions): Promise<T> {
-      return wrap('generateStructuredData', () => provider.generateStructuredData<T>(prompt, schema, options));
+    generateStructuredData<T>(
+      prompt: string,
+      schema: SchemaInput<T>,
+      options?: GenerateOptions
+    ): Promise<T> {
+      return wrap('generateStructuredData', () =>
+        provider.generateStructuredData<T>(prompt, schema, options)
+      );
     },
     generateText(prompt: string, systemInstruction?: string): Promise<string> {
       return wrap('generateText', () => provider.generateText(prompt, systemInstruction));

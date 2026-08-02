@@ -5,8 +5,18 @@ describe('WorkflowRecorder', () => {
   it('starts and stops recording, returning a workflow', () => {
     const recorder = new WorkflowRecorder();
     recorder.startRecording('My Workflow');
-    recorder.record({ type: 'goto', url: 'https://example.com', pageUrl: 'https://example.com', pageTitle: 'Example' });
-    recorder.record({ type: 'act', instruction: 'Click login', pageUrl: 'https://example.com', pageTitle: 'Example' });
+    recorder.record({
+      type: 'goto',
+      url: 'https://example.com',
+      pageUrl: 'https://example.com',
+      pageTitle: 'Example',
+    });
+    recorder.record({
+      type: 'act',
+      instruction: 'Click login',
+      pageUrl: 'https://example.com',
+      pageTitle: 'Example',
+    });
     const workflow = recorder.stopRecording();
 
     expect(workflow.name).toBe('My Workflow');
@@ -27,7 +37,12 @@ describe('WorkflowRecorder', () => {
   it('exportAsJSON returns valid JSON with steps', () => {
     const recorder = new WorkflowRecorder();
     recorder.startRecording('Test');
-    recorder.record({ type: 'goto', url: 'https://test.com', pageUrl: 'https://test.com', pageTitle: 'Test' });
+    recorder.record({
+      type: 'goto',
+      url: 'https://test.com',
+      pageUrl: 'https://test.com',
+      pageTitle: 'Test',
+    });
     const workflow = recorder.stopRecording();
 
     const json = recorder.exportAsJSON(workflow);
@@ -41,8 +56,18 @@ describe('WorkflowRecorder', () => {
   it('exportAsCode returns TypeScript string containing goto url', () => {
     const recorder = new WorkflowRecorder();
     recorder.startRecording('Code Export');
-    recorder.record({ type: 'goto', url: 'https://example.com', pageUrl: 'https://example.com', pageTitle: '' });
-    recorder.record({ type: 'act', instruction: 'Click submit', pageUrl: 'https://example.com', pageTitle: '' });
+    recorder.record({
+      type: 'goto',
+      url: 'https://example.com',
+      pageUrl: 'https://example.com',
+      pageTitle: '',
+    });
+    recorder.record({
+      type: 'act',
+      instruction: 'Click submit',
+      pageUrl: 'https://example.com',
+      pageTitle: '',
+    });
     const workflow = recorder.stopRecording();
 
     const code = recorder.exportAsCode(workflow);

@@ -30,7 +30,7 @@ async function run() {
     {
       maxSteps: 10,
       onStep: step => {
-        const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
+        const icon = step.type === 'extract' ? '🔍' : step.success ? '✅' : '❌';
         console.log(`\n[Step ${step.stepNumber}] ${icon} ${step.instruction}`);
         console.log(`  → ${step.reasoning}`);
       },
@@ -49,7 +49,9 @@ async function run() {
 
   // Token usage summary
   const usage = sentinel.getTokenUsage();
-  console.log(`\n💰 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(5)})`);
+  console.log(
+    `\n💰 Token usage: ${usage.totalTokens} tokens (~$${usage.estimatedCostUsd.toFixed(5)})`
+  );
 
   await sentinel.close();
 }

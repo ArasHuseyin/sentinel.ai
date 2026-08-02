@@ -6,7 +6,12 @@ import { withRetry } from '../with-retry.js';
 import { createLogger, type Logger } from '../logger.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
-  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
+  return (
+    typeof schema === 'object' &&
+    schema !== null &&
+    '_def' in schema &&
+    typeof (schema as any).parse === 'function'
+  );
 }
 
 export interface OllamaProviderOptions {
@@ -115,9 +120,7 @@ export class OllamaProvider implements LLMProvider {
         body: JSON.stringify({
           model: this.modelName,
           stream: false,
-          messages: [
-            { role: 'user', content: prompt, images: [imageBase64] },
-          ],
+          messages: [{ role: 'user', content: prompt, images: [imageBase64] }],
         }),
       });
       if (!response.ok) {

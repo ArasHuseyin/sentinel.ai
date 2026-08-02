@@ -10,9 +10,24 @@ function makeState(overrides: Partial<SimplifiedState> = {}): SimplifiedState {
     url: 'https://example.com',
     title: 'Example',
     elements: [
-      { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-      { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
-      { id: 2, role: 'link', name: 'Home', boundingClientRect: { x: 10, y: 100, width: 60, height: 20 } },
+      {
+        id: 0,
+        role: 'button',
+        name: 'Submit',
+        boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+      },
+      {
+        id: 1,
+        role: 'textbox',
+        name: 'Email',
+        boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+      },
+      {
+        id: 2,
+        role: 'link',
+        name: 'Home',
+        boundingClientRect: { x: 10, y: 100, width: 60, height: 20 },
+      },
     ],
     ...overrides,
   };
@@ -36,11 +51,12 @@ function makeMockStateParser(state: SimplifiedState) {
 function makeSemanticFallbackStateParser(state: SimplifiedState) {
   const changedState: SimplifiedState = { ...state, url: state.url + '/result' };
   return {
-    parse: jest.fn<() => Promise<SimplifiedState>>()
-      .mockResolvedValueOnce(state)          // call 1: initial parse
-      .mockResolvedValueOnce(state)          // call 2: auto-recovery parse
-      .mockResolvedValueOnce(state)          // call 3: state before fallback
-      .mockResolvedValue(changedState),      // call 4+: state after fallback (changed)
+    parse: jest
+      .fn<() => Promise<SimplifiedState>>()
+      .mockResolvedValueOnce(state) // call 1: initial parse
+      .mockResolvedValueOnce(state) // call 2: auto-recovery parse
+      .mockResolvedValueOnce(state) // call 3: state before fallback
+      .mockResolvedValue(changedState), // call 4+: state after fallback (changed)
     invalidateCache: jest.fn(),
   };
 }
@@ -139,7 +155,12 @@ describe('ActionEngine', () => {
   it('returns success for a fill action with value', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'test@example.com', reasoning: 'Email field' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'fill',
+      value: 'test@example.com',
+      reasoning: 'Email field',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Fill in the email field with test@example.com');
@@ -151,13 +172,22 @@ describe('ActionEngine', () => {
   it('interpolates %variable% placeholders', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'user@test.com', reasoning: 'Email field' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'fill',
+      value: 'user@test.com',
+      reasoning: 'Email field',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
-    await engine.act('Fill %email% into the email field', { variables: { email: 'user@test.com' } });
+    await engine.act('Fill %email% into the email field', {
+      variables: { email: 'user@test.com' },
+    });
 
     // The prompt passed to LLM should contain the resolved value
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     expect(promptArg).toContain('user@test.com');
     expect(promptArg).not.toContain('%email%');
   });
@@ -191,7 +221,12 @@ describe('ActionEngine', () => {
   it('handles press action with keyboard shortcut', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 0, action: 'press', value: 'Enter', reasoning: 'Press Enter' });
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'press',
+      value: 'Enter',
+      reasoning: 'Press Enter',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Press Enter');
@@ -220,7 +255,9 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click submit');
 
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     expect(promptArg).toContain('https://shop.example.com');
     expect(promptArg).toContain('My Shop');
   });
@@ -231,7 +268,12 @@ describe('ActionEngine', () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const outOfViewportState = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
       ],
     });
     const stateParser = makeSemanticFallbackStateParser(outOfViewportState);
@@ -251,7 +293,12 @@ describe('ActionEngine', () => {
   it('returns success for an append action', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 1, action: 'append', value: ' extra text', reasoning: 'Append to email field' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'append',
+      value: ' extra text',
+      reasoning: 'Append to email field',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Append extra text to the email field');
@@ -263,7 +310,12 @@ describe('ActionEngine', () => {
   it('fill uses page.mouse.click to focus and keyboard.type to enter value', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'hello', reasoning: 'Fill email' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'fill',
+      value: 'hello',
+      reasoning: 'Fill email',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Fill hello into email field');
@@ -277,7 +329,12 @@ describe('ActionEngine', () => {
   it('append uses page.mouse.click to focus, keyboard.press(End) to move cursor, and keyboard.type to append', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 1, action: 'append', value: ' extra text', reasoning: 'Append to email field' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'append',
+      value: ' extra text',
+      reasoning: 'Append to email field',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Append extra text to the email field');
@@ -295,7 +352,11 @@ describe('ActionEngine', () => {
   it('double-click calls page.mouse.dblclick', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 0, action: 'double-click', reasoning: 'Double click submit' });
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'double-click',
+      reasoning: 'Double click submit',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Double click the submit button');
@@ -307,7 +368,11 @@ describe('ActionEngine', () => {
   it('right-click calls page.mouse.click with button right', async () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
-    const llm = makeMockLLM({ elementId: 0, action: 'right-click', reasoning: 'Open context menu' });
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'right-click',
+      reasoning: 'Open context menu',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Right-click the submit button');
@@ -361,11 +426,21 @@ describe('ActionEngine', () => {
 
     const state = makeState({
       elements: [
-        { id: 2, role: 'combobox', name: 'Country', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+        {
+          id: 2,
+          role: 'combobox',
+          name: 'Country',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 2, action: 'select', value: 'Germany', reasoning: 'Select country' });
+    const llm = makeMockLLM({
+      elementId: 2,
+      action: 'select',
+      value: 'Germany',
+      reasoning: 'Select country',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Select Germany from country dropdown');
@@ -380,11 +455,21 @@ describe('ActionEngine', () => {
     // Use elementId: 2 (role: 'combobox') — elementId 0/1 are reserved for scroll-without-target check
     const state = makeState({
       elements: [
-        { id: 2, role: 'combobox', name: 'Country', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+        {
+          id: 2,
+          role: 'combobox',
+          name: 'Country',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 2, action: 'select', value: 'Germany', reasoning: 'Select country' });
+    const llm = makeMockLLM({
+      elementId: 2,
+      action: 'select',
+      value: 'Germany',
+      reasoning: 'Select country',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Select Germany from country dropdown');
@@ -403,11 +488,20 @@ describe('ActionEngine', () => {
     // elementId must be non-zero to avoid the scroll-without-target path
     const state = makeState({
       elements: [
-        { id: 1, role: 'region', name: 'Feed', boundingClientRect: { x: 10, y: 60, width: 200, height: 200 } },
+        {
+          id: 1,
+          role: 'region',
+          name: 'Feed',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 200 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 1, action: 'scroll-down', reasoning: 'Scroll container down' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'scroll-down',
+      reasoning: 'Scroll container down',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Scroll down inside the container');
@@ -415,7 +509,10 @@ describe('ActionEngine', () => {
     expect(result.success).toBe(true);
     // scroll-down with target uses page.evaluate to call el.scrollBy(0, 300)
     const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
-    const scrollCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number' && args[1].x >= 10);
+    const scrollCall = evaluateCalls.find(
+      args =>
+        args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number' && args[1].x >= 10
+    );
     expect(scrollCall).toBeDefined();
   });
 
@@ -423,11 +520,20 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
-        { id: 1, role: 'region', name: 'Feed', boundingClientRect: { x: 10, y: 60, width: 200, height: 200 } },
+        {
+          id: 1,
+          role: 'region',
+          name: 'Feed',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 200 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 1, action: 'scroll-up', reasoning: 'Scroll container up' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'scroll-up',
+      reasoning: 'Scroll container up',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Scroll up inside the container');
@@ -435,7 +541,10 @@ describe('ActionEngine', () => {
     expect(result.success).toBe(true);
     // scroll-up with target uses page.evaluate to call el.scrollBy(0, -300)
     const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
-    const scrollCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number' && args[1].x >= 10);
+    const scrollCall = evaluateCalls.find(
+      args =>
+        args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number' && args[1].x >= 10
+    );
     expect(scrollCall).toBeDefined();
   });
 
@@ -443,11 +552,20 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
-        { id: 1, role: 'link', name: 'Footer link', boundingClientRect: { x: 10, y: 60, width: 100, height: 20 } },
+        {
+          id: 1,
+          role: 'link',
+          name: 'Footer link',
+          boundingClientRect: { x: 10, y: 60, width: 100, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 1, action: 'scroll-to', reasoning: 'Scroll to footer link' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'scroll-to',
+      reasoning: 'Scroll to footer link',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Scroll to the footer link');
@@ -455,7 +573,9 @@ describe('ActionEngine', () => {
     expect(result.success).toBe(true);
     // scroll-to uses page.evaluate to call el.scrollIntoView()
     const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
-    const scrollToCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number');
+    const scrollToCall = evaluateCalls.find(
+      args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number'
+    );
     expect(scrollToCall).toBeDefined();
   });
 
@@ -463,7 +583,12 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
-        { id: 0, role: 'radio', name: 'Option A', boundingClientRect: { x: 10, y: 20, width: 20, height: 20 } },
+        {
+          id: 0,
+          role: 'radio',
+          name: 'Option A',
+          boundingClientRect: { x: 10, y: 20, width: 20, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
@@ -476,7 +601,9 @@ describe('ActionEngine', () => {
     // radio/checkbox path uses page.evaluate (elementFromPoint + hiddenInput.click / label.click), NOT mouse.click
     expect((page.mouse.click as jest.Mock).mock.calls).toHaveLength(0);
     const evaluateCalls = (page.evaluate as jest.Mock).mock.calls as any[][];
-    const radioEvalCall = evaluateCalls.find(args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number');
+    const radioEvalCall = evaluateCalls.find(
+      args => args[1] && typeof args[1].x === 'number' && typeof args[1].y === 'number'
+    );
     expect(radioEvalCall).toBeDefined();
   });
 
@@ -485,7 +612,14 @@ describe('ActionEngine', () => {
   it('double-click semantic fallback calls locator.dblclick', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'double-click', reasoning: 'Double click' });
@@ -494,14 +628,23 @@ describe('ActionEngine', () => {
     const result = await engine.act('Double click submit');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.dblclick).toHaveBeenCalled();
   });
 
   it('right-click semantic fallback calls locator.click with button right', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Menu', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Menu',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'right-click', reasoning: 'Context menu' });
@@ -510,7 +653,9 @@ describe('ActionEngine', () => {
     const result = await engine.act('Right click menu');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     const calls = (locator.click as jest.Mock).mock.calls as any[][];
     expect(calls.some(args => args[0]?.button === 'right')).toBe(true);
   });
@@ -518,7 +663,14 @@ describe('ActionEngine', () => {
   it('hover semantic fallback calls locator.hover', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Tooltip', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Tooltip',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'hover', reasoning: 'Hover for tooltip' });
@@ -527,30 +679,53 @@ describe('ActionEngine', () => {
     const result = await engine.act('Hover over tooltip button');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.hover).toHaveBeenCalled();
   });
 
   it('select semantic fallback calls locator.selectOption', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'combobox', name: 'Country', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'combobox',
+          name: 'Country',
+          boundingClientRect: { x: 10, y: 500, width: 200, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
-    const llm = makeMockLLM({ elementId: 0, action: 'select', value: 'Germany', reasoning: 'Select country' });
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'select',
+      value: 'Germany',
+      reasoning: 'Select country',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Select Germany from country dropdown');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.selectOption).toHaveBeenCalledWith('Germany', expect.anything());
   });
 
   it('scroll-to semantic fallback calls locator.scrollIntoViewIfNeeded', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Footer', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Footer',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-to', reasoning: 'Scroll to footer' });
@@ -559,7 +734,9 @@ describe('ActionEngine', () => {
     const result = await engine.act('Scroll to footer');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.scrollIntoViewIfNeeded).toHaveBeenCalled();
   });
 
@@ -588,9 +765,17 @@ describe('ActionEngine', () => {
     const page = {
       viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
       waitForLoadState: jest.fn(async () => {}),
-      mouse: { click: jest.fn(async () => { throw new Error('primary failed'); }), dblclick: jest.fn(async () => {}), move: jest.fn(async () => {}) },
+      mouse: {
+        click: jest.fn(async () => {
+          throw new Error('primary failed');
+        }),
+        dblclick: jest.fn(async () => {}),
+        move: jest.fn(async () => {}),
+      },
       keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
-      evaluate: jest.fn(async (_fn: any, args?: any) => args === undefined ? { x: 0, y: 0 } : null),
+      evaluate: jest.fn(async (_fn: any, args?: any) =>
+        args === undefined ? { x: 0, y: 0 } : null
+      ),
       waitForNavigation: jest.fn(async () => {}),
       waitForTimeout: jest.fn(async () => {}),
       locator: jest.fn(() => locatorInstance),
@@ -629,32 +814,60 @@ describe('ActionEngine', () => {
   it('fill semantic fallback calls locator.fill', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
+      elements: [
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 10, y: 500, width: 200, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
-    const llm = makeMockLLM({ elementId: 1, action: 'fill', value: 'test@example.com', reasoning: 'Fill email' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'fill',
+      value: 'test@example.com',
+      reasoning: 'Fill email',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Fill in email field');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.fill).toHaveBeenCalledWith('test@example.com', expect.anything());
   });
 
   it('append semantic fallback calls locator.focus + press + pressSequentially', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
+      elements: [
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 10, y: 500, width: 200, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
-    const llm = makeMockLLM({ elementId: 1, action: 'append', value: ' extra', reasoning: 'Append text' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'append',
+      value: ' extra',
+      reasoning: 'Append text',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Append text to email field');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.focus).toHaveBeenCalled();
     expect(locator.press).toHaveBeenCalledWith('End');
     expect(locator.pressSequentially).toHaveBeenCalledWith(' extra', expect.anything());
@@ -663,16 +876,30 @@ describe('ActionEngine', () => {
   it('press semantic fallback calls locator.focus + locator.press', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 1, role: 'textbox', name: 'Search', boundingClientRect: { x: 10, y: 500, width: 200, height: 30 } }],
+      elements: [
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Search',
+          boundingClientRect: { x: 10, y: 500, width: 200, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
-    const llm = makeMockLLM({ elementId: 1, action: 'press', value: 'Enter', reasoning: 'Submit search' });
+    const llm = makeMockLLM({
+      elementId: 1,
+      action: 'press',
+      value: 'Enter',
+      reasoning: 'Submit search',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Press Enter in search field');
 
     expect(result.success).toBe(true);
-    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<typeof makeMockLocator>;
+    const locator = (page.getByRole as jest.Mock).mock.results[0]?.value as ReturnType<
+      typeof makeMockLocator
+    >;
     expect(locator.focus).toHaveBeenCalled();
     expect(locator.press).toHaveBeenCalledWith('Enter');
   });
@@ -681,7 +908,14 @@ describe('ActionEngine', () => {
     const page = makeMockPage({ width: 200, height: 200 });
     // elementId must be non-zero so it's not treated as scroll-without-target
     const state = makeState({
-      elements: [{ id: 1, role: 'region', name: 'Feed', boundingClientRect: { x: 10, y: 500, width: 200, height: 200 } }],
+      elements: [
+        {
+          id: 1,
+          role: 'region',
+          name: 'Feed',
+          boundingClientRect: { x: 10, y: 500, width: 200, height: 200 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'scroll-down', reasoning: 'Scroll feed' });
@@ -697,7 +931,14 @@ describe('ActionEngine', () => {
   it('scroll-up with target in semantic fallback calls locator.evaluate', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 1, role: 'region', name: 'Feed', boundingClientRect: { x: 10, y: 500, width: 200, height: 200 } }],
+      elements: [
+        {
+          id: 1,
+          role: 'region',
+          name: 'Feed',
+          boundingClientRect: { x: 10, y: 500, width: 200, height: 200 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 1, action: 'scroll-up', reasoning: 'Scroll feed up' });
@@ -713,14 +954,23 @@ describe('ActionEngine', () => {
   it('radio/checkbox semantic fallback: check() throws → falls back to click()', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'radio', name: 'Option A', boundingClientRect: { x: 10, y: 500, width: 20, height: 20 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'radio',
+          name: 'Option A',
+          boundingClientRect: { x: 10, y: 500, width: 20, height: 20 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Select radio' });
 
     const locatorInstance = makeMockLocator();
     // check() throws → should fall back to click()
-    (locatorInstance.check as jest.Mock) = jest.fn(async () => { throw new Error('check failed'); });
+    (locatorInstance.check as jest.Mock) = jest.fn(async () => {
+      throw new Error('check failed');
+    });
     const page2 = {
       ...page,
       getByRole: jest.fn(() => locatorInstance),
@@ -738,14 +988,23 @@ describe('ActionEngine', () => {
   it('findBestLocator: isVisible throws on all strategies → returns first strategy', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     const stateParser = makeSemanticFallbackStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
 
     // All isVisible() calls throw — findBestLocator should still return strategies[0]
     const throwingLocator = makeMockLocator();
-    (throwingLocator.isVisible as jest.Mock) = jest.fn(async () => { throw new Error('timeout'); });
+    (throwingLocator.isVisible as jest.Mock) = jest.fn(async () => {
+      throw new Error('timeout');
+    });
     const page2 = {
       ...page,
       getByRole: jest.fn(() => throwingLocator),
@@ -767,25 +1026,51 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const noMatchState = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Unrelated',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
       ],
     });
     const matchState = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-        { id: 1, role: 'link', name: 'John Chat', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Unrelated',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
+        {
+          id: 1,
+          role: 'link',
+          name: 'John Chat',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+        },
       ],
     });
     const stateParser = {
-      parse: jest.fn<() => Promise<SimplifiedState>>()
+      parse: jest
+        .fn<() => Promise<SimplifiedState>>()
         .mockResolvedValueOnce(noMatchState)
         .mockResolvedValue(matchState),
       invalidateCache: jest.fn(),
     };
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn<() => Promise<any>>()
-        .mockResolvedValueOnce({ candidates: [], action: 'click', reasoning: 'not visible', notFound: true })
-        .mockResolvedValueOnce({ candidates: [{ elementId: 1, confidence: 1 }], action: 'click', reasoning: 'found it' }) as any,
+      generateStructuredData: jest
+        .fn<() => Promise<any>>()
+        .mockResolvedValueOnce({
+          candidates: [],
+          action: 'click',
+          reasoning: 'not visible',
+          notFound: true,
+        })
+        .mockResolvedValueOnce({
+          candidates: [{ elementId: 1, confidence: 1 }],
+          action: 'click',
+          reasoning: 'found it',
+        }) as any,
       generateText: jest.fn(async () => ''),
     };
 
@@ -805,7 +1090,12 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const irrelevantState = makeState({
       elements: [
-        { id: 0, role: 'link', name: 'Sidebar Nav', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'link',
+          name: 'Sidebar Nav',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
       ],
     });
     const stateParser = {
@@ -835,7 +1125,12 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const relevantState = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Login',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(relevantState);
@@ -852,7 +1147,12 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Unrelated', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Unrelated',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
       ],
     });
     const stateParser = {
@@ -900,9 +1200,27 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 }, region: 'sidebar' },
-        { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 }, region: 'main' },
-        { id: 2, role: 'link', name: 'Home', boundingClientRect: { x: 10, y: 100, width: 60, height: 20 }, region: 'header' },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+          region: 'sidebar',
+        },
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+          region: 'main',
+        },
+        {
+          id: 2,
+          role: 'link',
+          name: 'Home',
+          boundingClientRect: { x: 10, y: 100, width: 60, height: 20 },
+          region: 'header',
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
@@ -911,7 +1229,9 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click the submit button');
 
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     expect(promptArg).toContain('region');
   });
 
@@ -932,7 +1252,9 @@ describe('ActionEngine', () => {
       describeScreen: jest.fn(async () => 'A page with a submit button'),
     };
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, { visionGrounding: mockVisionGrounding as any });
+    const engine = new ActionEngine(page as any, stateParser as any, llm, {
+      visionGrounding: mockVisionGrounding as any,
+    });
     const result = await engine.act('Click submit button');
 
     expect(result.success).toBe(true);
@@ -948,11 +1270,36 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     const state = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-        { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
-        { id: 2, role: 'link', name: 'Home', boundingClientRect: { x: 10, y: 100, width: 60, height: 20 } },
-        { id: 3, role: 'button', name: 'Cancel', boundingClientRect: { x: 10, y: 140, width: 80, height: 30 } },
-        { id: 4, role: 'link', name: 'About', boundingClientRect: { x: 10, y: 180, width: 60, height: 20 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+        },
+        {
+          id: 2,
+          role: 'link',
+          name: 'Home',
+          boundingClientRect: { x: 10, y: 100, width: 60, height: 20 },
+        },
+        {
+          id: 3,
+          role: 'button',
+          name: 'Cancel',
+          boundingClientRect: { x: 10, y: 140, width: 80, height: 30 },
+        },
+        {
+          id: 4,
+          role: 'link',
+          name: 'About',
+          boundingClientRect: { x: 10, y: 180, width: 60, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
@@ -962,7 +1309,9 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 2 });
     await engine.act('Click the submit button');
 
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     // "Submit" should be in the prompt; less relevant elements may be excluded
     expect(promptArg).toContain('Submit');
     // Form fields + nearby buttons are always kept regardless of maxElements.
@@ -979,7 +1328,9 @@ describe('ActionEngine', () => {
     const engine = new ActionEngine(page as any, stateParser as any, llm, { maxElements: 10 });
     await engine.act('Click submit');
 
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     // Compact format: each element is one "id | role | name" line
     const elementLineCount = (promptArg.match(/\d+ \| \w+ \| /g) ?? []).length;
     expect(elementLineCount).toBe(3);
@@ -1000,7 +1351,9 @@ describe('ActionEngine', () => {
       describeScreen: jest.fn(async () => ''),
     };
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, { visionGrounding: mockVisionGrounding as any });
+    const engine = new ActionEngine(page as any, stateParser as any, llm, {
+      visionGrounding: mockVisionGrounding as any,
+    });
     const result = await engine.act('Click submit button');
 
     // Falls through to semantic fallback which succeeds (locator.click is not mocked to fail)
@@ -1015,8 +1368,18 @@ describe('ActionEngine', () => {
     // Two elements: id=0 (disabled), id=1 (valid target)
     const state = makeState({
       elements: [
-        { id: 0, role: 'button', name: 'Disabled Button', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-        { id: 1, role: 'button', name: 'Active Button', boundingClientRect: { x: 10, y: 60, width: 80, height: 30 } },
+        {
+          id: 0,
+          role: 'button',
+          name: 'Disabled Button',
+          boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+        },
+        {
+          id: 1,
+          role: 'button',
+          name: 'Active Button',
+          boundingClientRect: { x: 10, y: 60, width: 80, height: 30 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
@@ -1024,7 +1387,10 @@ describe('ActionEngine', () => {
     // LLM returns both elements as candidates
     const llm: LLMProvider = {
       generateStructuredData: jest.fn(async () => ({
-        candidates: [{ elementId: 0, confidence: 0.9 }, { elementId: 1, confidence: 0.7 }],
+        candidates: [
+          { elementId: 0, confidence: 0.9 },
+          { elementId: 1, confidence: 0.7 },
+        ],
         action: 'click',
         reasoning: 'Both candidates found',
       })) as any,
@@ -1106,9 +1472,24 @@ describe('ActionEngine', () => {
   });
 
   it('auto-recovery dismisses cookie banner and retries action', async () => {
-    const cookieBanner = { id: 0, role: 'heading', name: 'We use cookies to improve your experience', boundingClientRect: { x: 10, y: 10, width: 400, height: 40 } };
-    const cookieButton = { id: 1, role: 'button', name: 'Accept all', boundingClientRect: { x: 10, y: 20, width: 100, height: 30 } };
-    const targetButton = { id: 2, role: 'button', name: 'Sign in', boundingClientRect: { x: 10, y: 200, width: 80, height: 30 } };
+    const cookieBanner = {
+      id: 0,
+      role: 'heading',
+      name: 'We use cookies to improve your experience',
+      boundingClientRect: { x: 10, y: 10, width: 400, height: 40 },
+    };
+    const cookieButton = {
+      id: 1,
+      role: 'button',
+      name: 'Accept all',
+      boundingClientRect: { x: 10, y: 20, width: 100, height: 30 },
+    };
+    const targetButton = {
+      id: 2,
+      role: 'button',
+      name: 'Sign in',
+      boundingClientRect: { x: 10, y: 200, width: 80, height: 30 },
+    };
 
     // Initial state: cookie banner heading (consent context), accept button, and the actual target.
     // The heading provides the consent-context signal that tryRecoverFromBlocker now requires —
@@ -1126,10 +1507,11 @@ describe('ActionEngine', () => {
     };
 
     const stateParser = {
-      parse: jest.fn<() => Promise<SimplifiedState>>()
-        .mockResolvedValueOnce(initialState)   // initial parse
-        .mockResolvedValueOnce(initialState)   // recovery state parse
-        .mockResolvedValueOnce(cleanState),    // fresh state after recovery
+      parse: jest
+        .fn<() => Promise<SimplifiedState>>()
+        .mockResolvedValueOnce(initialState) // initial parse
+        .mockResolvedValueOnce(initialState) // recovery state parse
+        .mockResolvedValueOnce(cleanState), // fresh state after recovery
       invalidateCache: jest.fn(),
     };
 
@@ -1171,7 +1553,7 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     // Slider evaluate returns 'range' → native input[type=range] was set
     (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
-      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1])) {
+      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in args[1]) {
         return 'range';
       }
       return { x: 0, y: 0 };
@@ -1179,11 +1561,21 @@ describe('ActionEngine', () => {
 
     const state = makeState({
       elements: [
-        { id: 0, role: 'slider', name: 'Mindestpreis', boundingClientRect: { x: 200, y: 640, width: 20, height: 20 } },
+        {
+          id: 0,
+          role: 'slider',
+          name: 'Mindestpreis',
+          boundingClientRect: { x: 200, y: 640, width: 20, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 0, action: 'fill', value: '100', reasoning: 'Set min price' });
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'fill',
+      value: '100',
+      reasoning: 'Set min price',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Set minimum price to 100');
@@ -1192,7 +1584,9 @@ describe('ActionEngine', () => {
     expect(result.action).toContain('fill');
     // Verify evaluate was called with the value
     const evalCalls = (page.evaluate as jest.Mock).mock.calls;
-    const sliderCall = evalCalls.find(c => c[1] && typeof c[1] === 'object' && 'val' in (c[1] as any));
+    const sliderCall = evalCalls.find(
+      c => c[1] && typeof c[1] === 'object' && 'val' in (c[1] as any)
+    );
     expect(sliderCall).toBeDefined();
     expect((sliderCall![1] as any).val).toBe('100');
   });
@@ -1201,7 +1595,7 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     // Slider evaluate returns 'sibling' → sibling text input was filled
     (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
-      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1])) {
+      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in args[1]) {
         return 'sibling';
       }
       return { x: 0, y: 0 };
@@ -1209,18 +1603,32 @@ describe('ActionEngine', () => {
 
     const state = makeState({
       elements: [
-        { id: 0, role: 'slider', name: 'Mindestpreis', boundingClientRect: { x: 200, y: 640, width: 20, height: 20 } },
+        {
+          id: 0,
+          role: 'slider',
+          name: 'Mindestpreis',
+          boundingClientRect: { x: 200, y: 640, width: 20, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
-    const llm = makeMockLLM({ elementId: 0, action: 'fill', value: '100', reasoning: 'Set min price' });
+    const llm = makeMockLLM({
+      elementId: 0,
+      action: 'fill',
+      value: '100',
+      reasoning: 'Set min price',
+    });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
     const result = await engine.act('Set minimum price to 100');
 
     expect(result.success).toBe(true);
     // Keyboard fallback must NOT run when the sibling-input strategy succeeded
-    expect((page.keyboard.press as jest.Mock).mock.calls.filter((c: any) => c[0] === 'ArrowRight' || c[0] === 'ArrowLeft')).toHaveLength(0);
+    expect(
+      (page.keyboard.press as jest.Mock).mock.calls.filter(
+        (c: any) => c[0] === 'ArrowRight' || c[0] === 'ArrowLeft'
+      )
+    ).toHaveLength(0);
   });
 
   it('uses keyboard simulation for ARIA-only sliders', async () => {
@@ -1243,7 +1651,12 @@ describe('ActionEngine', () => {
 
     const state = makeState({
       elements: [
-        { id: 0, role: 'slider', name: 'Volume', boundingClientRect: { x: 200, y: 640, width: 20, height: 20 } },
+        {
+          id: 0,
+          role: 'slider',
+          name: 'Volume',
+          boundingClientRect: { x: 200, y: 640, width: 20, height: 20 },
+        },
       ],
     });
     const stateParser = makeMockStateParser(state);
@@ -1254,7 +1667,9 @@ describe('ActionEngine', () => {
 
     expect(result.success).toBe(true);
     // Arrow keys should have been pressed to move from now=0 → target=5
-    const arrowPresses = (page.keyboard.press as jest.Mock).mock.calls.filter((c: any) => c[0] === 'ArrowRight');
+    const arrowPresses = (page.keyboard.press as jest.Mock).mock.calls.filter(
+      (c: any) => c[0] === 'ArrowRight'
+    );
     expect(arrowPresses.length).toBe(5);
   });
 });
@@ -1315,7 +1730,14 @@ describe('ActionEngine verbose logging', () => {
   it('verbose 2: logs fallback warning on primary failure', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     // Make the primary locator fail so the fallback warning is logged
     const locatorInstance = (page.getByRole as jest.Mock)() as ReturnType<typeof makeMockLocator>;
@@ -1335,7 +1757,14 @@ describe('ActionEngine verbose logging', () => {
   it('verbose 0: no fallback warning even on failure', async () => {
     const page = makeMockPage({ width: 200, height: 200 });
     const state = makeState({
-      elements: [{ id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 500, width: 80, height: 30 } }],
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Submit',
+          boundingClientRect: { x: 10, y: 500, width: 80, height: 30 },
+        },
+      ],
     });
     const stateParser = makeMockStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
@@ -1347,14 +1776,20 @@ describe('ActionEngine verbose logging', () => {
   });
 
   it('verbose 3: logs chunk-processing stats when filtered', async () => {
-    const manyElements = Array.from({ length: 10 }, (_, i) =>
-      ({ id: i, role: 'link', name: `Link ${i}`, boundingClientRect: { x: 0, y: i * 20, width: 60, height: 20 } })
-    );
+    const manyElements = Array.from({ length: 10 }, (_, i) => ({
+      id: i,
+      role: 'link',
+      name: `Link ${i}`,
+      boundingClientRect: { x: 0, y: i * 20, width: 60, height: 20 },
+    }));
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState({ elements: manyElements }));
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, { maxElements: 3, verbose: 3 });
+    const engine = new ActionEngine(page as any, stateParser as any, llm, {
+      maxElements: 3,
+      verbose: 3,
+    });
     await engine.act('Click link');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1391,13 +1826,20 @@ describe('ActionEngine verbose logging', () => {
   it('verbose 1: cache hit logs ⚡ action label', async () => {
     const { InMemoryLocatorCache } = await import('../core/locator-cache.js');
     const cache = new InMemoryLocatorCache();
-    cache.set('https://example.com', 'Click submit', { action: 'click', role: 'button', name: 'Submit' });
+    cache.set('https://example.com', 'Click submit', {
+      action: 'click',
+      role: 'button',
+      name: 'Submit',
+    });
 
     const page = makeMockPage();
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, { locatorCache: cache, verbose: 1 });
+    const engine = new ActionEngine(page as any, stateParser as any, llm, {
+      locatorCache: cache,
+      verbose: 1,
+    });
     await engine.act('Click submit');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1412,9 +1854,18 @@ describe('ActionEngine verbose logging', () => {
 
     const page = {
       viewportSize: jest.fn(() => ({ width: 1280, height: 720 })),
-      mouse: { click: jest.fn(async () => { throw new Error('primary failed'); }), dblclick: jest.fn(async () => {}), move: jest.fn(async () => {}), wheel: jest.fn(async () => {}) },
+      mouse: {
+        click: jest.fn(async () => {
+          throw new Error('primary failed');
+        }),
+        dblclick: jest.fn(async () => {}),
+        move: jest.fn(async () => {}),
+        wheel: jest.fn(async () => {}),
+      },
       keyboard: { press: jest.fn(async () => {}), type: jest.fn(async () => {}) },
-      evaluate: jest.fn(async (_fn: any, args?: any) => args === undefined ? { x: 0, y: 0 } : null),
+      evaluate: jest.fn(async (_fn: any, args?: any) =>
+        args === undefined ? { x: 0, y: 0 } : null
+      ),
       waitForNavigation: jest.fn(async () => {}),
       locator: jest.fn(() => locatorInstance),
       getByRole: jest.fn(() => locatorInstance),
@@ -1439,7 +1890,7 @@ describe('ActionResult.selector', () => {
     const page = makeMockPage();
     // validateTarget is called first (returns null = valid), then generateSelector returns the selector
     (page.evaluate as any)
-      .mockResolvedValueOnce(null)  // validateTarget: element is valid
+      .mockResolvedValueOnce(null) // validateTarget: element is valid
       .mockResolvedValueOnce('[data-testid="submit"]'); // generateSelector
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
@@ -1475,8 +1926,8 @@ describe('ActionResult.selector', () => {
     // validateTarget (call 1) must succeed so the action proceeds.
     // generateSelector (call 2) throws — generateSelector catches it and returns null → no selector.
     (page.evaluate as any)
-      .mockResolvedValueOnce(null)                           // validateTarget: element valid
-      .mockRejectedValueOnce(new Error('context lost'));     // generateSelector: throws → no selector
+      .mockResolvedValueOnce(null) // validateTarget: element valid
+      .mockRejectedValueOnce(new Error('context lost')); // generateSelector: throws → no selector
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -1544,10 +1995,7 @@ describe('filterRelevantElements', () => {
   });
 
   it('duplicate tokens in instruction do not inflate score', () => {
-    const els = [
-      makeEl(0, 'button', 'Login'),
-      makeEl(1, 'button', 'Logout'),
-    ];
+    const els = [makeEl(0, 'button', 'Login'), makeEl(1, 'button', 'Logout')];
     // "login login login" — after dedup → tokens = ["login"]
     // Both "Login" and "Logout" partially match "log"; "Login" should win due to full "login" match
     const result = filterRelevantElements(els, 'login login login', 1);
@@ -1580,10 +2028,7 @@ describe('filterRelevantElements', () => {
   });
 
   it('tokens shorter than 2 chars are ignored', () => {
-    const els = [
-      makeEl(0, 'button', 'A'),
-      makeEl(1, 'link', 'Go'),
-    ];
+    const els = [makeEl(0, 'button', 'A'), makeEl(1, 'link', 'Go')];
     // Single-char tokens are stripped; "a" and "b" have no effect
     const result = filterRelevantElements(els, 'a b', 1);
     expect(result).toHaveLength(1);
@@ -1600,7 +2045,12 @@ describe('ActionEngine — upload action', () => {
       url: 'https://example.com',
       title: 'Upload',
       elements: [
-        { id: 0, role: 'file', name: 'CV', boundingClientRect: { x: 10, y: 10, width: 200, height: 30 } },
+        {
+          id: 0,
+          role: 'file',
+          name: 'CV',
+          boundingClientRect: { x: 10, y: 10, width: 200, height: 30 },
+        },
       ],
     };
   }
@@ -1609,7 +2059,10 @@ describe('ActionEngine — upload action', () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(stateWithFileInput());
     const llm = makeMockLLM({
-      elementId: 0, action: 'upload', value: '/tmp/cv.pdf', reasoning: 'upload CV',
+      elementId: 0,
+      action: 'upload',
+      value: '/tmp/cv.pdf',
+      reasoning: 'upload CV',
     });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -1618,7 +2071,7 @@ describe('ActionEngine — upload action', () => {
     expect(result.success).toBe(true);
     expect((page as any)._locatorInstance.setInputFiles).toHaveBeenCalledWith(
       ['/tmp/cv.pdf'],
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -1626,7 +2079,9 @@ describe('ActionEngine — upload action', () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(stateWithFileInput());
     const llm = makeMockLLM({
-      elementId: 0, action: 'upload', value: '/a.pdf, /b.pdf ,/c.pdf',
+      elementId: 0,
+      action: 'upload',
+      value: '/a.pdf, /b.pdf ,/c.pdf',
       reasoning: 'upload multiple',
     });
 
@@ -1635,7 +2090,7 @@ describe('ActionEngine — upload action', () => {
 
     expect((page as any)._locatorInstance.setInputFiles).toHaveBeenCalledWith(
       ['/a.pdf', '/b.pdf', '/c.pdf'],
-      expect.any(Object),
+      expect.any(Object)
     );
   });
 
@@ -1643,7 +2098,9 @@ describe('ActionEngine — upload action', () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(stateWithFileInput());
     const llm = makeMockLLM({
-      elementId: 0, action: 'upload', reasoning: 'upload without path',
+      elementId: 0,
+      action: 'upload',
+      reasoning: 'upload without path',
     });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);
@@ -1659,8 +2116,18 @@ describe('ActionEngine — drag action', () => {
       url: 'https://example.com/kanban',
       title: 'Kanban',
       elements: [
-        { id: 0, role: 'listitem', name: 'Card A', boundingClientRect: { x: 10, y: 50, width: 200, height: 60 } },
-        { id: 1, role: 'list', name: 'Done', boundingClientRect: { x: 500, y: 50, width: 300, height: 400 } },
+        {
+          id: 0,
+          role: 'listitem',
+          name: 'Card A',
+          boundingClientRect: { x: 10, y: 50, width: 200, height: 60 },
+        },
+        {
+          id: 1,
+          role: 'list',
+          name: 'Done',
+          boundingClientRect: { x: 500, y: 50, width: 300, height: 400 },
+        },
       ],
     };
   }
@@ -1669,7 +2136,9 @@ describe('ActionEngine — drag action', () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(stateWithDragSourceAndTarget());
     const llm = makeMockLLM({
-      elementId: 0, action: 'drag', targetElementId: 1,
+      elementId: 0,
+      action: 'drag',
+      targetElementId: 1,
       reasoning: 'move Card A to Done',
     });
 
@@ -1684,7 +2153,9 @@ describe('ActionEngine — drag action', () => {
     const page = makeMockPage();
     const stateParser = makeMockStateParser(stateWithDragSourceAndTarget());
     const llm = makeMockLLM({
-      elementId: 0, action: 'drag', reasoning: 'drag without target',
+      elementId: 0,
+      action: 'drag',
+      reasoning: 'drag without target',
     });
 
     const engine = new ActionEngine(page as any, stateParser as any, llm);

@@ -7,7 +7,12 @@ import { withRetry } from '../with-retry.js';
 import { createLogger, type Logger } from '../logger.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
-  return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
+  return (
+    typeof schema === 'object' &&
+    schema !== null &&
+    '_def' in schema &&
+    typeof (schema as any).parse === 'function'
+  );
 }
 
 export interface ClaudeProviderOptions {
@@ -85,11 +90,13 @@ export class ClaudeProvider implements LLMProvider {
         messages: [{ role: 'user', content: prompt }],
       };
       if (options?.systemInstruction) {
-        request.system = [{
-          type: 'text',
-          text: options.systemInstruction,
-          cache_control: { type: 'ephemeral' },
-        }];
+        request.system = [
+          {
+            type: 'text',
+            text: options.systemInstruction,
+            cache_control: { type: 'ephemeral' },
+          },
+        ];
       }
       const response = await this.client.messages.create(request);
       this.reportUsage(response);
@@ -121,7 +128,10 @@ export class ClaudeProvider implements LLMProvider {
           {
             role: 'user',
             content: [
-              { type: 'image', source: { type: 'base64', media_type: mimeType, data: imageBase64 } },
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: mimeType, data: imageBase64 },
+              },
               { type: 'text', text: prompt },
             ],
           },

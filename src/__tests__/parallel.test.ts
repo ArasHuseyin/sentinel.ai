@@ -46,7 +46,11 @@ function makeFactory(
   return { factory, instances: () => instances };
 }
 
-const sharedOptions: SentinelOptions = { apiKey: 'test', verbose: 0, provider: { generateStructuredData: jest.fn() as any, generateText: jest.fn() as any } };
+const sharedOptions: SentinelOptions = {
+  apiKey: 'test',
+  verbose: 0,
+  provider: { generateStructuredData: jest.fn() as any, generateText: jest.fn() as any },
+};
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -75,9 +79,9 @@ describe('Sentinel.parallel()', () => {
 
   it('runs multiple tasks and returns results in input order', async () => {
     const { factory } = makeFactory([
-      { goalAchieved: true,  success: true,  totalSteps: 2, message: 'Task A done' },
+      { goalAchieved: true, success: true, totalSteps: 2, message: 'Task A done' },
       { goalAchieved: false, success: false, totalSteps: 5, message: 'Task B failed' },
-      { goalAchieved: true,  success: true,  totalSteps: 1, message: 'Task C done' },
+      { goalAchieved: true, success: true, totalSteps: 1, message: 'Task C done' },
     ]);
 
     const tasks: ParallelTask[] = [
@@ -115,7 +119,11 @@ describe('Sentinel.parallel()', () => {
       { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
     ]);
 
-    await Sentinel.parallel([{ url: 'https://x.com', goal: 'Do something' }], sharedOptions, factory);
+    await Sentinel.parallel(
+      [{ url: 'https://x.com', goal: 'Do something' }],
+      sharedOptions,
+      factory
+    );
 
     expect(instances()[0]!.run as jest.Mock).toHaveBeenCalledWith('Do something', { maxSteps: 15 });
   });
@@ -132,11 +140,16 @@ describe('Sentinel.parallel()', () => {
 
   it('calls sentinel.close() even when run() throws', async () => {
     const closeSpy = jest.fn(async () => {});
-    const factory = jest.fn(async () => ({
-      goto: jest.fn(async () => {}),
-      run: jest.fn(async () => { throw new Error('Browser crashed'); }),
-      close: closeSpy,
-    } as unknown as Sentinel));
+    const factory = jest.fn(
+      async () =>
+        ({
+          goto: jest.fn(async () => {}),
+          run: jest.fn(async () => {
+            throw new Error('Browser crashed');
+          }),
+          close: closeSpy,
+        }) as unknown as Sentinel
+    );
 
     const results = await Sentinel.parallel(
       [{ url: 'https://x.com', goal: 'Crash' }],
@@ -157,7 +170,12 @@ describe('Sentinel.parallel()', () => {
       if (i === 1) throw new Error('Factory failed');
       return {
         goto: jest.fn(async () => {}),
-        run: jest.fn(async () => ({ goalAchieved: true, success: true, totalSteps: 1, message: 'ok' })),
+        run: jest.fn(async () => ({
+          goalAchieved: true,
+          success: true,
+          totalSteps: 1,
+          message: 'ok',
+        })),
         close: jest.fn(async () => {}),
       } as unknown as Sentinel;
     });
@@ -207,18 +225,21 @@ describe('Sentinel.parallel()', () => {
   it('respects concurrency — at most N instances run simultaneously', async () => {
     const activeCount = { current: 0, peak: 0 };
 
-    const factory = jest.fn(async () => ({
-      goto: jest.fn(async () => {}),
-      run: jest.fn(async () => {
-        activeCount.current++;
-        activeCount.peak = Math.max(activeCount.peak, activeCount.current);
-        // Simulate async work so multiple tasks overlap
-        await new Promise(r => setTimeout(r, 10));
-        activeCount.current--;
-        return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
-      }),
-      close: jest.fn(async () => {}),
-    } as unknown as Sentinel));
+    const factory = jest.fn(
+      async () =>
+        ({
+          goto: jest.fn(async () => {}),
+          run: jest.fn(async () => {
+            activeCount.current++;
+            activeCount.peak = Math.max(activeCount.peak, activeCount.current);
+            // Simulate async work so multiple tasks overlap
+            await new Promise(r => setTimeout(r, 10));
+            activeCount.current--;
+            return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
+          }),
+          close: jest.fn(async () => {}),
+        }) as unknown as Sentinel
+    );
 
     const tasks = Array.from({ length: 6 }, (_, i) => ({
       url: `https://task${i}.com`,
@@ -235,7 +256,10 @@ describe('Sentinel.parallel()', () => {
     const { factory } = makeFactory([
       { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' },
     ]);
-    const tasks = Array.from({ length: 4 }, (_, i) => ({ url: `https://t${i}.com`, goal: `G${i}` }));
+    const tasks = Array.from({ length: 4 }, (_, i) => ({
+      url: `https://t${i}.com`,
+      goal: `G${i}`,
+    }));
 
     await Sentinel.parallel(tasks, { ...sharedOptions, concurrency: 4 }, factory);
 
@@ -314,19 +338,25 @@ describe('Sentinel.parallel()', () => {
   it('concurrency defaults to 3 when not specified', async () => {
     const activeCount = { current: 0, peak: 0 };
 
-    const factory = jest.fn(async () => ({
-      goto: jest.fn(async () => {}),
-      run: jest.fn(async () => {
-        activeCount.current++;
-        activeCount.peak = Math.max(activeCount.peak, activeCount.current);
-        await new Promise(r => setTimeout(r, 5));
-        activeCount.current--;
-        return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
-      }),
-      close: jest.fn(async () => {}),
-    } as unknown as Sentinel));
+    const factory = jest.fn(
+      async () =>
+        ({
+          goto: jest.fn(async () => {}),
+          run: jest.fn(async () => {
+            activeCount.current++;
+            activeCount.peak = Math.max(activeCount.peak, activeCount.current);
+            await new Promise(r => setTimeout(r, 5));
+            activeCount.current--;
+            return { goalAchieved: true, success: true, totalSteps: 1, message: 'ok' };
+          }),
+          close: jest.fn(async () => {}),
+        }) as unknown as Sentinel
+    );
 
-    const tasks = Array.from({ length: 9 }, (_, i) => ({ url: `https://t${i}.com`, goal: `G${i}` }));
+    const tasks = Array.from({ length: 9 }, (_, i) => ({
+      url: `https://t${i}.com`,
+      goal: `G${i}`,
+    }));
 
     // No concurrency specified — should default to 3
     await Sentinel.parallel(tasks, sharedOptions, factory);
@@ -341,7 +371,10 @@ describe('Sentinel.parallel()', () => {
     ]);
 
     const results = await Sentinel.parallel(
-      [{ url: 'https://a.com', goal: 'A' }, { url: 'https://b.com', goal: 'B' }],
+      [
+        { url: 'https://a.com', goal: 'A' },
+        { url: 'https://b.com', goal: 'B' },
+      ],
       { ...sharedOptions, concurrency: 100 }, // more than 2 tasks
       factory
     );

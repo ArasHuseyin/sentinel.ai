@@ -134,7 +134,9 @@ describe('generateSelector()', () => {
 
   it('returns null and does not throw when page.evaluate() throws', async () => {
     const page = {
-      evaluate: jest.fn(async () => { throw new Error('Context destroyed'); }),
+      evaluate: jest.fn(async () => {
+        throw new Error('Context destroyed');
+      }),
     };
     const result = await generateSelector(page as any, makeElement());
     expect(result).toBeNull();
@@ -151,10 +153,13 @@ describe('generateSelector()', () => {
 describe('generateSelector() priority scenarios (mocked evaluate)', () => {
   const scenarios: Array<{ label: string; evaluateResult: string }> = [
     { label: 'data-testid', evaluateResult: '[data-testid="login-btn"]' },
-    { label: 'data-cy',     evaluateResult: '[data-cy="submit"]' },
-    { label: '#id',         evaluateResult: '#login-button' },
+    { label: 'data-cy', evaluateResult: '[data-cy="submit"]' },
+    { label: '#id', evaluateResult: '#login-button' },
     { label: 'input[name]', evaluateResult: 'input[name="email"]' },
-    { label: 'input[type][placeholder]', evaluateResult: 'input[type="email"][placeholder="Enter email"]' },
+    {
+      label: 'input[type][placeholder]',
+      evaluateResult: 'input[type="email"][placeholder="Enter email"]',
+    },
     { label: '[aria-label]', evaluateResult: '[aria-label="Close dialog"]' },
     { label: '[role]:has-text', evaluateResult: '[role="button"]:has-text("Sign in")' },
     { label: 'button:has-text', evaluateResult: 'button:has-text("Submit")' },

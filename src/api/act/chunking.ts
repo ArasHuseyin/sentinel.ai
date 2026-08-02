@@ -2,8 +2,28 @@ import type { UIElement } from '../../core/state-parser.js';
 
 /** Common stop words that should not be used for relevance matching. */
 const STOP_WORDS = new Set([
-  'the', 'a', 'an', 'on', 'in', 'to', 'at', 'of', 'by', 'is', 'it',
-  'or', 'as', 'do', 'if', 'no', 'up', 'so', 'my', 'we', 'be', 'am',
+  'the',
+  'a',
+  'an',
+  'on',
+  'in',
+  'to',
+  'at',
+  'of',
+  'by',
+  'is',
+  'it',
+  'or',
+  'as',
+  'do',
+  'if',
+  'no',
+  'up',
+  'so',
+  'my',
+  'we',
+  'be',
+  'am',
 ]);
 
 /**
@@ -11,13 +31,15 @@ const STOP_WORDS = new Set([
  * Filters out common stop words that cause false-positive substring matches.
  */
 function tokenize(text: string): string[] {
-  return [...new Set(
-    text
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .filter(t => t.length >= 2 && !STOP_WORDS.has(t))
-  )];
+  return [
+    ...new Set(
+      text
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .split(/\s+/)
+        .filter(t => t.length >= 2 && !STOP_WORDS.has(t))
+    ),
+  ];
 }
 
 /** Keywords that identify overlay/blocker elements that should never be filtered out. */
@@ -44,12 +66,27 @@ export function filterRelevantElements(
   // label doesn't keyword-match the (possibly different-language) goal is a bug.
   // Buttons near form fields (submit/proceed) must also be kept — they're the
   // natural next action after filling the form.
-  const FORM_ROLES = new Set(['textbox', 'combobox', 'searchbox', 'spinbutton', 'listbox', 'radio', 'checkbox', 'slider', 'switch', 'datepicker', 'timepicker', 'file']);
+  const FORM_ROLES = new Set([
+    'textbox',
+    'combobox',
+    'searchbox',
+    'spinbutton',
+    'listbox',
+    'radio',
+    'checkbox',
+    'slider',
+    'switch',
+    'datepicker',
+    'timepicker',
+    'file',
+  ]);
   const alwaysKeep: typeof elements = [];
   const rest: typeof elements = [];
   for (const el of elements) {
-    if (FORM_ROLES.has(el.role) ||
-        ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name))) {
+    if (
+      FORM_ROLES.has(el.role) ||
+      ((el.role === 'button' || el.role === 'link') && BLOCKER_KEYWORDS.test(el.name))
+    ) {
       alwaysKeep.push(el);
     } else {
       rest.push(el);
@@ -63,14 +100,18 @@ export function filterRelevantElements(
   if (formEls.length > 0) {
     const formYs = formEls.map(e => e.boundingClientRect.y);
     const minFormY = Math.min(...formYs);
-    const maxFormY = Math.max(...formEls.map(e => e.boundingClientRect.y + e.boundingClientRect.height));
+    const maxFormY = Math.max(
+      ...formEls.map(e => e.boundingClientRect.y + e.boundingClientRect.height)
+    );
     const margin = Math.max(maxFormY - minFormY, 300);
 
     for (let i = rest.length - 1; i >= 0; i--) {
       const el = rest[i]!;
-      if ((el.role === 'button' || el.role === 'link') &&
-          el.boundingClientRect.y >= minFormY - 50 &&
-          el.boundingClientRect.y <= maxFormY + margin) {
+      if (
+        (el.role === 'button' || el.role === 'link') &&
+        el.boundingClientRect.y >= minFormY - 50 &&
+        el.boundingClientRect.y <= maxFormY + margin
+      ) {
         alwaysKeep.push(el);
         rest.splice(i, 1);
       }
@@ -78,9 +119,7 @@ export function filterRelevantElements(
   }
 
   const scored = rest.map(el => {
-    const text = `${el.role} ${el.name}`
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ');
+    const text = `${el.role} ${el.name}`.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
     let score = 0;
     for (const token of tokens) {
       if (text.includes(token)) score++;

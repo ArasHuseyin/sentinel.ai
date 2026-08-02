@@ -32,6 +32,7 @@ examples/       # Runnable example scripts
 ## How to contribute
 
 ### Bug fixes
+
 1. Open an issue describing the bug and reproduction steps
 2. Fork the repo and create a branch: `git checkout -b fix/your-bug`
 3. Write a failing test that reproduces the bug
@@ -40,6 +41,7 @@ examples/       # Runnable example scripts
 6. Open a PR
 
 ### New features
+
 1. Open an issue first — discuss the feature before investing time
 2. Fork and branch: `git checkout -b feat/your-feature`
 3. Implement the feature with tests
@@ -68,6 +70,7 @@ Tests use [Vitest](https://vitest.dev/). Browser-level tests require a real Chro
 ## Commit messages
 
 Use conventional commits:
+
 ```
 feat: add WebshareProxyProvider
 fix: correct scroll-to fallback for off-screen elements
@@ -83,4 +86,3 @@ test: add runStream generator tests
 - [ ] No breaking changes without prior discussion
 
 ## Questions?
-

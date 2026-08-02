@@ -1,5 +1,9 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals';
-import { RoundRobinProxyProvider, WebshareProxyProvider, isProxyProvider } from '../utils/proxy-provider.js';
+import {
+  RoundRobinProxyProvider,
+  WebshareProxyProvider,
+  isProxyProvider,
+} from '../utils/proxy-provider.js';
 import type { IProxyProvider } from '../utils/proxy-provider.js';
 
 // ─── RoundRobinProxyProvider ──────────────────────────────────────────────────
@@ -81,7 +85,11 @@ describe('WebshareProxyProvider', () => {
   });
 
   it('throws when API returns an error', async () => {
-    (global as any).fetch = (jest.fn() as any).mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
+    (global as any).fetch = (jest.fn() as any).mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+    });
     const provider = new WebshareProxyProvider({ apiKey: 'bad-key' });
     await expect(provider.getProxy()).rejects.toThrow('401');
   });

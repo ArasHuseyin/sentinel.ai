@@ -250,7 +250,10 @@ describe('OpenAIProvider', () => {
       await provider.generateText('user prompt', 'You are a helpful assistant');
 
       const callArgs = (mockCreate.mock.calls as any[][])[0]![0];
-      expect(callArgs.messages[0]).toEqual({ role: 'system', content: 'You are a helpful assistant' });
+      expect(callArgs.messages[0]).toEqual({
+        role: 'system',
+        content: 'You are a helpful assistant',
+      });
       expect(callArgs.messages[1]).toEqual({ role: 'user', content: 'user prompt' });
     });
   });

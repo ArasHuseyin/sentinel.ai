@@ -4,7 +4,9 @@ import type { LLMProvider } from '../utils/llm-provider.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeProvider(analyzeImageResult?: string | null): LLMProvider & { analyzeImage: jest.Mock } {
+function makeProvider(
+  analyzeImageResult?: string | null
+): LLMProvider & { analyzeImage: jest.Mock } {
   const mock = jest.fn<() => Promise<string>>();
   if (analyzeImageResult !== undefined && analyzeImageResult !== null) {
     mock.mockResolvedValue(analyzeImageResult);
@@ -31,10 +33,16 @@ const FAKE_PNG = Buffer.from('fakepng');
 function makePngWithDimensions(width: number, height: number): Buffer {
   const buf = Buffer.alloc(24);
   // PNG signature
-  buf.writeUInt8(0x89, 0); buf.writeUInt8(0x50, 1); buf.writeUInt8(0x4e, 2); buf.writeUInt8(0x47, 3);
-  buf.writeUInt8(0x0d, 4); buf.writeUInt8(0x0a, 5); buf.writeUInt8(0x1a, 6); buf.writeUInt8(0x0a, 7);
+  buf.writeUInt8(0x89, 0);
+  buf.writeUInt8(0x50, 1);
+  buf.writeUInt8(0x4e, 2);
+  buf.writeUInt8(0x47, 3);
+  buf.writeUInt8(0x0d, 4);
+  buf.writeUInt8(0x0a, 5);
+  buf.writeUInt8(0x1a, 6);
+  buf.writeUInt8(0x0a, 7);
   // IHDR chunk: length(4) + type(4) + width(4) + height(4)
-  buf.writeUInt32BE(13, 8);           // IHDR data length
+  buf.writeUInt32BE(13, 8); // IHDR data length
   buf.write('IHDR', 12, 'ascii');
   buf.writeUInt32BE(width, 16);
   buf.writeUInt32BE(height, 20);
@@ -44,12 +52,13 @@ function makePngWithDimensions(width: number, height: number): Buffer {
 // ─── VisionGrounding ──────────────────────────────────────────────────────────
 
 describe('VisionGrounding', () => {
-
   describe('constructor', () => {
     it('logs a warning when provider lacks analyzeImage', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       new VisionGrounding(makeProviderWithoutVision());
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('does not implement analyzeImage'));
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('does not implement analyzeImage')
+      );
       warnSpy.mockRestore();
     });
 
@@ -85,7 +94,14 @@ describe('VisionGrounding', () => {
     });
 
     it('returns bounding box when LLM finds element', async () => {
-      const response = JSON.stringify({ found: true, x: 100, y: 200, width: 80, height: 30, reasoning: 'Found it' });
+      const response = JSON.stringify({
+        found: true,
+        x: 100,
+        y: 200,
+        width: 80,
+        height: 30,
+        reasoning: 'Found it',
+      });
       const provider = makeProvider(response);
       const vg = new VisionGrounding(provider);
 
@@ -119,7 +135,9 @@ describe('VisionGrounding', () => {
     });
 
     it('returns null early when viewport is zero or invalid', async () => {
-      const provider = makeProvider(JSON.stringify({ found: true, x: 10, y: 10, width: 20, height: 20 }));
+      const provider = makeProvider(
+        JSON.stringify({ found: true, x: 10, y: 10, width: 20, height: 20 })
+      );
       const vg = new VisionGrounding(provider);
 
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -148,7 +166,14 @@ describe('VisionGrounding', () => {
     });
 
     it('returns null when confidence is below threshold', async () => {
-      const response = JSON.stringify({ found: true, x: 100, y: 200, width: 80, height: 30, confidence: 0.3 });
+      const response = JSON.stringify({
+        found: true,
+        x: 100,
+        y: 200,
+        width: 80,
+        height: 30,
+        confidence: 0.3,
+      });
       const provider = makeProvider(response);
       const vg = new VisionGrounding(provider);
 
@@ -162,7 +187,14 @@ describe('VisionGrounding', () => {
     it('rescales image-pixel coordinates to CSS pixels for HiDPI screenshots', async () => {
       // Build a real PNG header declaring 2560x1440 (deviceScaleFactor=2 on a 1280x720 viewport).
       const png = makePngWithDimensions(2560, 1440);
-      const response = JSON.stringify({ found: true, x: 200, y: 400, width: 160, height: 60, confidence: 0.9 });
+      const response = JSON.stringify({
+        found: true,
+        x: 200,
+        y: 400,
+        width: 160,
+        height: 60,
+        confidence: 0.9,
+      });
       const provider = makeProvider(response);
       const vg = new VisionGrounding(provider);
 
@@ -207,7 +239,8 @@ describe('VisionGrounding', () => {
     });
 
     it('parses JSON wrapped in markdown code fences', async () => {
-      const response = '```json\n{"found":true,"x":50,"y":80,"width":100,"height":40,"reasoning":"ok"}\n```';
+      const response =
+        '```json\n{"found":true,"x":50,"y":80,"width":100,"height":40,"reasoning":"ok"}\n```';
       const provider = makeProvider(response);
       const vg = new VisionGrounding(provider);
 
@@ -228,7 +261,14 @@ describe('VisionGrounding', () => {
     });
 
     it('passes base64-encoded screenshot to analyzeImage', async () => {
-      const response = JSON.stringify({ found: true, x: 10, y: 20, width: 50, height: 25, reasoning: 'ok' });
+      const response = JSON.stringify({
+        found: true,
+        x: 10,
+        y: 20,
+        width: 50,
+        height: 25,
+        reasoning: 'ok',
+      });
       const provider = makeProvider(response);
       const vg = new VisionGrounding(provider);
 

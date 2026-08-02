@@ -6,14 +6,17 @@ async function testVersions() {
   for (const v of versions) {
     console.log(`Testing version ${v} with model ${model}...`);
     try {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/${v}/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-goog-api-key': key || ""
-        },
-        body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] })
-      });
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/${v}/models/${model}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': key || '',
+          },
+          body: JSON.stringify({ contents: [{ parts: [{ text: 'Hi' }] }] }),
+        }
+      );
       const data = await resp.json();
       if (resp.ok) {
         console.log(`SUCCESS with ${v}!`);

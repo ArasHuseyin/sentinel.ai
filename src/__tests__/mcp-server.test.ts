@@ -8,9 +8,13 @@ import type { Sentinel } from '../index.js';
 function makeMockSentinel() {
   return {
     goto: jest.fn<any>().mockResolvedValue(undefined),
-    act: jest.fn<any>().mockResolvedValue({ success: true, message: 'Clicked button', action: 'click' }),
+    act: jest
+      .fn<any>()
+      .mockResolvedValue({ success: true, message: 'Clicked button', action: 'click' }),
     extract: jest.fn<any>().mockResolvedValue({ items: ['Widget A', 'Widget B'] }),
-    observe: jest.fn<any>().mockResolvedValue([{ id: 0, role: 'button', name: 'Login', description: '' }]),
+    observe: jest
+      .fn<any>()
+      .mockResolvedValue([{ id: 0, role: 'button', name: 'Login', description: '' }]),
     run: jest.fn<any>().mockResolvedValue({
       goalAchieved: true,
       success: true,
@@ -68,8 +72,14 @@ describe('MCP Server: registerTools', () => {
 
   it('registers all 8 expected tools', () => {
     const expected = [
-      'sentinel_goto', 'sentinel_act', 'sentinel_extract', 'sentinel_observe',
-      'sentinel_run', 'sentinel_screenshot', 'sentinel_close', 'sentinel_token_usage',
+      'sentinel_goto',
+      'sentinel_act',
+      'sentinel_extract',
+      'sentinel_observe',
+      'sentinel_run',
+      'sentinel_screenshot',
+      'sentinel_close',
+      'sentinel_token_usage',
     ];
     for (const name of expected) {
       expect(server.registeredNames()).toContain(name);
@@ -100,7 +110,9 @@ describe('MCP Server: registerTools', () => {
     const handler = server.getHandler('sentinel_act');
     await handler({ instruction: 'Fill %email%', variables: { email: 'user@test.com' } });
 
-    expect(mock.act).toHaveBeenCalledWith('Fill %email%', { variables: { email: 'user@test.com' } });
+    expect(mock.act).toHaveBeenCalledWith('Fill %email%', {
+      variables: { email: 'user@test.com' },
+    });
   });
 
   it('sentinel_act shows ❌ when action fails', async () => {

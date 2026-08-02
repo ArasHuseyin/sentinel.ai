@@ -91,9 +91,15 @@ describe('pickDateFromPopup', () => {
 
     await expect(pickDateFromPopup(page as any, parts)).resolves.toBe(true);
     expect(order).toEqual([
-      'click', 'direction', 'navigate',
-      'click', 'direction', 'navigate',
-      'click', 'direction', 'navigate',
+      'click',
+      'direction',
+      'navigate',
+      'click',
+      'direction',
+      'navigate',
+      'click',
+      'direction',
+      'navigate',
       'click',
     ]);
     // One settle wait per successful navigation, none after the final click.

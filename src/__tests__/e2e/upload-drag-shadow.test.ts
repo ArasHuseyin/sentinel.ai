@@ -101,8 +101,7 @@ const SHADOW_HTML = `
 </script>
 </body></html>`;
 
-const toDataUrl = (html: string) =>
-  'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+const toDataUrl = (html: string) => 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 
 describeE2E('E2E: Upload + Drag + Shadow DOM', () => {
   let sentinel: Sentinel;
@@ -124,7 +123,11 @@ describeE2E('E2E: Upload + Drag + Shadow DOM', () => {
 
   afterAll(async () => {
     await sentinel.close();
-    try { fs.unlinkSync(tempFile); } catch { /* best effort */ }
+    try {
+      fs.unlinkSync(tempFile);
+    } catch {
+      /* best effort */
+    }
   }, 15_000);
 
   it('uploads a file via the upload action', async () => {

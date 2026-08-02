@@ -27,63 +27,67 @@ export async function waitForPageSettle(page: Page, timeout = 5000): Promise<voi
   const stabilityMs = 300;
   const hardCapMs = Math.min(timeout, 8000);
 
-  const domSettle = page.evaluate(
-    ({ stabilityMs, hardCapMs }: { stabilityMs: number; hardCapMs: number }) =>
-      new Promise<void>(resolve => {
-        const start = Date.now();
-        let silenceTimer: ReturnType<typeof setTimeout> | null = null;
-        let done = false;
+  const domSettle = page
+    .evaluate(
+      ({ stabilityMs, hardCapMs }: { stabilityMs: number; hardCapMs: number }) =>
+        new Promise<void>(resolve => {
+          const start = Date.now();
+          let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+          let done = false;
 
-        const finish = (): void => {
-          if (done) return;
-          done = true;
-          observer.disconnect();
-          if (silenceTimer) clearTimeout(silenceTimer);
-          resolve();
-        };
+          const finish = (): void => {
+            if (done) return;
+            done = true;
+            observer.disconnect();
+            if (silenceTimer) clearTimeout(silenceTimer);
+            resolve();
+          };
 
-        const hasLoadingSignal = (): boolean => {
-          // WAI-ARIA standard: aria-busy signals "work in progress"
-          if (document.querySelector('[aria-busy="true"]')) return true;
-          // Explicit progress indicator (W3C role)
-          const pb = document.querySelector('[role="progressbar"]');
-          if (pb && (pb as HTMLElement).offsetParent !== null) return true;
-          // Common class-name heuristics — tolerant of any CSS framework
-          const candidates = document.querySelectorAll(
-            '[class*="loading" i], [class*="skeleton" i], [class*="spinner" i]'
-          );
-          for (const el of Array.from(candidates)) {
-            if ((el as HTMLElement).offsetParent !== null) return true;
-          }
-          return false;
-        };
+          const hasLoadingSignal = (): boolean => {
+            // WAI-ARIA standard: aria-busy signals "work in progress"
+            if (document.querySelector('[aria-busy="true"]')) return true;
+            // Explicit progress indicator (W3C role)
+            const pb = document.querySelector('[role="progressbar"]');
+            if (pb && (pb as HTMLElement).offsetParent !== null) return true;
+            // Common class-name heuristics — tolerant of any CSS framework
+            const candidates = document.querySelectorAll(
+              '[class*="loading" i], [class*="skeleton" i], [class*="spinner" i]'
+            );
+            for (const el of Array.from(candidates)) {
+              if ((el as HTMLElement).offsetParent !== null) return true;
+            }
+            return false;
+          };
 
-        const armSilenceTimer = (): void => {
-          if (silenceTimer) clearTimeout(silenceTimer);
-          silenceTimer = setTimeout(() => {
-            silenceTimer = null;
-            // Stability reached. Release only if no loading indicator is
-            // still visible — otherwise wait for the next mutation, which
-            // will re-arm this timer.
-            if (!hasLoadingSignal()) finish();
-          }, stabilityMs);
-        };
+          const armSilenceTimer = (): void => {
+            if (silenceTimer) clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(() => {
+              silenceTimer = null;
+              // Stability reached. Release only if no loading indicator is
+              // still visible — otherwise wait for the next mutation, which
+              // will re-arm this timer.
+              if (!hasLoadingSignal()) finish();
+            }, stabilityMs);
+          };
 
-        const observer = new MutationObserver(armSilenceTimer);
-        observer.observe(document.body, { childList: true, subtree: true });
-        armSilenceTimer(); // kick off
+          const observer = new MutationObserver(armSilenceTimer);
+          observer.observe(document.body, { childList: true, subtree: true });
+          armSilenceTimer(); // kick off
 
-        // Hard-cap safety net — always release eventually
-        setTimeout(finish, hardCapMs);
-        void start;
-      }),
-    { stabilityMs, hardCapMs }
-  ).catch(ignoreRejection);
+          // Hard-cap safety net — always release eventually
+          setTimeout(finish, hardCapMs);
+          void start;
+        }),
+      { stabilityMs, hardCapMs }
+    )
+    .catch(ignoreRejection);
 
-  const navigationSettle = page.waitForNavigation({
-    waitUntil: 'domcontentloaded',
-    timeout: hardCapMs,
-  }).catch(ignoreRejection);
+  const navigationSettle = page
+    .waitForNavigation({
+      waitUntil: 'domcontentloaded',
+      timeout: hardCapMs,
+    })
+    .catch(ignoreRejection);
 
   await Promise.race([domSettle, navigationSettle]);
 }

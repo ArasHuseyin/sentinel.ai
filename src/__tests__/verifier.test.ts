@@ -14,7 +14,11 @@ function makeState(overrides: Partial<SimplifiedState> = {}): SimplifiedState {
   };
 }
 
-function makeMockLLM(response: { success: boolean; confidence: number; explanation: string }): LLMProvider {
+function makeMockLLM(response: {
+  success: boolean;
+  confidence: number;
+  explanation: string;
+}): LLMProvider {
   return {
     generateStructuredData: jest.fn(async () => response) as any,
     generateText: jest.fn(async () => ''),
@@ -43,7 +47,16 @@ describe('Verifier', () => {
     const verifier = new Verifier(llm);
 
     const before = makeState({ elements: [] });
-    const after = makeState({ elements: [{ id: 0, role: 'alert', name: 'Success!', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }] });
+    const after = makeState({
+      elements: [
+        {
+          id: 0,
+          role: 'alert',
+          name: 'Success!',
+          boundingClientRect: { x: 0, y: 0, width: 100, height: 30 },
+        },
+      ],
+    });
 
     const result = await verifier.verifyAction('Submit form', before, after);
 
@@ -85,7 +98,9 @@ describe('Verifier', () => {
     await verifier.verifyAction('Fill in email', sameState, sameState);
 
     expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
-    const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
+    const promptArg = (
+      (llm.generateStructuredData as jest.Mock).mock.calls[0] as any[]
+    )[0] as string;
     expect(promptArg).toContain('Fill in email');
     expect(promptArg).toContain('Stable Page');
   });
@@ -102,7 +117,7 @@ describe('Verifier', () => {
     const result = await verifier.verifyAction('Click Dashboard link', before, after);
 
     expect(result.success).toBe(true);
-    expect(result.confidence).toBe(0.90);
+    expect(result.confidence).toBe(0.9);
     expect(llm.generateStructuredData).not.toHaveBeenCalled();
   });
 
@@ -115,11 +130,15 @@ describe('Verifier', () => {
         boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
       }));
 
-    const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'should not be called' });
+    const llm = makeMockLLM({
+      success: true,
+      confidence: 0.8,
+      explanation: 'should not be called',
+    });
     const verifier = new Verifier(llm);
 
     const before = makeState({ elements: makeElements(3) });
-    const after  = makeState({ elements: makeElements(8) }); // delta = 5
+    const after = makeState({ elements: makeElements(8) }); // delta = 5
 
     const result = await verifier.verifyAction('Open dropdown', before, after);
 
@@ -137,11 +156,15 @@ describe('Verifier', () => {
         boundingClientRect: { x: 0, y: 0, width: 10, height: 10 },
       }));
 
-    const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'should not be called' });
+    const llm = makeMockLLM({
+      success: true,
+      confidence: 0.8,
+      explanation: 'should not be called',
+    });
     const verifier = new Verifier(llm);
 
     const before = makeState({ elements: makeElements(8) });
-    const after  = makeState({ elements: makeElements(3) }); // delta = 5
+    const after = makeState({ elements: makeElements(3) }); // delta = 5
 
     const result = await verifier.verifyAction('Close modal', before, after);
 
@@ -163,7 +186,7 @@ describe('Verifier', () => {
     const verifier = new Verifier(llm);
 
     const before = makeState({ elements: makeElements(5) });
-    const after  = makeState({ elements: makeElements(8) }); // delta = 3, less than 5
+    const after = makeState({ elements: makeElements(8) }); // delta = 3, less than 5
 
     await verifier.verifyAction('Minor change', before, after);
 
@@ -176,14 +199,38 @@ describe('Verifier', () => {
 
     const before = makeState({
       elements: [
-        { id: 0, role: 'textbox', name: 'Email', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 }, state: { focused: false } },
-        { id: 1, role: 'textbox', name: 'Password', boundingClientRect: { x: 0, y: 40, width: 100, height: 30 }, state: { focused: false } },
+        {
+          id: 0,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 0, y: 0, width: 100, height: 30 },
+          state: { focused: false },
+        },
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Password',
+          boundingClientRect: { x: 0, y: 40, width: 100, height: 30 },
+          state: { focused: false },
+        },
       ],
     });
     const after = makeState({
       elements: [
-        { id: 0, role: 'textbox', name: 'Email', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 }, state: { focused: false } },
-        { id: 1, role: 'textbox', name: 'Password', boundingClientRect: { x: 0, y: 40, width: 100, height: 30 }, state: { focused: true } },
+        {
+          id: 0,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 0, y: 0, width: 100, height: 30 },
+          state: { focused: false },
+        },
+        {
+          id: 1,
+          role: 'textbox',
+          name: 'Password',
+          boundingClientRect: { x: 0, y: 40, width: 100, height: 30 },
+          state: { focused: true },
+        },
       ],
     });
 
@@ -195,12 +242,18 @@ describe('Verifier', () => {
   });
 
   it('falls through to LLM when focused element does not change', async () => {
-    const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'OK' });
+    const llm = makeMockLLM({ success: true, confidence: 0.8, explanation: 'OK' });
     const verifier = new Verifier(llm);
 
     const state = makeState({
       elements: [
-        { id: 0, role: 'textbox', name: 'Email', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 }, state: { focused: true } },
+        {
+          id: 0,
+          role: 'textbox',
+          name: 'Email',
+          boundingClientRect: { x: 0, y: 0, width: 100, height: 30 },
+          state: { focused: true },
+        },
       ],
     });
 
@@ -215,10 +268,19 @@ describe('Verifier', () => {
     // Simulates: user asks "search for X and press Enter", sentinel types but Enter is dropped.
     // Autocomplete dropdown opens → +29 option elements, URL unchanged.
     // Without the guard this was hugeDelta → auto-success (the observed Amazon/Wikipedia bug).
-    const llm = makeMockLLM({ success: false, confidence: 0.4, explanation: 'Only suggestions opened, search was not submitted' });
+    const llm = makeMockLLM({
+      success: false,
+      confidence: 0.4,
+      explanation: 'Only suggestions opened, search was not submitted',
+    });
     const verifier = new Verifier(llm);
 
-    const baseTextbox = { id: 0, role: 'textbox', name: 'Search', boundingClientRect: { x: 0, y: 0, width: 200, height: 30 } };
+    const baseTextbox = {
+      id: 0,
+      role: 'textbox',
+      name: 'Search',
+      boundingClientRect: { x: 0, y: 0, width: 200, height: 30 },
+    };
     const before = makeState({
       url: 'https://amazon.example/',
       title: 'Amazon',
@@ -236,7 +298,11 @@ describe('Verifier', () => {
       elements: [baseTextbox, ...optionElements],
     });
 
-    const result = await verifier.verifyAction("Search for 'mechanical keyboard' and submit the search", before, after);
+    const result = await verifier.verifyAction(
+      "Search for 'mechanical keyboard' and submit the search",
+      before,
+      after
+    );
 
     // LLM should have been consulted (fast path 5 must not short-circuit)
     expect(llm.generateStructuredData).toHaveBeenCalledTimes(1);
@@ -249,14 +315,35 @@ describe('Verifier', () => {
     const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
     const verifier = new Verifier(llm);
 
-    const before = makeState({ url: 'https://example.com/', elements: [{ id: 0, role: 'button', name: 'Age', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }] });
+    const before = makeState({
+      url: 'https://example.com/',
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Age',
+          boundingClientRect: { x: 0, y: 0, width: 100, height: 30 },
+        },
+      ],
+    });
     const optionElements = Array.from({ length: 10 }, (_, i) => ({
       id: i + 1,
       role: 'option',
       name: `Option ${i + 1}`,
       boundingClientRect: { x: 0, y: 40 + i * 20, width: 100, height: 20 },
     }));
-    const after = makeState({ url: 'https://example.com/', elements: [{ id: 0, role: 'button', name: 'Age', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }, ...optionElements] });
+    const after = makeState({
+      url: 'https://example.com/',
+      elements: [
+        {
+          id: 0,
+          role: 'button',
+          name: 'Age',
+          boundingClientRect: { x: 0, y: 0, width: 100, height: 30 },
+        },
+        ...optionElements,
+      ],
+    });
 
     const result = await verifier.verifyAction('Click the Age dropdown to open it', before, after);
 
@@ -272,9 +359,21 @@ describe('Verifier', () => {
     const verifier = new Verifier(llm);
 
     const before = makeState({ url: 'https://amazon.example/', elements: [] });
-    const after = makeState({ url: 'https://amazon.example/s?q=laptop', elements: Array.from({ length: 15 }, (_, i) => ({ id: i, role: 'option', name: `Result ${i}`, boundingClientRect: { x: 0, y: 0, width: 100, height: 20 } })) });
+    const after = makeState({
+      url: 'https://amazon.example/s?q=laptop',
+      elements: Array.from({ length: 15 }, (_, i) => ({
+        id: i,
+        role: 'option',
+        name: `Result ${i}`,
+        boundingClientRect: { x: 0, y: 0, width: 100, height: 20 },
+      })),
+    });
 
-    const result = await verifier.verifyAction("Search for 'laptop' and press Enter", before, after);
+    const result = await verifier.verifyAction(
+      "Search for 'laptop' and press Enter",
+      before,
+      after
+    );
 
     expect(result.success).toBe(true);
     expect(result.confidence).toBeGreaterThanOrEqual(0.9);
@@ -283,7 +382,9 @@ describe('Verifier', () => {
 
   it('returns unverified success (confidence 0.5) when LLM throws', async () => {
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn(async () => { throw new Error('Rate limit 429'); }) as any,
+      generateStructuredData: jest.fn(async () => {
+        throw new Error('Rate limit 429');
+      }) as any,
       generateText: jest.fn(async () => ''),
     };
     const verifier = new Verifier(llm);
@@ -298,7 +399,9 @@ describe('Verifier', () => {
 
   it('does not throw when LLM throws — act() loop stays alive', async () => {
     const llm: LLMProvider = {
-      generateStructuredData: jest.fn(async () => { throw new Error('Network error'); }) as any,
+      generateStructuredData: jest.fn(async () => {
+        throw new Error('Network error');
+      }) as any,
       generateText: jest.fn(async () => ''),
     };
     const verifier = new Verifier(llm);

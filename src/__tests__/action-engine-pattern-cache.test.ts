@@ -18,14 +18,32 @@ function makeState(): SimplifiedState {
     url: 'https://example.com',
     title: 'Example',
     elements: [
-      { id: 0, role: 'button', name: 'Submit', boundingClientRect: { x: 10, y: 20, width: 80, height: 30 } },
-      { id: 1, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 60, width: 200, height: 30 } },
-      { id: 2, role: 'link', name: 'Home', boundingClientRect: { x: 10, y: 100, width: 60, height: 20 } },
+      {
+        id: 0,
+        role: 'button',
+        name: 'Submit',
+        boundingClientRect: { x: 10, y: 20, width: 80, height: 30 },
+      },
+      {
+        id: 1,
+        role: 'textbox',
+        name: 'Email',
+        boundingClientRect: { x: 10, y: 60, width: 200, height: 30 },
+      },
+      {
+        id: 2,
+        role: 'link',
+        name: 'Home',
+        boundingClientRect: { x: 10, y: 100, width: 60, height: 20 },
+      },
     ],
   };
 }
 
-function makeMockStateParser(state: SimplifiedState, fingerprints: Record<number, PatternFingerprint> = {}) {
+function makeMockStateParser(
+  state: SimplifiedState,
+  fingerprints: Record<number, PatternFingerprint> = {}
+) {
   return {
     parse: jest.fn(async () => state),
     invalidateCache: jest.fn(),
@@ -88,7 +106,10 @@ function makeMockPage() {
 }
 
 function makeMockLLM(decision: {
-  elementId: number; action: string; value?: string; reasoning: string;
+  elementId: number;
+  action: string;
+  value?: string;
+  reasoning: string;
 }): LLMProvider {
   const normalized = {
     candidates: [{ elementId: decision.elementId, confidence: 1.0 }],
@@ -170,8 +191,12 @@ describe('ActionEngine + PatternCache integration', () => {
 
     // Page.mouse.click throws on ALL calls — including LLM-fallback retries.
     const page = makeMockPage();
-    (page.mouse.click as jest.Mock).mockImplementation(async () => { throw new Error('boom'); });
-    (page._locatorInstance.click as jest.Mock).mockImplementation(async () => { throw new Error('boom'); });
+    (page.mouse.click as jest.Mock).mockImplementation(async () => {
+      throw new Error('boom');
+    });
+    (page._locatorInstance.click as jest.Mock).mockImplementation(async () => {
+      throw new Error('boom');
+    });
 
     const parser = makeMockStateParser(makeState(), { 0: fp });
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'fallback attempt' });
@@ -225,8 +250,8 @@ describe('ActionEngine + PatternCache integration', () => {
 
     expect(parser.computeTargetFingerprints).toHaveBeenCalled();
     const args = (parser.computeTargetFingerprints as jest.Mock).mock.calls[0]![0] as unknown[];
-    expect((args).length).toBeLessThanOrEqual(PROBE_CAP);
+    expect(args.length).toBeLessThanOrEqual(PROBE_CAP);
     // And at least some candidates WERE probed — we didn't silently skip everything
-    expect((args).length).toBeGreaterThan(5);
+    expect(args.length).toBeGreaterThan(5);
   });
 });

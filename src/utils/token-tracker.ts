@@ -30,26 +30,26 @@ export interface TokenBudget {
 // instead of silently falling through to "no pricing".
 const COST_PER_1M: Record<string, { input: number; output: number }> = {
   // Gemini — Flash models (budget tier)
-  'gemini-2.5-flash-preview': { input: 0.075, output: 0.30 },
-  'gemini-3-flash-preview':   { input: 0.075, output: 0.30 }, // estimate, update when GA
-  'gemini-2.0-flash':         { input: 0.075, output: 0.30 },
-  'gemini-1.5-flash':         { input: 0.075, output: 0.30 },
+  'gemini-2.5-flash-preview': { input: 0.075, output: 0.3 },
+  'gemini-3-flash-preview': { input: 0.075, output: 0.3 }, // estimate, update when GA
+  'gemini-2.0-flash': { input: 0.075, output: 0.3 },
+  'gemini-1.5-flash': { input: 0.075, output: 0.3 },
   // Gemini — Pro models
-  'gemini-3.1-pro-preview':   { input: 1.25,  output: 5.00 }, // estimate, update when GA
-  'gemini-2.5-pro-preview':   { input: 1.25,  output: 5.00 },
-  'gemini-1.5-pro':           { input: 3.50,  output: 10.50 },
+  'gemini-3.1-pro-preview': { input: 1.25, output: 5.0 }, // estimate, update when GA
+  'gemini-2.5-pro-preview': { input: 1.25, output: 5.0 },
+  'gemini-1.5-pro': { input: 3.5, output: 10.5 },
   // OpenAI
-  'gpt-4o':                   { input: 2.50,  output: 10.00 },
-  'gpt-4o-mini':              { input: 0.15,  output: 0.60 },
-  'o3-mini':                  { input: 1.10,  output: 4.40 },
+  'gpt-4o': { input: 2.5, output: 10.0 },
+  'gpt-4o-mini': { input: 0.15, output: 0.6 },
+  'o3-mini': { input: 1.1, output: 4.4 },
   // Anthropic — current generation
-  'claude-opus-5':            { input: 5.00,  output: 25.00 },
-  'claude-sonnet-5':          { input: 3.00,  output: 15.00 },
-  'claude-haiku-4-5':         { input: 1.00,  output: 5.00 },
+  'claude-opus-5': { input: 5.0, output: 25.0 },
+  'claude-sonnet-5': { input: 3.0, output: 15.0 },
+  'claude-haiku-4-5': { input: 1.0, output: 5.0 },
   // Anthropic — legacy
-  'claude-3-5-sonnet':        { input: 3.00,  output: 15.00 },
-  'claude-3-5-haiku':         { input: 0.80,  output: 4.00 },
-  'claude-3-haiku':           { input: 0.25,  output: 1.25 },
+  'claude-3-5-sonnet': { input: 3.0, output: 15.0 },
+  'claude-3-5-haiku': { input: 0.8, output: 4.0 },
+  'claude-3-haiku': { input: 0.25, output: 1.25 },
 };
 
 /**
@@ -111,10 +111,7 @@ export class TokenTracker {
   private warnedUnpriced = false;
   private readonly logger: Logger;
 
-  constructor(
-    model = 'gemini-1.5-flash',
-    budgetOrOptions: TokenBudget | TokenTrackerOptions = {}
-  ) {
+  constructor(model = 'gemini-1.5-flash', budgetOrOptions: TokenBudget | TokenTrackerOptions = {}) {
     this.model = model;
     // Support both legacy `(model, TokenBudget)` and new `(model, TokenTrackerOptions)` forms.
     const isOptions = 'budget' in budgetOrOptions || 'persistPath' in budgetOrOptions;
@@ -139,10 +136,11 @@ export class TokenTracker {
       if (Array.isArray(parsed)) {
         // Validate entries; tolerate extra fields for forward-compat
         this.entries = parsed.filter(
-          e => typeof e?.operation === 'string' &&
-               typeof e?.inputTokens === 'number' &&
-               typeof e?.outputTokens === 'number' &&
-               typeof e?.timestamp === 'number'
+          e =>
+            typeof e?.operation === 'string' &&
+            typeof e?.inputTokens === 'number' &&
+            typeof e?.outputTokens === 'number' &&
+            typeof e?.timestamp === 'number'
         );
       }
     } catch {

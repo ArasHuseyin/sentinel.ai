@@ -220,7 +220,9 @@ abstract class BasePatternCache implements IPatternCache {
 // ─── In-memory variant ──────────────────────────────────────────────────────
 
 export class InMemoryPatternCache extends BasePatternCache {
-  protected persist(): void { /* no-op */ }
+  protected persist(): void {
+    /* no-op */
+  }
 }
 
 // ─── File-persisted variant ─────────────────────────────────────────────────
@@ -247,8 +249,12 @@ export class FilePatternCache extends BasePatternCache {
       if (parsed?.version !== 1 || !Array.isArray(parsed.entries)) return;
       for (const [key, value] of parsed.entries) {
         // Shallow validation — tolerate forward-compat additions
-        if (typeof key === 'string' && value && typeof value === 'object' &&
-            typeof value.successCount === 'number') {
+        if (
+          typeof key === 'string' &&
+          value &&
+          typeof value === 'object' &&
+          typeof value.successCount === 'number'
+        ) {
           this.store.set(key, value);
         }
       }

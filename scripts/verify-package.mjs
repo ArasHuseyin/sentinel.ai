@@ -66,7 +66,11 @@ try {
   console.log(`· installing into ${workdir}…`);
   writeFileSync(
     join(workdir, 'package.json'),
-    JSON.stringify({ name: 'verify-consumer', version: '1.0.0', type: 'module', private: true }, null, 2)
+    JSON.stringify(
+      { name: 'verify-consumer', version: '1.0.0', type: 'module', private: true },
+      null,
+      2
+    )
   );
   // Installs the tarball exactly as a consumer would, peer dep included —
   // `dist/core/driver.js` imports playwright at module load, so a missing peer

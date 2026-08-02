@@ -51,7 +51,9 @@ function installDom(hit: StubEl | null, scroll = { x: 0, y: 0 }) {
   };
   (globalThis as any).window = { scrollX: scroll.x, scrollY: scroll.y };
   // Minimal CSS.escape — enough for the identifiers these tests use.
-  (globalThis as any).CSS = { escape: (s: string) => s.replace(/([ !"#$%&'()*+,./:;<=>?@[\]^`{|}~])/g, '\\$1') };
+  (globalThis as any).CSS = {
+    escape: (s: string) => s.replace(/([ !"#$%&'()*+,./:;<=>?@[\]^`{|}~])/g, '\\$1'),
+  };
 
   return {
     pointCalls,
@@ -197,7 +199,11 @@ describe('generateSelector', () => {
   });
 
   it('returns null instead of throwing when evaluate rejects', async () => {
-    const page = { evaluate: jest.fn(async () => { throw new Error('context destroyed'); }) };
+    const page = {
+      evaluate: jest.fn(async () => {
+        throw new Error('context destroyed');
+      }),
+    };
     await expect(generateSelector(page as any, target())).resolves.toBeNull();
   });
 });

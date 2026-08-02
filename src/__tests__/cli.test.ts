@@ -10,7 +10,9 @@ function makeMockSentinel() {
     init: jest.fn<any>().mockResolvedValue(undefined),
     close: jest.fn<any>().mockResolvedValue(undefined),
     goto: jest.fn<any>().mockResolvedValue(undefined),
-    act: jest.fn<any>().mockResolvedValue({ success: true, message: 'Clicked', action: 'click on "Login"' }),
+    act: jest
+      .fn<any>()
+      .mockResolvedValue({ success: true, message: 'Clicked', action: 'click on "Login"' }),
     extract: jest.fn<any>().mockResolvedValue({ title: 'Example' }),
     run: jest.fn<any>().mockResolvedValue({
       goalAchieved: true,
@@ -41,7 +43,6 @@ function args(...parts: string[]) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('CLI: buildProgram', () => {
-
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -57,7 +58,9 @@ describe('CLI: buildProgram', () => {
   it('run: calls goto() then run() with correct args', async () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('run', 'Search for laptops', '--url', 'https://amazon.de', '--api-key', 'test-key'));
+    await program.parseAsync(
+      args('run', 'Search for laptops', '--url', 'https://amazon.de', '--api-key', 'test-key')
+    );
 
     expect(mock.goto).toHaveBeenCalledWith('https://amazon.de');
     expect(mock.run).toHaveBeenCalledWith('Search for laptops', { maxSteps: 15 });
@@ -66,7 +69,9 @@ describe('CLI: buildProgram', () => {
   it('run: respects --max-steps option', async () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('run', 'my goal', '--url', 'https://example.com', '--api-key', 'key', '--max-steps', '5'));
+    await program.parseAsync(
+      args('run', 'my goal', '--url', 'https://example.com', '--api-key', 'key', '--max-steps', '5')
+    );
 
     expect(mock.run).toHaveBeenCalledWith('my goal', { maxSteps: 5 });
   });
@@ -74,7 +79,9 @@ describe('CLI: buildProgram', () => {
   it('run: sets exitCode 0 when goalAchieved', async () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key'));
+    await program.parseAsync(
+      args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key')
+    );
 
     expect(process.exitCode).toBe(0);
   });
@@ -82,10 +89,16 @@ describe('CLI: buildProgram', () => {
   it('run: sets exitCode 1 when goal NOT achieved', async () => {
     const mock = makeMockSentinel();
     mock.run.mockResolvedValue({
-      goalAchieved: false, success: false, totalSteps: 3, message: 'Failed', history: [],
+      goalAchieved: false,
+      success: false,
+      totalSteps: 3,
+      message: 'Failed',
+      history: [],
     });
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key'));
+    await program.parseAsync(
+      args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key')
+    );
 
     expect(process.exitCode).toBe(1);
   });
@@ -93,7 +106,9 @@ describe('CLI: buildProgram', () => {
   it('run: always calls close() even after success', async () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key'));
+    await program.parseAsync(
+      args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key')
+    );
 
     expect(mock.close).toHaveBeenCalled();
   });
@@ -103,7 +118,9 @@ describe('CLI: buildProgram', () => {
   it('act: calls goto() then act() with instruction', async () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('act', 'Click the login button', '--url', 'https://example.com', '--api-key', 'key'));
+    await program.parseAsync(
+      args('act', 'Click the login button', '--url', 'https://example.com', '--api-key', 'key')
+    );
 
     expect(mock.goto).toHaveBeenCalledWith('https://example.com');
     expect(mock.act).toHaveBeenCalledWith('Click the login button');
@@ -113,7 +130,9 @@ describe('CLI: buildProgram', () => {
     const mock = makeMockSentinel();
     mock.act.mockResolvedValue({ success: false, message: 'Element not found' });
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('act', 'Click missing button', '--url', 'https://example.com', '--api-key', 'key'));
+    await program.parseAsync(
+      args('act', 'Click missing button', '--url', 'https://example.com', '--api-key', 'key')
+    );
 
     expect(process.exitCode).toBe(1);
   });
@@ -124,16 +143,32 @@ describe('CLI: buildProgram', () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
     const schema = JSON.stringify({ type: 'object', properties: { title: { type: 'string' } } });
-    await program.parseAsync(args('extract', 'Get the page title', '--url', 'https://example.com', '--api-key', 'key', '--schema', schema));
+    await program.parseAsync(
+      args(
+        'extract',
+        'Get the page title',
+        '--url',
+        'https://example.com',
+        '--api-key',
+        'key',
+        '--schema',
+        schema
+      )
+    );
 
     expect(mock.goto).toHaveBeenCalledWith('https://example.com');
-    expect(mock.extract).toHaveBeenCalledWith('Get the page title', { type: 'object', properties: { title: { type: 'string' } } });
+    expect(mock.extract).toHaveBeenCalledWith('Get the page title', {
+      type: 'object',
+      properties: { title: { type: 'string' } },
+    });
   });
 
   it('extract: uses default schema when --schema is omitted', async () => {
     const mock = makeMockSentinel();
     const program = buildProgram(makeFactory(mock));
-    await program.parseAsync(args('extract', 'Get data', '--url', 'https://example.com', '--api-key', 'key'));
+    await program.parseAsync(
+      args('extract', 'Get data', '--url', 'https://example.com', '--api-key', 'key')
+    );
 
     expect(mock.extract).toHaveBeenCalledWith('Get data', { type: 'object' });
   });
@@ -144,10 +179,15 @@ describe('CLI: buildProgram', () => {
     const mock = makeMockSentinel();
     const factory = jest.fn(async () => mock as unknown as Sentinel);
     const program = buildProgram(factory);
-    await program.parseAsync(args('act', 'Click', '--url', 'https://example.com', '--api-key', 'my-api-key'));
+    await program.parseAsync(
+      args('act', 'Click', '--url', 'https://example.com', '--api-key', 'my-api-key')
+    );
 
     // Commander stores --headless flag as false by default (flag is off unless passed)
-    expect(factory as jest.Mock<any>).toHaveBeenCalledWith({ apiKey: 'my-api-key', headless: false });
+    expect(factory as jest.Mock<any>).toHaveBeenCalledWith({
+      apiKey: 'my-api-key',
+      headless: false,
+    });
   });
 
   it('throws when API key is missing', async () => {
