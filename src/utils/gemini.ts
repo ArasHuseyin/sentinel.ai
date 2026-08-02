@@ -10,9 +10,12 @@ export type { SchemaInput };
 export class GeminiService {
   private provider: GeminiProvider;
   onTokenUsage?: (usage: TokenUsage) => void;
+  /** Mirrors the wrapped provider so cost/telemetry can identify the model. */
+  readonly modelName: string;
 
   constructor(apiKey: string) {
     this.provider = new GeminiProvider({ apiKey });
+    this.modelName = this.provider.modelName;
   }
 
   private syncTokenUsage(): void {

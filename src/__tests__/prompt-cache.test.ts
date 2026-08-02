@@ -7,7 +7,6 @@ import {
   createCachingProvider,
   buildPromptCacheKey,
 } from '../core/prompt-cache.js';
-import type { IPromptCache } from '../core/prompt-cache.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -188,7 +187,7 @@ describe('buildPromptCacheKey()', () => {
 function makeMockProvider() {
   const provider: LLMProvider = {
     generateStructuredData: jest.fn(async () => ({ action: 'click', elementId: 1 })) as any,
-    generateText: jest.fn(async () => 'some text') as any,
+    generateText: jest.fn(async () => 'some text'),
   };
   return provider;
 }
@@ -274,7 +273,7 @@ describe('createCachingProvider()', () => {
   it('analyzeImage is forwarded when present on original provider', async () => {
     const p: LLMProvider = {
       ...makeMockProvider(),
-      analyzeImage: jest.fn(async () => 'description') as any,
+      analyzeImage: jest.fn(async () => 'description'),
     };
     const cached = createCachingProvider(p, new InMemoryPromptCache());
     expect(typeof cached.analyzeImage).toBe('function');
@@ -287,7 +286,7 @@ describe('createCachingProvider()', () => {
   it('analyzeImage is not cached — called every time', async () => {
     const p: LLMProvider = {
       ...makeMockProvider(),
-      analyzeImage: jest.fn(async () => 'vision result') as any,
+      analyzeImage: jest.fn(async () => 'vision result'),
     };
     const cached = createCachingProvider(p, new InMemoryPromptCache());
 
@@ -324,7 +323,7 @@ describe('Sentinel promptCache integration', () => {
       ...(promptCache !== undefined ? { promptCache } : {}),
       provider: {
         generateStructuredData: jest.fn(async () => ({ action: 'click', elementId: 0, reasoning: 'ok' })) as any,
-        generateText: jest.fn(async () => '') as any,
+        generateText: jest.fn(async () => ''),
       },
     };
   }

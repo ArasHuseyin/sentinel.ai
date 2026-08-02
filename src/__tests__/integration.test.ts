@@ -108,7 +108,7 @@ describe('Integration: ActionEngine + Verifier', () => {
     };
 
     const engine = new ActionEngine(page as any, stateParser as any, actionLLM);
-    const verifier = new Verifier(page as any, stateParser as any, verifierLLM);
+    const verifier = new Verifier(verifierLLM);
 
     const actResult = await engine.act('Click the submit button');
     expect(actResult.success).toBe(true);
@@ -149,7 +149,7 @@ describe('Integration: ActionEngine + Verifier', () => {
       generateText: jest.fn(async () => ''),
     };
 
-    const verifier = new Verifier(page as any, {} as any, verifierLLM);
+    const verifier = new Verifier(verifierLLM);
 
     // First attempt: verifier says low confidence
     const stateParser1 = makeMockStateParser(stateBefore);

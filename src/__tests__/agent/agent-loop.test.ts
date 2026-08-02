@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import { AgentLoop } from '../../agent/agent-loop.js';
 import type { SimplifiedState } from '../../core/state-parser.js';
 import type { LLMProvider } from '../../utils/llm-provider.js';
@@ -760,6 +760,14 @@ describe('AgentLoop', () => {
 
       // The LLM should have been called
       expect((llm.generateStructuredData as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+
+      // ...and the prompt must actually carry the goal-matching elements, all of
+      // which sit at ids 70-80 — a naive "first 40" slice would have dropped
+      // every one of them. Non-matching elements may still ride along to fill
+      // the budget; what matters is that relevance, not position, drives the cut.
+      for (let id = 70; id <= 80; id++) {
+        expect(capturedPrompt).toContain(`Checkout Button ${id}`);
+      }
     });
   });
 

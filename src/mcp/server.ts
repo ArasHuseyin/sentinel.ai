@@ -7,7 +7,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Sentinel } from '../index.js';
+import { SENTINEL_VERSION } from '../version.js';
 import type { SentinelOptions } from '../index.js';
+import { ignoreRejection } from '../utils/ignore-rejection.js';
 
 // ─── Sentinel session ─────────────────────────────────────────────────────
 //
@@ -35,13 +37,20 @@ async function getOrInit(): Promise<Sentinel> {
 
 async function cleanup() {
   if (sentinel) {
-    await sentinel.close().catch(() => {});
+    await sentinel.close().catch(ignoreRejection);
     sentinel = null;
   }
 }
 
-process.on('SIGINT', async () => { await cleanup(); process.exit(0); });
-process.on('SIGTERM', async () => { await cleanup(); process.exit(0); });
+// `process.on` discards the returned promise, so an async listener that rejects
+// becomes an unhandled rejection and the process never reaches process.exit().
+// `.finally` guarantees the exit either way — same shape as the HTTP transport's
+// shutdown handler further down.
+const exitAfterCleanup = () => {
+  void cleanup().finally(() => process.exit(0));
+};
+process.on('SIGINT', exitAfterCleanup);
+process.on('SIGTERM', exitAfterCleanup);
 
 // ─── Tool registration (exported for testing) ─────────────────────────────
 
@@ -83,7 +92,7 @@ export function registerTools(
     async ({ instruction, variables }) => {
       try {
         const s = await sessionFactory();
-        const result = await s.act(instruction, variables ? { variables: variables as Record<string, string> } : undefined);
+        const result = await s.act(instruction, variables ? { variables: variables } : undefined);
         return {
           content: [{
             type: 'text' as const,
@@ -260,7 +269,7 @@ export async function startServer() {
     // startHttpTransport) — no shared server needed here.
     await startHttpTransport();
   } else {
-    const server = new McpServer({ name: 'sentinel', version: '4.1.6' });
+    const server = new McpServer({ name: 'sentinel', version: SENTINEL_VERSION });
     registerTools(server, getOrInit, cleanup);
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -285,7 +294,7 @@ async function startHttpTransport(): Promise<void> {
   // Sentinel browser singleton via `getOrInit()` inside the registered tool
   // handlers, so a new McpServer per request is cheap — it's just the wiring,
   // not the browser.
-  const http = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+  const handleMcpRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (req.url !== '/mcp') {
       res.statusCode = 404;
       res.end('Not Found — MCP endpoint is /mcp');
@@ -333,12 +342,12 @@ async function startHttpTransport(): Promise<void> {
       // Headers may appear as the 2nd or 3rd positional argument; scan both.
       for (const arg of args) startHeartbeatIfSse(arg);
       return (origWriteHead as (...a: unknown[]) => ServerResponse)(...args);
-    }) as ServerResponse['writeHead'];
+    });
 
     let perReqServer: McpServer | null = null;
     let perReqTransport: StreamableHTTPServerTransport | null = null;
     try {
-      perReqServer = new McpServer({ name: 'sentinel', version: '4.1.6' });
+      perReqServer = new McpServer({ name: 'sentinel', version: SENTINEL_VERSION });
       registerTools(perReqServer, getOrInit, cleanup);
       perReqTransport = new StreamableHTTPServerTransport(
         { sessionIdGenerator: undefined } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]
@@ -355,8 +364,8 @@ async function startHttpTransport(): Promise<void> {
       // shared Sentinel browser session — that lives across requests).
       res.on('close', () => {
         stopHeartbeat();
-        perReqTransport?.close().catch(() => {});
-        perReqServer?.close().catch(() => {});
+        perReqTransport?.close().catch(ignoreRejection);
+        perReqServer?.close().catch(ignoreRejection);
       });
       res.on('finish', stopHeartbeat);
 
@@ -368,9 +377,23 @@ async function startHttpTransport(): Promise<void> {
         res.statusCode = 500;
         res.end(JSON.stringify({ error: (err as Error).message }));
       }
-      perReqTransport?.close().catch(() => {});
-      perReqServer?.close().catch(() => {});
+      perReqTransport?.close().catch(ignoreRejection);
+      perReqServer?.close().catch(ignoreRejection);
     }
+  };
+
+  // createHttpServer discards the handler's promise, so a rejection escaping
+  // handleMcpRequest would surface as an unhandled rejection rather than a
+  // response. The handler catches its own body; this is the last-resort net for
+  // anything thrown while handling that error.
+  const http = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+    void handleMcpRequest(req, res).catch(err => {
+      console.error('[Sentinel MCP] unhandled HTTP handler error:', (err as Error).message);
+      if (!res.writableEnded) {
+        res.statusCode = 500;
+        res.end();
+      }
+    });
   });
 
   // Disable Node's request timeouts. SSE responses for long agent runs sit

@@ -26,7 +26,7 @@ function makeMockLLM(response: { success: boolean; confidence: number; explanati
 describe('Verifier', () => {
   it('auto-succeeds when URL changes (fast path)', async () => {
     const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ url: 'https://example.com/login' });
     const after = makeState({ url: 'https://example.com/dashboard' });
@@ -40,7 +40,7 @@ describe('Verifier', () => {
 
   it('calls LLM when URL stays the same', async () => {
     const llm = makeMockLLM({ success: true, confidence: 0.85, explanation: 'Form was submitted' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ elements: [] });
     const after = makeState({ elements: [{ id: 0, role: 'alert', name: 'Success!', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }] });
@@ -55,7 +55,7 @@ describe('Verifier', () => {
 
   it('returns failure when LLM says action failed', async () => {
     const llm = makeMockLLM({ success: false, confidence: 0.3, explanation: 'Nothing changed' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const state = makeState();
     const result = await verifier.verifyAction('Click invisible button', state, state);
@@ -66,7 +66,7 @@ describe('Verifier', () => {
 
   it('always sets done: true', async () => {
     const llm = makeMockLLM({ success: true, confidence: 0.9, explanation: 'OK' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const state = makeState();
     const result = await verifier.verifyAction('Any action', state, state);
@@ -78,7 +78,7 @@ describe('Verifier', () => {
     // Use identical states (same URL, title, elements) so all fast paths are skipped
     // and the LLM slow path is reached.
     const llm = makeMockLLM({ success: true, confidence: 0.8, explanation: 'Done' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const sameState = makeState({ url: 'https://example.com', title: 'Stable Page' });
 
@@ -94,7 +94,7 @@ describe('Verifier', () => {
 
   it('auto-succeeds when page title changes (fast path)', async () => {
     const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ title: 'Home' });
     const after = makeState({ title: 'Dashboard' });
@@ -116,7 +116,7 @@ describe('Verifier', () => {
       }));
 
     const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ elements: makeElements(3) });
     const after  = makeState({ elements: makeElements(8) }); // delta = 5
@@ -138,7 +138,7 @@ describe('Verifier', () => {
       }));
 
     const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ elements: makeElements(8) });
     const after  = makeState({ elements: makeElements(3) }); // delta = 5
@@ -160,7 +160,7 @@ describe('Verifier', () => {
       }));
 
     const llm = makeMockLLM({ success: true, confidence: 0.75, explanation: 'OK' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ elements: makeElements(5) });
     const after  = makeState({ elements: makeElements(8) }); // delta = 3, less than 5
@@ -172,7 +172,7 @@ describe('Verifier', () => {
 
   it('auto-succeeds (fast path) when focused element changes', async () => {
     const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({
       elements: [
@@ -196,7 +196,7 @@ describe('Verifier', () => {
 
   it('falls through to LLM when focused element does not change', async () => {
     const llm = makeMockLLM({ success: true, confidence: 0.80, explanation: 'OK' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const state = makeState({
       elements: [
@@ -216,7 +216,7 @@ describe('Verifier', () => {
     // Autocomplete dropdown opens → +29 option elements, URL unchanged.
     // Without the guard this was hugeDelta → auto-success (the observed Amazon/Wikipedia bug).
     const llm = makeMockLLM({ success: false, confidence: 0.4, explanation: 'Only suggestions opened, search was not submitted' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const baseTextbox = { id: 0, role: 'textbox', name: 'Search', boundingClientRect: { x: 0, y: 0, width: 200, height: 30 } };
     const before = makeState({
@@ -247,7 +247,7 @@ describe('Verifier', () => {
   it('still auto-succeeds for non-submit-intent action when options are added (legitimate dropdown open)', async () => {
     // e.g. "click the dropdown" — opening a listbox IS the goal. No submit-intent.
     const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ url: 'https://example.com/', elements: [{ id: 0, role: 'button', name: 'Age', boundingClientRect: { x: 0, y: 0, width: 100, height: 30 } }] });
     const optionElements = Array.from({ length: 10 }, (_, i) => ({
@@ -269,7 +269,7 @@ describe('Verifier', () => {
     // Happy path: submit-intent + options appeared in the result page + URL changed.
     // Fast path 1 (URL change) should win before Fast Path 5 even runs.
     const llm = makeMockLLM({ success: false, confidence: 0, explanation: 'should not be called' });
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const before = makeState({ url: 'https://amazon.example/', elements: [] });
     const after = makeState({ url: 'https://amazon.example/s?q=laptop', elements: Array.from({ length: 15 }, (_, i) => ({ id: i, role: 'option', name: `Result ${i}`, boundingClientRect: { x: 0, y: 0, width: 100, height: 20 } })) });
@@ -286,7 +286,7 @@ describe('Verifier', () => {
       generateStructuredData: jest.fn(async () => { throw new Error('Rate limit 429'); }) as any,
       generateText: jest.fn(async () => ''),
     };
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const state = makeState();
     const result = await verifier.verifyAction('Click button', state, state);
@@ -301,7 +301,7 @@ describe('Verifier', () => {
       generateStructuredData: jest.fn(async () => { throw new Error('Network error'); }) as any,
       generateText: jest.fn(async () => ''),
     };
-    const verifier = new Verifier({} as any, {} as any, llm);
+    const verifier = new Verifier(llm);
 
     const state = makeState();
     // Must resolve, not reject

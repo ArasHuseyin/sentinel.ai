@@ -16,6 +16,9 @@ jest.mock('@google/generative-ai', () => ({
 }));
 
 import { GeminiProvider } from '../utils/providers/gemini-provider.js';
+import { ClaudeProvider } from '../utils/providers/claude-provider.js';
+import { OpenAIProvider } from '../utils/providers/openai-provider.js';
+import { OllamaProvider } from '../utils/providers/ollama-provider.js';
 
 beforeEach(() => {
   // Reset every mock so call history doesn't leak between tests. Default impl:
@@ -43,9 +46,9 @@ const GEMINI_MODELS = [
 ];
 
 const CLAUDE_MODELS = [
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-6',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
 ];
 
 const OPENAI_MODELS = [
@@ -58,30 +61,13 @@ const OLLAMA_MODELS = [
   'mistral',
 ];
 
-// ─── Minimal provider stubs (mirrors real provider constructor logic) ──────────
-
-class StubClaudeProvider {
-  readonly model: string;
-  constructor(options: { apiKey: string; model?: string }) {
-    this.model = options.model ?? 'claude-sonnet-4-6';
-  }
-}
-
-class StubOpenAIProvider {
-  readonly model: string;
-  constructor(options: { apiKey: string; model?: string; baseURL?: string }) {
-    this.model = options.model ?? 'gpt-4o';
-  }
-}
-
-class StubOllamaProvider {
-  readonly model: string;
-  readonly baseURL: string;
-  constructor(options: { model: string; baseURL?: string }) {
-    this.model = options.model;
-    this.baseURL = options.baseURL ?? 'http://localhost:11434';
-  }
-}
+// These tests construct the REAL providers. They used to run against local stub
+// classes that re-implemented the constructor logic, so they asserted a copy of
+// the code instead of the code — which is how a constructor that threw on every
+// single call (bare `require` in an ESM package) stayed green for releases.
+// The optional SDKs are devDependencies precisely so this path is exercisable.
+const readModel = (provider: object): string => (provider as { modelName: string }).modelName;
+const readBaseURL = (provider: object): string => (provider as { baseURL: string }).baseURL;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -146,43 +132,71 @@ describe('LLM Providers – documented models', () => {
   });
 
   describe('ClaudeProvider – model defaults (documented in README)', () => {
-    it.each(CLAUDE_MODELS)('accepts model "%s"', (model) => {
-      const provider = new StubClaudeProvider({ apiKey: 'test-key', model });
-      expect(provider.model).toBe(model);
+    it.each(CLAUDE_MODELS)('accepts model "%s"', model => {
+      const provider = new ClaudeProvider({ apiKey: 'test-key', model });
+      expect(readModel(provider)).toBe(model);
     });
 
-    it('default model is claude-sonnet-4-6', () => {
-      const provider = new StubClaudeProvider({ apiKey: 'test-key' });
-      expect(provider.model).toBe('claude-sonnet-4-6');
+    it('default model is claude-sonnet-5', () => {
+      const provider = new ClaudeProvider({ apiKey: 'test-key' });
+      expect(readModel(provider)).toBe('claude-sonnet-5');
     });
   });
 
   describe('OpenAIProvider – model defaults (documented in README)', () => {
-    it.each(OPENAI_MODELS)('accepts model "%s"', (model) => {
-      const provider = new StubOpenAIProvider({ apiKey: 'test-key', model });
-      expect(provider.model).toBe(model);
+    it.each(OPENAI_MODELS)('accepts model "%s"', model => {
+      const provider = new OpenAIProvider({ apiKey: 'test-key', model });
+      expect(readModel(provider)).toBe(model);
     });
 
     it('default model is gpt-4o', () => {
-      const provider = new StubOpenAIProvider({ apiKey: 'test-key' });
-      expect(provider.model).toBe('gpt-4o');
+      const provider = new OpenAIProvider({ apiKey: 'test-key' });
+      expect(readModel(provider)).toBe('gpt-4o');
     });
   });
 
   describe('OllamaProvider – model and baseURL defaults (documented in README)', () => {
-    it.each(OLLAMA_MODELS)('accepts model "%s"', (model) => {
-      const provider = new StubOllamaProvider({ model });
-      expect(provider.model).toBe(model);
+    it.each(OLLAMA_MODELS)('accepts model "%s"', model => {
+      const provider = new OllamaProvider({ model });
+      expect(readModel(provider)).toBe(model);
     });
 
     it('default baseURL is http://localhost:11434', () => {
-      const provider = new StubOllamaProvider({ model: 'llama3.2' });
-      expect(provider.baseURL).toBe('http://localhost:11434');
+      const provider = new OllamaProvider({ model: 'llama3.2' });
+      expect(readBaseURL(provider)).toBe('http://localhost:11434');
     });
 
     it('accepts custom baseURL', () => {
-      const provider = new StubOllamaProvider({ model: 'mistral', baseURL: 'http://my-server:11434' });
-      expect(provider.baseURL).toBe('http://my-server:11434');
+      const provider = new OllamaProvider({ model: 'mistral', baseURL: 'http://my-server:11434' });
+      expect(readBaseURL(provider)).toBe('http://my-server:11434');
+    });
+  });
+
+  // ─── Regression: optional SDKs must load under ESM ─────────────────────────
+  //
+  // The package is "type": "module". ClaudeProvider and OpenAIProvider used the
+  // bare `require` identifier to lazily load their optional SDKs — which does
+  // not exist in an ESM scope. Every construction threw ReferenceError, got
+  // swallowed by a catch, and surfaced as '"<sdk>" package not found', so both
+  // providers were unusable in every published build regardless of what the
+  // user had installed.
+  describe('optional SDK loading under ESM', () => {
+    it('ClaudeProvider constructs when @anthropic-ai/sdk is installed', () => {
+      expect(() => new ClaudeProvider({ apiKey: 'test-key' })).not.toThrow();
+    });
+
+    it('OpenAIProvider constructs when openai is installed', () => {
+      expect(() => new OpenAIProvider({ apiKey: 'test-key' })).not.toThrow();
+    });
+
+    it('a constructed ClaudeProvider actually holds an SDK client', () => {
+      const provider = new ClaudeProvider({ apiKey: 'test-key' });
+      expect((provider as unknown as { client: unknown }).client).toBeDefined();
+    });
+
+    it('a constructed OpenAIProvider actually holds an SDK client', () => {
+      const provider = new OpenAIProvider({ apiKey: 'test-key' });
+      expect((provider as unknown as { client: unknown }).client).toBeDefined();
     });
   });
 
@@ -201,9 +215,9 @@ describe('LLM Providers – documented models', () => {
     });
 
     it('all documented Claude models are listed', () => {
-      expect(CLAUDE_MODELS).toContain('claude-opus-4-6');
-      expect(CLAUDE_MODELS).toContain('claude-sonnet-4-6');
-      expect(CLAUDE_MODELS).toContain('claude-haiku-4-6');
+      expect(CLAUDE_MODELS).toContain('claude-opus-5');
+      expect(CLAUDE_MODELS).toContain('claude-sonnet-5');
+      expect(CLAUDE_MODELS).toContain('claude-haiku-4-5-20251001');
     });
 
     it('all documented OpenAI models are listed', () => {

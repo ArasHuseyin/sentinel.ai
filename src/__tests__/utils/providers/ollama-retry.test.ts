@@ -19,7 +19,7 @@ describe('OllamaProvider retry logic', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
-    fetchMock = jest.fn() as jest.MockedFunction<typeof fetch>;
+    fetchMock = jest.fn();
     global.fetch = fetchMock;
   });
 

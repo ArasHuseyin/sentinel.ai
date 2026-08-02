@@ -14,7 +14,7 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { Sentinel, z } from '../../index.js';
 
 // Default model if not set in .env
@@ -473,60 +473,5 @@ describeE2E('E2E: Real Browser Tests', () => {
 
       expect(result.totalSteps).toBeGreaterThanOrEqual(5);
     }, 300_000);
-  });
-
-  // ─── 12. Onix VP: login + tariff calculator + select cheapest tariff ────────
-
-  describe('Onix VP Tarifrechner', () => {
-    it('logs in, fills the tariff calculator with fake data, and selects the cheapest tariff', async () => {
-      await sentinel.goto('https://vp.onix-connect.com/');
-
-      const result = await sentinel.run(
-        'Complete the following steps on vp.onix-connect.com (energy provider switch platform):\n' +
-        '\n' +
-        '1. LOGIN:\n' +
-        '   - Email: samil.andak@hotmail.com\n' +
-        '   - Password: odkPLlGAwz\n' +
-        '   - Click the login/submit button\n' +
-        '\n' +
-        '2. NAVIGATE TO TARIFRECHNER:\n' +
-        '   - After login, find and open the Tarifrechner (tariff calculator) for Strom (electricity) or Gas\n' +
-        '\n' +
-        '3. FILL THE FORM with fake data:\n' +
-        '   - Use realistic Austrian fake data for all required fields\n' +
-        '   - PLZ / Postal code: 1010\n' +
-        '   - Verbrauch / Consumption: 3500 kWh (for Strom) or 15000 kWh (for Gas)\n' +
-        '   - For any personal fields: Max Mustermann, Musterstraße 1, 1010 Wien\n' +
-        '   - Fill ALL required fields, click through ALL form steps/pages\n' +
-        '\n' +
-        '4. SELECT CHEAPEST TARIFF:\n' +
-        '   - When tariff results appear, identify the cheapest option\n' +
-        '   - Select/click on the cheapest tariff\n' +
-        '   - Extract the selected tariff details (provider name, tariff name, yearly price)',
-        {
-          maxSteps: 40,
-          onStep: step => {
-            const icon = step.type === 'extract' ? '🔍' : (step.success ? '✅' : '❌');
-            console.log(`[Onix ${step.stepNumber}] ${icon} ${step.instruction}`);
-          },
-        }
-      );
-
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`Onix VP: ${result.totalSteps} steps, goal: ${result.goalAchieved}`);
-      console.log(`Message: ${result.message}`);
-      if (result.data) {
-        console.log('\nSelected tariff:');
-        console.log(JSON.stringify(result.data, null, 2));
-      }
-      if (result.selectors) {
-        console.log('\nSelectors:', JSON.stringify(result.selectors, null, 2));
-      }
-
-      const usage = sentinel.getTokenUsage();
-      console.log(`\nCost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
-
-      expect(result.totalSteps).toBeGreaterThanOrEqual(3);
-    }, 600_000); // 10 Minuten — Login + mehrstufiges Formular + Tarifauswahl
   });
 });

@@ -39,7 +39,7 @@ describe('Playwright Test Fixture: runAiFixture', () => {
     mock.close.mockImplementation(async () => { callOrder.push('close'); });
 
     await runAiFixture(
-      { apiKey: 'test-key' } as any,
+      { apiKey: 'test-key' },
       async (_ai) => { callOrder.push('use'); },
       SentinelClass
     );
@@ -78,7 +78,7 @@ describe('Playwright Test Fixture: runAiFixture', () => {
     const SentinelClass = makeMockSentinelClass(mock);
 
     await runAiFixture(
-      { apiKey: 'test-key' } as any,
+      { apiKey: 'test-key' },
       async (ai) => {
         await ai.goto('https://example.com');
         expect(mock.goto).toHaveBeenCalledWith('https://example.com');
@@ -92,7 +92,7 @@ describe('Playwright Test Fixture: runAiFixture', () => {
     const SentinelClass = makeMockSentinelClass(mock);
 
     await runAiFixture(
-      { apiKey: 'test-key' } as any,
+      { apiKey: 'test-key' },
       async (ai) => {
         const result = await ai.act('Click the login button');
         expect(mock.act).toHaveBeenCalledWith('Click the login button', undefined);
@@ -108,7 +108,7 @@ describe('Playwright Test Fixture: runAiFixture', () => {
     const schema = { type: 'object', properties: { value: { type: 'number' } } };
 
     await runAiFixture(
-      { apiKey: 'test-key' } as any,
+      { apiKey: 'test-key' },
       async (ai) => {
         const data = await ai.extract('Get the value', schema);
         expect(mock.extract).toHaveBeenCalledWith('Get the value', schema);
@@ -123,7 +123,7 @@ describe('Playwright Test Fixture: runAiFixture', () => {
     const SentinelClass = makeMockSentinelClass(mock);
 
     await runAiFixture(
-      { apiKey: 'test-key' } as any,
+      { apiKey: 'test-key' },
       async (ai) => {
         const result = await ai.run('Achieve the goal', { maxSteps: 5 });
         expect(mock.run).toHaveBeenCalledWith('Achieve the goal', { maxSteps: 5 });
@@ -138,7 +138,7 @@ describe('Playwright Test Fixture: runAiFixture', () => {
     const SentinelClass = makeMockSentinelClass(mock);
 
     await runAiFixture(
-      { apiKey: 'test-key' } as any,
+      { apiKey: 'test-key' },
       async (ai) => {
         const usage = ai.getTokenUsage();
         expect(usage.totalTokens).toBe(50);

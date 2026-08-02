@@ -1,0 +1,7 @@
+dist
+coverage
+node_modules
+sessions
+screenshots
+package-lock.json
+*.gif

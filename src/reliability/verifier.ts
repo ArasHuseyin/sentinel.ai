@@ -1,6 +1,5 @@
-import type { Page } from 'playwright';
-import { StateParser } from '../core/state-parser.js';
 import type { SimplifiedState } from '../core/state-parser.js';
+import { createLogger, type Logger } from '../utils/logger.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 
 export interface VerificationResult {
@@ -33,11 +32,20 @@ function summarizeState(state: SimplifiedState): object {
 }
 
 export class Verifier {
+  private readonly logger: Logger;
+
+  /**
+   * @param logger Optional sink for verification diagnostics. Defaults to a
+   *   plain console logger so behaviour is unchanged when none is supplied;
+   *   passing one routes these messages through the same `verbose`/JSON
+   *   pipeline as the rest of Sentinel instead of writing to stdout directly.
+   */
   constructor(
-    private page: Page,
-    private stateParser: StateParser,
-    private gemini: LLMProvider
-  ) {}
+    private gemini: LLMProvider,
+    logger?: Logger
+  ) {
+    this.logger = (logger ?? createLogger(false, 1)).child('Verifier');
+  }
 
   async verifyAction(
     action: string,
@@ -54,7 +62,7 @@ export class Verifier {
 
     // ── Fast path 1: URL changed → navigation → very likely success ───────────
     if (stateBefore.url !== stateAfter.url) {
-      console.log(`[Verifier] URL changed: ${stateBefore.url} → ${stateAfter.url}. Auto-success.`);
+      this.logger.info(`URL changed: ${stateBefore.url} → ${stateAfter.url}. Auto-success.`);
       return {
         done: true,
         success: true,
@@ -65,7 +73,7 @@ export class Verifier {
 
     // ── Fast path 2: Page title changed ───────────────────────────────────────
     if (stateBefore.title !== stateAfter.title) {
-      console.log(`[Verifier] Title changed: "${stateBefore.title}" → "${stateAfter.title}". Auto-success.`);
+      this.logger.info(`Title changed: "${stateBefore.title}" → "${stateAfter.title}". Auto-success.`);
       return {
         done: true,
         success: true,
@@ -90,7 +98,7 @@ export class Verifier {
     // and Wikipedia during live testing.
     const isSubmitIntent = /\b(submit|press\s+(?:enter|return)|send\s+search|search\s+for|navigate\s+to|go\s+to)\b/i.test(intentString);
     if (isSubmitIntent) {
-      console.log(`[Verifier] Submit-intent action with no URL/title change — skipping non-navigation fast paths, going to LLM slow path`);
+      this.logger.info(`Submit-intent action with no URL/title change — skipping non-navigation fast paths, going to LLM slow path`);
     }
 
     // ── Fast path 3: Scroll actions — AOM doesn't change on scroll ───────────
@@ -118,7 +126,7 @@ export class Verifier {
     const isToggleClick = /click/i.test(action) &&
       /\b(checkbox|switch|radio)\b/i.test(action);
     if (isToggleClick && !isSubmitIntent) {
-      console.log(`[Verifier] Toggle-click on checkbox/switch/radio — auto-success.`);
+      this.logger.info(`Toggle-click on checkbox/switch/radio — auto-success.`);
       return {
         done: true,
         success: true,
@@ -141,7 +149,7 @@ export class Verifier {
       .join('\0');
 
     if (beforeChecked !== afterChecked && !isSubmitIntent) {
-      console.log(`[Verifier] Checked state changed. Auto-success.`);
+      this.logger.info(`Checked state changed. Auto-success.`);
       return {
         done: true,
         success: true,
@@ -179,7 +187,7 @@ export class Verifier {
       const hugeDelta = elementDelta >= 20;
 
       if (hugeDelta || targetStillPresent) {
-        console.log(`[Verifier] Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
+        this.logger.info(`Element count changed by ${elementDelta} (${stateBefore.elements.length} → ${stateAfter.elements.length}). Auto-success.`);
         return {
           done: true,
           success: true,
@@ -189,7 +197,7 @@ export class Verifier {
       } else {
         // Medium delta + target vanished → likely unrelated DOM update.
         // Fall through to focus check / semantic LLM verification.
-        console.log(`[Verifier] Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`);
+        this.logger.info(`Element delta ${elementDelta} but target "${targetName}" vanished — not auto-success, falling through`);
       }
     }
 
@@ -200,7 +208,7 @@ export class Verifier {
     const focusedBefore = stateBefore.elements.find(e => e.state?.focused)?.name ?? null;
     const focusedAfter  = stateAfter.elements.find(e => e.state?.focused)?.name ?? null;
     if (focusedBefore !== focusedAfter && !isSubmitIntent) {
-      console.log(`[Verifier] Focused element changed: "${focusedBefore}" → "${focusedAfter}". Auto-success.`);
+      this.logger.info(`Focused element changed: "${focusedBefore}" → "${focusedAfter}". Auto-success.`);
       return {
         done: true,
         success: true,
@@ -260,7 +268,7 @@ export class Verifier {
       };
     } catch (err: any) {
       // LLM error (rate limit, network, etc.) — don't crash the whole act() call.
-      console.warn(`[Verifier] LLM verification failed: ${err.message}. Returning unverified result.`);
+      this.logger.warn(`LLM verification failed: ${err.message}. Returning unverified result.`);
       return {
         done: true,
         success: true,

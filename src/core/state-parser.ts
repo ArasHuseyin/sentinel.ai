@@ -1,6 +1,7 @@
 import type { CDPSession, Frame, Page } from 'playwright';
 import { computeFingerprintsBrowserSide } from './pattern-signature-browser.js';
 import type { PatternFingerprint } from './pattern-signature.js';
+import { createLogger, type Logger } from '../utils/logger.js';
 
 export type PageRegion = 'header' | 'nav' | 'sidebar' | 'main' | 'footer' | 'modal' | 'popup';
 
@@ -93,7 +94,15 @@ export class StateParser {
    */
   private frameRegistry = new Map<string, Frame>();
 
-  constructor(private page: Page, private cdp: CDPSession) {}
+  private readonly logger: Logger;
+
+  constructor(
+    private page: Page,
+    private cdp: CDPSession,
+    logger?: Logger
+  ) {
+    this.logger = (logger ?? createLogger(false, 1)).child('StateParser');
+  }
 
   invalidateCache() {
     this.cachedState = null;
@@ -499,7 +508,7 @@ export class StateParser {
         // Normalise type → semantic role
         const inputType = (htmlEl as HTMLInputElement).type ?? '';
         const roleAttr = htmlEl.getAttribute('role') ?? '';
-        let role =
+        const role =
           roleAttr ||
           (inputType === 'radio' ? 'radio' :
            inputType === 'checkbox' ? 'checkbox' :
@@ -1185,8 +1194,8 @@ export class StateParser {
           // Not a cross-origin error — swallow silently (detached, navigation)
           continue;
         }
-        console.warn(
-          `[StateParser] Cross-origin iframe skipped: ${frameUrl}\n` +
+        this.logger.warn(
+          `Cross-origin iframe skipped: ${frameUrl}\n` +
           `  → Elements inside are invisible to widget discovery (same-origin policy).\n` +
           `  → If you need to interact with it, target elements by role+name directly ` +
           `(frame context is auto-detected when the element's accessible name is known).`

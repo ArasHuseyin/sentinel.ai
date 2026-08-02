@@ -1,4 +1,5 @@
 import type { Page } from 'playwright';
+import { ignoreRejection } from '../../utils/ignore-rejection.js';
 
 /**
  * Focuses the first visible text input inside an open
@@ -55,7 +56,7 @@ export async function focusDropdownPopupInput(
       };
 
       const comboRoot =
-        (trigger.closest('[role="combobox"], [role="listbox"]') as HTMLElement | null) ?? trigger;
+        (trigger.closest('[role="combobox"], [role="listbox"]')) ?? trigger;
 
       // Scope 1: aria-controls / aria-owns target(s).
       const controlsAttr = comboRoot.getAttribute('aria-controls') || comboRoot.getAttribute('aria-owns');
@@ -115,7 +116,7 @@ export async function trySetNativeSelectValue(
     ({ x, y, val }: { x: number; y: number; val: string }) => {
       const hit = document.elementFromPoint(x, y) as HTMLElement | null;
       if (!hit) return false;
-      const sel = (hit.closest?.('select') ?? hit.querySelector?.('select')) as HTMLSelectElement | null;
+      const sel = (hit.closest?.('select') ?? hit.querySelector?.('select'));
       if (!sel) return false;
 
       const trimmed = val.trim();
@@ -130,6 +131,8 @@ export async function trySetNativeSelectValue(
       // (React/Vue v-model) see the change as user-originated. A plain
       // `sel.value = …` assignment gets swallowed by the framework's
       // wrapped descriptor.
+      // Detaching the setter is the point — it is re-bound via .call(sel, …).
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
       sel.focus();
       setter?.call(sel, match.value);
@@ -328,6 +331,6 @@ export async function ensurePopoverClosed(
     { x: clickX, y: clickY }
   ).catch(() => false);
   if (stuck) {
-    await page.keyboard.press('Escape').catch(() => {});
+    await page.keyboard.press('Escape').catch(ignoreRejection);
   }
 }

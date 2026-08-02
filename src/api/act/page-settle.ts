@@ -1,4 +1,5 @@
 import type { Page } from 'playwright';
+import { ignoreRejection } from '../../utils/ignore-rejection.js';
 
 /**
  * Waits for the DOM to stabilise after an action.
@@ -77,12 +78,12 @@ export async function waitForPageSettle(page: Page, timeout = 5000): Promise<voi
         void start;
       }),
     { stabilityMs, hardCapMs }
-  ).catch(() => {});
+  ).catch(ignoreRejection);
 
   const navigationSettle = page.waitForNavigation({
     waitUntil: 'domcontentloaded',
     timeout: hardCapMs,
-  }).catch(() => {});
+  }).catch(ignoreRejection);
 
   await Promise.race([domSettle, navigationSettle]);
 }

@@ -2,7 +2,6 @@ import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Sentinel } from '../index.js';
-import type { SentinelOptions } from '../index.js';
 
 // ─── Injected factory type ────────────────────────────────────────────────────
 //
@@ -11,7 +10,7 @@ import type { SentinelOptions } from '../index.js';
 export type SentinelFactory = (opts: { apiKey: string; headless: boolean }) => Promise<Sentinel>;
 
 const defaultFactory: SentinelFactory = async ({ apiKey, headless }) => {
-  const sentinel = new Sentinel({ apiKey, headless, verbose: 0 } as SentinelOptions);
+  const sentinel = new Sentinel({ apiKey, headless, verbose: 0 });
   await sentinel.init();
   return sentinel;
 };

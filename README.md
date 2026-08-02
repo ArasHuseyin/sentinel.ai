@@ -23,6 +23,16 @@ npm install @isoldex/sentinel playwright
 npx playwright install chromium
 ```
 
+Gemini works out of the box. The other providers load their SDK on demand — install the one you use:
+
+```bash
+npm install @anthropic-ai/sdk   # ClaudeProvider
+npm install openai              # OpenAIProvider
+# OllamaProvider needs no package, just a running Ollama instance
+```
+
+Using the Playwright test fixture (`@isoldex/sentinel/test`) additionally requires `@playwright/test`.
+
 ## Quick Start
 
 ```typescript

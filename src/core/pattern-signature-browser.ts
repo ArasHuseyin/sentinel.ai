@@ -178,7 +178,7 @@ export function computeFingerprintsBrowserSide(
       }
       const vx = t.x - window.scrollX;
       const vy = t.y - window.scrollY;
-      const el = document.elementFromPoint(vx, vy) as Element | null;
+      const el = document.elementFromPoint(vx, vy);
       if (!el) continue;
       const aria = computeAriaFingerprint(el);
       const library = computeLibrarySignature(el);

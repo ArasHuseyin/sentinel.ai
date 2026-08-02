@@ -1,11 +1,13 @@
+// Manual smoke test against the *built* package rather than src — run it after
+// `npm run build`. It is excluded from tsconfig/eslint because `../dist` does
+// not exist on a clean checkout, which is also why CI relies on
+// `npm run verify:package` for automated build verification instead of this.
 import 'dotenv/config';
-import { Sentinel } from './dist/index.js';
-// @ts-ignore
-import process from "process";
+import { Sentinel } from '../dist/index.js';
 
 async function main() {
     const sentinel = new Sentinel({
-        apiKey: process.env.GEMINI_API_KEY,
+        apiKey: process.env.GEMINI_API_KEY ?? '',
         headless: false,
         viewport: { width: 1280, height: 720 },
         verbose: 1,

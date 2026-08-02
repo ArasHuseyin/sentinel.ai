@@ -1,4 +1,3 @@
-import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
 import type { LLMProvider } from '../utils/llm-provider.js';
 
@@ -11,7 +10,6 @@ export interface ObserveResult {
 
 export class ObservationEngine {
   constructor(
-    private page: Page,
     private stateParser: StateParser,
     private gemini: LLMProvider
   ) {}

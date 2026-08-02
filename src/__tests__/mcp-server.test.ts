@@ -104,7 +104,7 @@ describe('MCP Server: registerTools', () => {
   });
 
   it('sentinel_act shows ❌ when action fails', async () => {
-    mock.act.mockResolvedValue({ success: false, message: 'Element not found' } as any);
+    mock.act.mockResolvedValue({ success: false, message: 'Element not found' });
     const handler = server.getHandler('sentinel_act');
     const result = await handler({ instruction: 'Click missing element' });
 

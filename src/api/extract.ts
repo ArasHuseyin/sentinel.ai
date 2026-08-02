@@ -2,7 +2,8 @@ import type { Page } from 'playwright';
 import { StateParser } from '../core/state-parser.js';
 import type { LLMProvider, SchemaInput } from '../utils/llm-provider.js';
 import { filterRelevantElements } from './act.js';
-import { z } from 'zod';
+import { createLogger, type Logger } from '../utils/logger.js';
+
 
 const MAX_PAGE_TEXT_CHARS = 8000;
 
@@ -68,11 +69,16 @@ STRICT GROUNDING RULES — these override everything else:
 Return ONLY the JSON matching the provided schema — no prose, no explanations, no markdown code fences.`;
 
 export class ExtractionEngine {
+  private readonly logger: Logger;
+
   constructor(
     private page: Page,
     private stateParser: StateParser,
-    private gemini: LLMProvider
-  ) {}
+    private gemini: LLMProvider,
+    logger?: Logger
+  ) {
+    this.logger = (logger ?? createLogger(false, 1)).child('Extract');
+  }
 
   async extract<T>(instruction: string, schema: SchemaInput<T>): Promise<T> {
     // Run AOM parse and innerText capture in parallel
@@ -108,7 +114,7 @@ ${pageText}`;
     // This is a last line of defense after the prompt-level STRICT GROUNDING
     // rules — Gemini sometimes ignores anti-hallucination instructions when
     // the schema strongly suggests a non-empty shape.
-    return groundingFilter(result, pageText, filteredElements);
+    return groundingFilter(result, pageText, filteredElements, this.logger);
   }
 
   /**
@@ -200,7 +206,12 @@ type ExtractElement = { role: string; name: string; value?: string };
  * grounding rules handle the cooperative case, this handles the case where
  * Gemini ignores those rules.
  */
-function groundingFilter<T>(result: T, pageText: string, elements: ExtractElement[]): T {
+function groundingFilter<T>(
+  result: T,
+  pageText: string,
+  elements: ExtractElement[],
+  logger?: Logger
+): T {
   const strings: string[] = [];
   collectStrings(result, strings);
 
@@ -225,8 +236,8 @@ function groundingFilter<T>(result: T, pageText: string, elements: ExtractElemen
   if (scoreable >= GROUNDING_MIN_STRING_COUNT) {
     const ratio = matches / scoreable;
     if (ratio < GROUNDING_MIN_MATCH_RATIO) {
-      console.warn(
-        `[Extract] Ungrounded response filtered: ${matches}/${scoreable} strings found in page corpus (ratio ${ratio.toFixed(2)} < ${GROUNDING_MIN_MATCH_RATIO}). Returning empty-shape.`
+      (logger ?? createLogger(false, 1).child('Extract')).warn(
+        `Ungrounded response filtered: ${matches}/${scoreable} strings found in page corpus (ratio ${ratio.toFixed(2)} < ${GROUNDING_MIN_MATCH_RATIO}). Returning empty-shape.`
       );
       return emptyLike(result);
     }

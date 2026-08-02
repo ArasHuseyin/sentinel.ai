@@ -15,7 +15,7 @@ function makeClaudeProvider(model = 'claude-sonnet-4-6') {
 
   const provider = Object.create(ClaudeProvider.prototype) as ClaudeProvider;
   (provider as any).client = mockClient;
-  (provider as any).model = model;
+  (provider as any).modelName = model;
 
   return { provider, mockCreate };
 }
@@ -26,7 +26,7 @@ function makeOpenAIProvider(model = 'gpt-4o') {
 
   const provider = Object.create(OpenAIProvider.prototype) as OpenAIProvider;
   (provider as any).client = mockClient;
-  (provider as any).model = model;
+  (provider as any).modelName = model;
 
   return { provider, mockCreate };
 }
@@ -143,7 +143,7 @@ describe('ClaudeProvider', () => {
         usage: { input_tokens: 200, output_tokens: 20 },
       });
 
-      await provider.analyzeImage!('What is in this image?', 'base64encodeddata', 'image/jpeg');
+      await provider.analyzeImage('What is in this image?', 'base64encodeddata', 'image/jpeg');
 
       const callArgs = (mockCreate.mock.calls as any[][])[0]![0];
       const userContent = callArgs.messages[0].content;
@@ -164,7 +164,7 @@ describe('ClaudeProvider', () => {
         usage: { input_tokens: 200, output_tokens: 20 },
       });
 
-      const result = await provider.analyzeImage!('Describe this image', 'base64data');
+      const result = await provider.analyzeImage('Describe this image', 'base64data');
 
       expect(result).toBe('A fluffy cat');
     });
@@ -262,7 +262,7 @@ describe('OpenAIProvider', () => {
         usage: { prompt_tokens: 300, completion_tokens: 15, total_tokens: 315 },
       });
 
-      await provider.analyzeImage!('Describe the scene', 'base64imagedata', 'image/png');
+      await provider.analyzeImage('Describe the scene', 'base64imagedata', 'image/png');
 
       const callArgs = (mockCreate.mock.calls as any[][])[0]![0];
       const userContent = callArgs.messages[0].content;
@@ -283,7 +283,7 @@ describe('OpenAIProvider', () => {
         usage: { prompt_tokens: 300, completion_tokens: 12, total_tokens: 312 },
       });
 
-      const result = await provider.analyzeImage!('What do you see?', 'base64data');
+      const result = await provider.analyzeImage('What do you see?', 'base64data');
 
       expect(result).toBe('A sunset over the ocean.');
     });

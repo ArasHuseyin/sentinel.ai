@@ -324,7 +324,7 @@ describe('ActionEngine with LocatorCache', () => {
     const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, undefined, 100, cache);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
 
     await engine.act('click login button');
 
@@ -338,7 +338,7 @@ describe('ActionEngine with LocatorCache', () => {
     // Pre-populate cache with a hit for the second call
     cache.get.mockReturnValue({ action: 'click', role: 'button', name: 'Login' });
 
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, undefined, 100, cache);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
     const result = await engine.act('click login button');
 
     expect(llm.generateStructuredData).not.toHaveBeenCalled();
@@ -350,7 +350,7 @@ describe('ActionEngine with LocatorCache', () => {
     const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, undefined, 100, cache);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
 
     await engine.act('click login button');
 
@@ -368,7 +368,7 @@ describe('ActionEngine with LocatorCache', () => {
     const cache = makeMockCache();
     cache.get.mockReturnValue({ action: 'click', role: 'button', name: 'Login' }); // stale entry
 
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, undefined, 100, cache);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
     await engine.act('click login button');
 
     expect(cache.invalidate).toHaveBeenCalledWith('https://example.com/page', 'click login button');
@@ -387,7 +387,7 @@ describe('ActionEngine with LocatorCache', () => {
     const cache = makeMockCache();
     cache.get.mockReturnValue({ action: 'click', role: 'button', name: 'Login' });
 
-    const engine = new ActionEngine(page, makeMockStateParser(elements), llm, undefined, 100, cache);
+    const engine = new ActionEngine(page, makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
     await engine.act('click login button');
 
     expect(cache.invalidate).toHaveBeenCalled();
@@ -397,7 +397,7 @@ describe('ActionEngine with LocatorCache', () => {
   it('does not use cache when locatorCache is null', async () => {
     const elements = [{ id: 0, role: 'button', name: 'Login', boundingClientRect: { x: 10, y: 10, width: 100, height: 40 } }];
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'test' });
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, undefined, 100, null);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100 });
 
     await engine.act('click login button');
     await engine.act('click login button');
@@ -408,7 +408,7 @@ describe('ActionEngine with LocatorCache', () => {
   it('does not cache scroll-without-target actions', async () => {
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'scroll' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser([]), llm, undefined, 100, cache);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser([]), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
 
     await engine.act('scroll down');
 
@@ -419,7 +419,7 @@ describe('ActionEngine with LocatorCache', () => {
     const elements = [{ id: 0, role: 'textbox', name: 'Email', boundingClientRect: { x: 10, y: 10, width: 200, height: 40 } }];
     const llm = makeMockLLM({ elementId: 0, action: 'fill', value: 'user@test.com', reasoning: 'fill' });
     const cache = makeMockCache();
-    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, undefined, 100, cache);
+    const engine = new ActionEngine(makeMockPage(), makeMockStateParser(elements), llm, { domSettleTimeoutMs: 100, locatorCache: cache });
 
     await engine.act('fill email field');
 

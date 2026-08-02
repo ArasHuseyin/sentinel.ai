@@ -1,4 +1,4 @@
-import { describe, it, expect } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -51,10 +51,80 @@ describe('TokenTracker', () => {
     expect(usage.estimatedCostUsd).toBe(0);
   });
 
+  // ─── Pricing resolution ────────────────────────────────────────────────────
+  //
+  // getUsage() used to fall back to `{ input: 0, output: 0 }` for any model
+  // missing from the pricing table, so estimatedCostUsd was a hard $0.00 and
+  // indistinguishable from a genuinely free run. `pricingKnown` makes the
+  // difference explicit, and the maxCostUsd cap keys off it.
+  describe('pricing resolution', () => {
+    it('reports pricingKnown for a model in the table', () => {
+      const tracker = new TokenTracker('gpt-4o');
+      tracker.track('query', 1000, 1000);
+      expect(tracker.getUsage().pricingKnown).toBe(true);
+    });
+
+    it('reports pricingKnown=false and $0 for an unknown model', () => {
+      const tracker = new TokenTracker('some-model-that-does-not-exist');
+      tracker.track('query', 1_000_000, 1_000_000);
+
+      const usage = tracker.getUsage();
+      expect(usage.pricingKnown).toBe(false);
+      expect(usage.estimatedCostUsd).toBe(0);
+      // Token counts stay accurate — only the money is unknown.
+      expect(usage.totalTokens).toBe(2_000_000);
+    });
+
+    it('resolves dated model snapshots to their base pricing entry', () => {
+      // claude-haiku-4-5: input $1.00/1M, output $5.00/1M
+      const tracker = new TokenTracker('claude-haiku-4-5-20251001');
+      tracker.track('query', 1_000_000, 1_000_000);
+
+      const usage = tracker.getUsage();
+      expect(usage.pricingKnown).toBe(true);
+      expect(usage.estimatedCostUsd).toBeCloseTo(6.0, 4);
+    });
+
+    it('prices the current Claude generation', () => {
+      const tracker = new TokenTracker('claude-sonnet-5');
+      tracker.track('query', 1_000_000, 0);
+      expect(tracker.getUsage().estimatedCostUsd).toBeCloseTo(3.0, 4);
+    });
+  });
+
   describe('budget enforcement', () => {
     it('no budget → track never throws regardless of volume', () => {
       const tracker = new TokenTracker();
       expect(() => tracker.track('huge', 10_000_000, 10_000_000)).not.toThrow();
+    });
+
+    it('maxTokens still applies when the model has no pricing', () => {
+      // The tokens cap must not depend on the pricing table at all.
+      const tracker = new TokenTracker('some-model-that-does-not-exist', {
+        budget: { maxTokens: 1000 },
+      });
+      expect(() => tracker.track('big', 900, 900)).toThrow(BudgetExceededError);
+    });
+
+    it('warns instead of silently passing when maxCostUsd is set on an unpriced model', () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const tracker = new TokenTracker('some-model-that-does-not-exist', {
+          budget: { maxCostUsd: 0.01 },
+        });
+
+        // Previously this was a no-op forever: cost was pinned at $0.00, so the
+        // cap could never trigger and the user got no indication at all.
+        expect(() => tracker.track('huge', 50_000_000, 50_000_000)).not.toThrow();
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[0]).toContain('cost cap cannot be enforced');
+
+        // The warning is emitted once per run, not on every tracked call.
+        tracker.track('huge-again', 50_000_000, 50_000_000);
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('throws BudgetExceededError when maxTokens is crossed', () => {

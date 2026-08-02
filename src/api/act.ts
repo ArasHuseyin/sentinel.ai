@@ -8,6 +8,7 @@ import type { IPatternCache } from '../core/pattern-cache.js';
 import type { PatternFingerprint } from '../core/pattern-signature.js';
 import { generateSelector } from '../core/selector-generator.js';
 import { withTimeout } from '../utils/with-timeout.js';
+import { createLogger, type Logger } from '../utils/logger.js';
 import { ActionError, CaptchaDetectedError } from '../types/errors.js';
 import { detectCaptcha, describeCaptcha } from '../reliability/captcha-detector.js';
 
@@ -20,6 +21,7 @@ import { parseDateValue, formatNativeInputValue, pickDateFromPopup } from './act
 import { PatternCacheCoordinator } from './act/pattern-cache.js';
 import { BlockerRecovery } from './act/blocker-recovery.js';
 import { clickLocator as clickLocatorFn } from './act/click-locator.js';
+import { ignoreRejection } from '../utils/ignore-rejection.js';
 import {
   focusDropdownPopupInput,
   trySetNativeSelectValue,
@@ -82,45 +84,79 @@ For scroll actions without a target element, set elementId to 0 in the first can
 If NONE of the listed elements is plausibly the target of the instruction (e.g. the target is likely off-screen, inside a collapsed section, or not yet rendered), set "notFound": true and leave candidates empty. Do NOT invent element IDs. The system will scroll once and re-ask.
 `.trim();
 
+/**
+ * Optional wiring for {@link ActionEngine}.
+ *
+ * These used to be eight positional constructor parameters, which meant every
+ * full call site was an unlabelled `(…, undefined, 3000, null, 50, 0, false,
+ * 'aom', cache)` tail that had to be read against the signature to understand —
+ * and adding a ninth would have been a silent-breakage hazard for anyone
+ * passing them by position.
+ */
+export interface ActionEngineOptions {
+  visionGrounding?: VisionGrounding | undefined;
+  /** How long to wait for the DOM to settle after an action. Default 3000 ms. */
+  domSettleTimeoutMs?: number;
+  locatorCache?: ILocatorCache | null;
+  /** Maximum elements sent to the LLM. Pages with more are pre-filtered by relevance. */
+  maxElements?: number;
+  /**
+   * Verbosity level inherited from SentinelOptions:
+   *  0 = silent
+   *  1 = action summary only (default)
+   *  2 = + reasoning + fallback warnings
+   *  3 = + chunk-processing stats + full LLM decision
+   */
+  verbose?: 0 | 1 | 2 | 3;
+  /** When true, mouse moves along a Bézier curve and per-action delays are added. */
+  humanLike?: boolean;
+  /**
+   * Element detection mode:
+   *  'aom' (default) — AOM coordinates, vision only as late fallback
+   *  'hybrid' — AOM primary, vision on coordinate mismatch
+   *  'vision' — Vision as primary, AOM as fallback
+   */
+  mode?: 'aom' | 'hybrid' | 'vision';
+  /**
+   * Cross-site widget pattern cache. When present, each `act()` call
+   * first fingerprints the top relevant elements and probes the cache
+   * — a hit routes past the LLM entirely. Successful and failed
+   * actions write back to build up the library of learned patterns.
+   */
+  patternCache?: IPatternCache | null;
+  /** Sink for action diagnostics. Defaults to a console logger at `verbose`. */
+  logger?: Logger;
+}
+
 export class ActionEngine {
+  private readonly logger: Logger;
+  private readonly visionGrounding: VisionGrounding | undefined;
+  private readonly domSettleTimeoutMs: number;
+  private readonly locatorCache: ILocatorCache | null;
+  private readonly maxElements: number;
+  private readonly verbose: 0 | 1 | 2 | 3;
+  private readonly humanLike: boolean;
+  private readonly mode: 'aom' | 'hybrid' | 'vision';
+
   constructor(
     private page: Page,
     private stateParser: StateParser,
     private gemini: LLMProvider,
-    private visionGrounding?: VisionGrounding,
-    private domSettleTimeoutMs = 3000,
-    private locatorCache: ILocatorCache | null = null,
-    /** Maximum elements sent to the LLM. Pages with more are pre-filtered by relevance. */
-    private maxElements = 50,
-    /**
-     * Verbosity level inherited from SentinelOptions:
-     *  0 = silent
-     *  1 = action summary only (default)
-     *  2 = + reasoning + fallback warnings
-     *  3 = + chunk-processing stats + full LLM decision
-     */
-    private verbose: 0 | 1 | 2 | 3 = 0,
-    /** When true, mouse moves along a Bézier curve and per-action delays are added. */
-    private humanLike = false,
-    /**
-     * Element detection mode:
-     *  'aom' (default) — AOM coordinates, vision only as late fallback
-     *  'hybrid' — AOM primary, vision on coordinate mismatch
-     *  'vision' — Vision as primary, AOM as fallback
-     */
-    private mode: 'aom' | 'hybrid' | 'vision' = 'aom',
-    /**
-     * Cross-site widget pattern cache. When present, each `act()` call
-     * first fingerprints the top relevant elements and probes the cache
-     * — a hit routes past the LLM entirely. Successful and failed
-     * actions write back to build up the library of learned patterns.
-     */
-    patternCache: IPatternCache | null = null
+    options: ActionEngineOptions = {}
   ) {
+    this.verbose = options.verbose ?? 0;
+    this.logger = (options.logger ?? createLogger(false, this.verbose)).child('Act');
+    this.visionGrounding = options.visionGrounding;
+    this.domSettleTimeoutMs = options.domSettleTimeoutMs ?? 3000;
+    this.locatorCache = options.locatorCache ?? null;
+    this.maxElements = options.maxElements ?? 50;
+    this.humanLike = options.humanLike ?? false;
+    this.mode = options.mode ?? 'aom';
+
     this.patternCoord = new PatternCacheCoordinator(
       this.page,
       this.stateParser,
-      patternCache,
+      options.patternCache ?? null,
       (l, m) => this.log(l, m),
       (l, m) => this.warn(l, m),
       this.domSettleTimeoutMs,
@@ -136,12 +172,21 @@ export class ActionEngine {
   private readonly patternCoord: PatternCacheCoordinator;
   private readonly blockerRecovery: BlockerRecovery;
 
+  /** Level maps onto the shared verbose scale: 1 = info, 2 = notice, 3 = debug. */
   private log(level: 1 | 2 | 3, message: string): void {
-    if (this.verbose >= level) console.log(message);
+    if (level >= 3) this.logger.debug(message);
+    else if (level === 2) this.logger.notice(message);
+    else this.logger.info(message);
   }
 
+  /**
+   * The verbose gate stays here rather than in the logger: `Logger.warn` is
+   * contractually always-on (a warning must not be silently dropped), but
+   * `verbose: 0` on the engine means silent. Honour the engine's contract by
+   * not raising the warning at all below the threshold.
+   */
   private warn(level: 1 | 2 | 3, message: string): void {
-    if (this.verbose >= level) console.warn(message);
+    if (this.verbose >= level) this.logger.warn(message);
   }
 
   /** Thin wrapper around the standalone `clickLocator` helper that injects the warn logger. */
@@ -271,7 +316,7 @@ export class ActionEngine {
       .getByRole(target.role as Parameters<Frame['getByRole']>[0], { name: nameInFrame, exact: false })
       .first();
 
-    await locator.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
+    await locator.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(ignoreRejection);
 
     switch (action) {
       case 'click':
@@ -354,7 +399,7 @@ export class ActionEngine {
         ) ?? null;
         if (target) {
           const actionLabel = `${cached.action} on "${target.name}" (${target.role}) [cached]`;
-          this.log(1, `[Act] ⚡ ${actionLabel}`);
+          this.log(1, `⚡ ${actionLabel}`);
           this.stateParser.invalidateCache();
           try {
             await this.performAction(cached.action, target, cached.value);
@@ -397,7 +442,7 @@ export class ActionEngine {
       const visibleElements = filterRelevantElements(currentState.elements, resolvedInstruction, this.maxElements);
 
       if (currentState.elements.length > visibleElements.length) {
-        this.log(3, `[Act] chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
+        this.log(3, `chunk-processing: ${currentState.elements.length} → ${visibleElements.length} elements sent to LLM (instruction: "${resolvedInstruction}")`);
       }
 
       // ── Pattern cache: cross-site learned widget interactions ───────────────
@@ -422,7 +467,7 @@ export class ActionEngine {
         );
         if (patternResult) return patternResult;
       } else {
-        this.log(2, `[Act] Skipping pattern cache — ${previousFailures.length} prior verification failure(s), forcing re-plan`);
+        this.log(2, `Skipping pattern cache — ${previousFailures.length} prior verification failure(s), forcing re-plan`);
       }
 
       const failureBlock = previousFailures.length > 0
@@ -484,13 +529,13 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       } else {
         candidateIds = [];
         if (!decision.notFound) {
-          this.log(2, `[Act] LLM returned empty candidates without notFound — treating as notFound`);
+          this.log(2, `LLM returned empty candidates without notFound — treating as notFound`);
           decision.notFound = true;
         }
       }
 
       if (decision.notFound && attempt < MAX_NOT_FOUND_SCROLL_RETRIES) {
-        this.log(2, `[Act] LLM: target not in current view — scrolling ${Math.round(NOT_FOUND_SCROLL_FRACTION * 100)}% viewport and re-asking`);
+        this.log(2, `LLM: target not in current view — scrolling ${Math.round(NOT_FOUND_SCROLL_FRACTION * 100)}% viewport and re-asking`);
         const vpHeight = await this.page.evaluate(() => window.innerHeight).catch(() => 720);
         await this.page.mouse.wheel(0, Math.floor(vpHeight * NOT_FOUND_SCROLL_FRACTION));
         await waitForPageSettle(this.page, 500);
@@ -508,8 +553,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       (decision.action === 'scroll-down' || decision.action === 'scroll-up') &&
       candidateIds[0] === 0;
 
-    this.log(2, `[Act] reasoning: ${decision.reasoning}`);
-    this.log(3, `[Act] decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`);
+    this.log(2, `reasoning: ${decision.reasoning}`);
+    this.log(3, `decision: ${JSON.stringify({ candidates: candidateIds, action: decision.action, value: decision.value })}`);
 
     // ── Vision-primary mode: use screenshot + vision LLM before AOM coordinates ──
     if (this.mode === 'vision' && this.visionGrounding && !isScrollWithoutTarget) {
@@ -546,7 +591,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             };
           }
         } catch (visionErr: any) {
-          this.warn(2, `[Act] Vision-primary failed: ${visionErr.message} — falling back to AOM`);
+          this.warn(2, `Vision-primary failed: ${visionErr.message} — falling back to AOM`);
         }
       }
     }
@@ -566,14 +611,14 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         ? `${decision.action} on "${target.name}" (${target.role})`
         : `${decision.action} (page)`;
 
-      if (ci === 0) this.log(1, `[Act] ${actionLabel}`);
-      else this.log(2, `[Act] Trying candidate #${ci + 1}: ${actionLabel}`);
+      if (ci === 0) this.log(1, `${actionLabel}`);
+      else this.log(2, `Trying candidate #${ci + 1}: ${actionLabel}`);
 
       // Pre-action validation: check if element is actually clickable
       if (target && (decision.action === 'click' || decision.action === 'double-click' || decision.action === 'right-click')) {
         const blockReason = await this.validateTarget(target);
         if (blockReason) {
-          this.warn(2, `[Act] Target blocked: ${blockReason}`);
+          this.warn(2, `Target blocked: ${blockReason}`);
           attempts.push({ path: 'coordinate-click', error: blockReason });
           continue; // try next candidate
         }
@@ -629,11 +674,11 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       } catch (err: any) {
         const errorMsg: string = err.message ?? '';
         attempts.push({ path: 'coordinate-click', error: `candidate #${ci + 1}: ${errorMsg}` });
-        this.warn(2, `[Act] Candidate #${ci + 1} failed: ${errorMsg}`);
+        this.warn(2, `Candidate #${ci + 1} failed: ${errorMsg}`);
 
         // If a widget/overlay intercepts pointer events, remove it and retry THIS candidate
         if (errorMsg.includes('intercepts pointer events') && ci === 0) {
-          this.log(2, `[Act] Pointer-intercepting element detected — removing and retrying`);
+          this.log(2, `Pointer-intercepting element detected — removing and retrying`);
           try {
             await this.page.evaluate(() => {
               document.querySelectorAll(
@@ -737,11 +782,11 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         attempts.push({ path: 'vision-grounding', error: 'Element nicht im Screenshot gefunden' });
       } catch (visionError: any) {
         attempts.push({ path: 'vision-grounding', error: visionError.message });
-        this.warn(2, `[Act] Vision fallback failed: ${visionError.message}`);
+        this.warn(2, `Vision fallback failed: ${visionError.message}`);
       }
     }
 
-    this.warn(2, `[Act] All candidates failed, trying semantic fallback...`);
+    this.warn(2, `All candidates failed, trying semantic fallback...`);
     try {
       // Capture state before fallback to verify it actually changed something
       this.stateParser.invalidateCache();
@@ -765,7 +810,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         stateBeforeFallback.elements.some(e => e.state?.focused) !== stateAfterFallback.elements.some(e => e.state?.focused);
 
       if (!pageChanged) {
-        this.warn(2, `[Act] Semantic fallback completed but page state unchanged — marking as failed`);
+        this.warn(2, `Semantic fallback completed but page state unchanged — marking as failed`);
         attempts.push({ path: 'locator-fallback', error: 'action completed but page state unchanged' });
         const message = buildFailureMessage(resolvedInstruction, target, attempts);
         return { success: false, message, action: actionLabel, attempts };
@@ -780,7 +825,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     } catch (fallbackError: any) {
       attempts.push({ path: 'locator-fallback', error: fallbackError.message });
       const message = buildFailureMessage(resolvedInstruction, target, attempts);
-      this.warn(2, `[Act] All paths failed:\n${message}`);
+      this.warn(2, `All paths failed:\n${message}`);
 
       // Before giving up, check whether a CAPTCHA is blocking the page.
       // When one is present, the generic "action failed" message is useless —
@@ -821,7 +866,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         return;
       } catch (err) {
         if (attempt < RETRY_DELAYS.length && isTransient(err)) {
-          this.warn(2, `[Act] Transient failure (attempt ${attempt + 1}), retrying in ${RETRY_DELAYS[attempt]}ms...`);
+          this.warn(2, `Transient failure (attempt ${attempt + 1}), retrying in ${RETRY_DELAYS[attempt]}ms...`);
           await this.page.waitForTimeout(RETRY_DELAYS[attempt]!);
         } else {
           throw err;
@@ -861,7 +906,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         await this.executeInFrame(frame, action, target, value, dropTarget);
         return;
       }
-      this.warn(2, `[Act] Frame "${target.frameId}" not in registry — falling back to main-frame path`);
+      this.warn(2, `Frame "${target.frameId}" not in registry — falling back to main-frame path`);
     }
 
     // File upload: locator-based, no coordinates required (setInputFiles
@@ -909,7 +954,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     // Skip coordinate-based clicking entirely when coordinates are clearly impossible
     // (e.g. y=-3184 on Booking.com autocomplete). Go straight to locator fallback.
     if (cy < -500 || cx < -500) {
-      this.warn(2, `[Act] Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`);
+      this.warn(2, `Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`);
       const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
       if (action === 'fill') {
         await locator.fill(value || '', { timeout: 5000 });
@@ -948,7 +993,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     // Fallback: if scrollTo didn't work (SPAs may override scroll),
     // try scrolling to page top first, then re-check
     if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
-      await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await this.page.evaluate(() => window.scrollTo(0, 0)).catch(ignoreRejection);
       await this.page.waitForTimeout(100);
       scrollOffset = await this.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
         .catch(() => ({ x: 0, y: 0 }));
@@ -1022,7 +1067,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
           // Coordinates point to wrong element — use Playwright locator as direct fallback.
           // This is more reliable than coordinate-based clicking for dynamically positioned
           // elements (dropdown options, conditional form fields, etc.).
-          this.warn(2, `[Act] Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`);
+          this.warn(2, `Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`);
           // Try multiple locator strategies: full name, short name (after ':'), just last word
           const nameVariants = [target.name];
           if (target.name.includes(':')) {
@@ -1063,7 +1108,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       await this.page.evaluate(
         ({ x, y }) => { (window as any).__sentinelMouseX = x; (window as any).__sentinelMouseY = y; },
         { x: clickX, y: clickY }
-      ).catch(() => {});
+      ).catch(ignoreRejection);
       await this.page.waitForTimeout(80 + Math.round(Math.random() * 120));
     }
 
@@ -1132,6 +1177,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                 // back into the framework's state tree as a user-originated
                 // change. Universal across any framework built on controlled
                 // inputs — no library-specific detection.
+                // Detaching the setter is the point — re-bound via .call() below.
+                // eslint-disable-next-line @typescript-eslint/unbound-method
                 const nativeSetter = Object.getOwnPropertyDescriptor(
                   window.HTMLInputElement.prototype, 'value'
                 )?.set;
@@ -1166,6 +1213,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
 
                   if (closest) {
                     const input = closest.inp;
+                    // Detaching the setter is the point — re-bound via .call() below.
+                    // eslint-disable-next-line @typescript-eslint/unbound-method
                     const nativeSetter = Object.getOwnPropertyDescriptor(
                       window.HTMLInputElement.prototype, 'value'
                     )?.set;
@@ -1258,7 +1307,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                 // belt-and-suspenders for cases where the in-evaluate focus() is
                 // overridden by framework effects after return.
                 if (sliderHandle) {
-                  await sliderHandle.focus().catch(() => {});
+                  await sliderHandle.focus().catch(ignoreRejection);
                 }
                 const steps = Math.round(targetValue - sliderInfo.now);
                 const key = steps >= 0 ? 'ArrowRight' : 'ArrowLeft';
@@ -1271,7 +1320,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
           }
 
           if (sliderHandle) {
-            await sliderHandle.dispose().catch(() => {});
+            await sliderHandle.dispose().catch(ignoreRejection);
           }
           break;
         }
@@ -1332,6 +1381,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
                     if (!input) node = node.parentElement;
                   }
                   if (!input) return;
+                  // Detaching the setter is the point — re-bound via .call() below.
+                  // eslint-disable-next-line @typescript-eslint/unbound-method
                   const setter = Object.getOwnPropertyDescriptor(
                     window.HTMLInputElement.prototype, 'value'
                   )?.set;
@@ -1358,7 +1409,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             await this.page.waitForTimeout(50);
             const typeDelay = this.humanLike ? 90 + Math.round(Math.random() * 40) : 90;
             await this.page.keyboard.type(value, { delay: typeDelay });
-            await this.page.keyboard.press('Tab').catch(() => {});
+            await this.page.keyboard.press('Tab').catch(ignoreRejection);
             break;
           }
 
@@ -1368,7 +1419,7 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             await this.page.waitForTimeout(400);
             const ok = await pickDateFromPopup(this.page, parts);
             if (!ok) {
-              await this.page.keyboard.press('Escape').catch(() => {});
+              await this.page.keyboard.press('Escape').catch(ignoreRejection);
               throw new ActionError(
                 `Could not navigate datepicker popup for "${target.name}" to ${parts.year}-${parts.month}-${parts.day}`,
                 { element: target.name, value }

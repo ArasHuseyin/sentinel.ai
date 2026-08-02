@@ -1,4 +1,4 @@
-import { Sentinel, z } from './index.js';
+import { Sentinel, z } from '../src/index.js';
 import dotenv from 'dotenv';
 dotenv.config();
 

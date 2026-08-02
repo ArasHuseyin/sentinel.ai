@@ -73,7 +73,7 @@ export async function runAiFixture(
     verbose: 0,
     ...sentinelOptions,
     apiKey,
-  } as SentinelOptions);
+  });
 
   await sentinel.init();
 

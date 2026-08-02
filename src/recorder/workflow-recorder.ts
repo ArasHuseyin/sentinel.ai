@@ -1,3 +1,5 @@
+import { createLogger, type Logger } from '../utils/logger.js';
+
 export interface RecordedAction {
   type: 'act' | 'extract' | 'observe' | 'goto' | 'scroll' | 'press';
   instruction?: string;
@@ -21,16 +23,18 @@ export class WorkflowRecorder {
   private recording = false;
   private steps: RecordedAction[] = [];
   private workflowName: string;
+  private readonly logger: Logger;
 
-  constructor(name = 'recorded-workflow') {
+  constructor(name = 'recorded-workflow', logger?: Logger) {
     this.workflowName = name;
+    this.logger = (logger ?? createLogger(false, 1)).child('Recorder');
   }
 
   startRecording(name?: string): void {
     if (name) this.workflowName = name;
     this.steps = [];
     this.recording = true;
-    console.log(`[Recorder] 🔴 Recording started: "${this.workflowName}"`);
+    this.logger.info(`🔴 Recording started: "${this.workflowName}"`);
   }
 
   stopRecording(): RecordedWorkflow {
@@ -40,7 +44,7 @@ export class WorkflowRecorder {
       createdAt: new Date().toISOString(),
       steps: [...this.steps],
     };
-    console.log(`[Recorder] ⏹️  Recording stopped. ${this.steps.length} step(s) captured.`);
+    this.logger.info(`⏹️  Recording stopped. ${this.steps.length} step(s) captured.`);
     return workflow;
   }
 

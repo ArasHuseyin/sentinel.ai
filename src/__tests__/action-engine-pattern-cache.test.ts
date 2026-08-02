@@ -127,10 +127,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), fingerprints);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, { patternCache: cache });
     const result = await engine.act('click submit');
 
     expect(result.success).toBe(true);
@@ -154,10 +151,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), { 0: fp });
     const llm = makeMockLLM({ elementId: 999, action: 'click', reasoning: 'should-not-run' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, { patternCache: cache });
     const result = await engine.act('click submit');
 
     expect(result.success).toBe(true);
@@ -182,10 +176,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), { 0: fp });
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'fallback attempt' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, { patternCache: cache });
     await engine.act('click submit');
 
     // Pattern failure recorded — confidence decayed (1 success, 1 failure = 0.5 threshold, still hittable;
@@ -204,10 +195,7 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser(makeState(), {});
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, { patternCache: cache });
     await engine.act('click submit');
 
     expect(cache.getStats().totalHits).toBe(0);
@@ -232,16 +220,13 @@ describe('ActionEngine + PatternCache integration', () => {
     const parser = makeMockStateParser({ url: 'https://example.com', title: 't', elements }, {});
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'ok' });
 
-    const engine = new ActionEngine(
-      page as any, parser as any, llm,
-      undefined, 3000, null, 50, 0, false, 'aom', cache,
-    );
+    const engine = new ActionEngine(page as any, parser as any, llm, { patternCache: cache });
     await engine.act('click btn0');
 
     expect(parser.computeTargetFingerprints).toHaveBeenCalled();
     const args = (parser.computeTargetFingerprints as jest.Mock).mock.calls[0]![0] as unknown[];
-    expect((args as Array<unknown>).length).toBeLessThanOrEqual(PROBE_CAP);
+    expect((args).length).toBeLessThanOrEqual(PROBE_CAP);
     // And at least some candidates WERE probed — we didn't silently skip everything
-    expect((args as Array<unknown>).length).toBeGreaterThan(5);
+    expect((args).length).toBeGreaterThan(5);
   });
 });

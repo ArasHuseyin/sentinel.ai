@@ -103,8 +103,7 @@ describe('JsonLogger', () => {
 });
 
 describe('createLogger factory', () => {
-  let logSpy: jest.SpiedFunction<typeof console.log>;
-  beforeEach(() => { logSpy = jest.spyOn(console, 'log').mockImplementation(() => {}); });
+  beforeEach(() => { jest.spyOn(console, 'log').mockImplementation(() => {}); });
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('defaults to ConsoleLogger when logFormat is false/undefined', () => {

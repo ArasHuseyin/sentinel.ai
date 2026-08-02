@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { isProxyProvider } from '../utils/proxy-provider.js';
 import type { IProxyProvider } from '../utils/proxy-provider.js';
+import { createLogger, type Logger } from '../utils/logger.js';
+import { ignoreRejection } from '../utils/ignore-rejection.js';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
@@ -14,6 +16,8 @@ export interface ProxyOptions {
 }
 
 export interface DriverOptions {
+  /** Sink for driver diagnostics. Defaults to a console logger when omitted. */
+  logger?: Logger;
   headless?: boolean;
   viewport?: { width: number; height: number };
   browser?: BrowserType;
@@ -33,7 +37,11 @@ export class SentinelDriver {
   private _activeProxy: ProxyOptions | undefined;
   private _proxyProvider: IProxyProvider | undefined;
 
-  constructor(private options: DriverOptions = { headless: false }) {}
+  private readonly logger: Logger;
+
+  constructor(private options: DriverOptions = { headless: false }) {
+    this.logger = (options.logger ?? createLogger(false, 1)).child('Driver');
+  }
 
   /**
    * Returns the Playwright launcher for the requested browser type.
@@ -74,10 +82,10 @@ export class SentinelDriver {
         : extraMod.chromium;
       const stealthFactory = (stealthMod.default ?? stealthMod) as () => unknown;
       extraLauncher.use(stealthFactory());
-      console.log(`[Driver] Stealth plugin enabled — anti-bot patches active`);
+      this.logger.info(`Stealth plugin enabled — anti-bot patches active`);
       return extraLauncher as typeof chromium;
     } catch (err: any) {
-      console.warn(
+      this.logger.warn(
         `[Driver] stealth: true requested but 'playwright-extra' / 'puppeteer-extra-plugin-stealth' ` +
         `are not installed. Install them to enable anti-bot patches:\n` +
         `  npm install playwright-extra puppeteer-extra-plugin-stealth\n` +
@@ -127,7 +135,7 @@ export class SentinelDriver {
         args: launchArgs,
         ...contextOptions,
       });
-      console.log(`[Driver] Persistent context loaded from ${this.options.userDataDir}`);
+      this.logger.info(`Persistent context loaded from ${this.options.userDataDir}`);
     } else {
       // Standard context: cookies + localStorage only (via optional storageState file)
       this.browser = await launcher.launch({
@@ -145,7 +153,7 @@ export class SentinelDriver {
       });
 
       if (storageState) {
-        console.log(`[Driver] Session loaded from ${this.options.sessionPath}`);
+        this.logger.info(`Session loaded from ${this.options.sessionPath}`);
       }
     }
 
@@ -170,7 +178,7 @@ export class SentinelDriver {
     if (url) {
       await this.gotoPage(page, url);
     }
-    console.log(`[Driver] New tab opened (index ${index})`);
+    this.logger.info(`New tab opened (index ${index})`);
     return index;
   }
 
@@ -184,7 +192,7 @@ export class SentinelDriver {
       this.cdpSession = await this.pages[index]!.context().newCDPSession(this.pages[index]!);
       await this.cdpSession.send('Accessibility.enable');
     }
-    console.log(`[Driver] Switched to tab ${index}`);
+    this.logger.info(`Switched to tab ${index}`);
   }
 
   async closeTab(index: number): Promise<void> {
@@ -196,7 +204,7 @@ export class SentinelDriver {
     } else if (this.activePageIndex >= this.pages.length) {
       this.activePageIndex = Math.max(0, this.pages.length - 1);
     }
-    console.log(`[Driver] Tab ${index} closed`);
+    this.logger.info(`Tab ${index} closed`);
   }
 
   get tabCount(): number {
@@ -211,7 +219,7 @@ export class SentinelDriver {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(state, null, 2), 'utf-8');
-    console.log(`[Driver] Session saved to ${filePath}`);
+    this.logger.info(`Session saved to ${filePath}`);
   }
 
   async hasLoginForm(): Promise<boolean> {
@@ -253,7 +261,7 @@ export class SentinelDriver {
     }
     // Notify provider that the proxy session is done (e.g. for usage tracking)
     if (this._proxyProvider?.releaseProxy && this._activeProxy) {
-      await this._proxyProvider.releaseProxy(this._activeProxy).catch(() => {});
+      await this._proxyProvider.releaseProxy(this._activeProxy).catch(ignoreRejection);
     }
   }
 
@@ -266,7 +274,7 @@ export class SentinelDriver {
   private async gotoPage(page: Page, url: string): Promise<void> {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-      console.warn(`[Driver] networkidle timeout for ${url} – proceeding anyway`);
+      this.logger.warn(`networkidle timeout for ${url} – proceeding anyway`);
     });
 
     if (this.options.humanLike) {

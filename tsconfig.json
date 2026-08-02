@@ -1,10 +1,8 @@
+// Type-check configuration. Covers everything in the repo — library source,
+// tests, and dev scripts — but never emits. `tsconfig.build.json` is the config
+// that writes dist/; it narrows the input set to shippable source.
 {
-  // Visit https://aka.ms/tsconfig to read more about this file
   "compilerOptions": {
-    // File Layout
-    "rootDir": "./src",
-    "outDir": "./dist",
-
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
     "module": "NodeNext",
@@ -13,12 +11,9 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "types": [],
-    // For nodejs:
-    // "lib": ["esnext"],
-    // "types": ["node"],
-    // and npm install -D @types/node
 
     // Other Outputs
+    "noEmit": true,
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
@@ -26,14 +21,11 @@
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-
-    // Style Options
-    // "noImplicitReturns": true,
-    // "noImplicitOverride": true,
-    // "noUnusedLocals": true,
-    // "noUnusedParameters": true,
-    // "noFallthroughCasesInSwitch": true,
-    // "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
 
     // Recommended Options
     "strict": true,
@@ -42,8 +34,9 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true,
+    "skipLibCheck": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "examples"]
+  "include": ["src/**/*", "scripts/**/*"],
+  // demo-dist.ts imports from ../dist by design, which is absent before a build.
+  "exclude": ["node_modules", "dist", "examples", "scripts/demo-dist.ts"]
 }

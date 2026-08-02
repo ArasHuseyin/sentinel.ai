@@ -29,10 +29,26 @@ jobs:
         run: npm ci
 
       - name: Type-check
-        run: npx tsc --noEmit
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
 
       - name: Run tests with coverage
         run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      # Packs the tarball, installs it into a scratch project and imports it the
+      # way a consumer does. 4.1.6 shipped unimportable because `files` in
+      # package.json omitted dist/exports.js — tsc and the unit tests were both
+      # green. Only resolving the real tarball catches that class of bug.
+      - name: Verify published package is importable
+        run: npm run verify:package
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

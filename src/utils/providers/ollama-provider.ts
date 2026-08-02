@@ -3,12 +3,15 @@ import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../l
 import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
+import { createLogger, type Logger } from '../logger.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
   return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
 }
 
 export interface OllamaProviderOptions {
+  /** Sink for provider diagnostics (truncation retries). */
+  logger?: Logger;
   model: string;
   baseURL?: string;
 }
@@ -19,13 +22,15 @@ export interface OllamaProviderOptions {
  * No additional npm packages needed – uses the native fetch API.
  */
 export class OllamaProvider implements LLMProvider {
-  private model: string;
+  readonly modelName: string;
   private baseURL: string;
   onTokenUsage?: (usage: TokenUsage) => void;
+  private readonly logger: Logger;
 
   constructor(options: OllamaProviderOptions) {
-    this.model = options.model;
+    this.modelName = options.model;
     this.baseURL = options.baseURL ?? 'http://localhost:11434';
+    this.logger = (options.logger ?? createLogger(false, 1)).child('Ollama');
   }
 
   private reportUsage(data: any): void {
@@ -64,7 +69,7 @@ export class OllamaProvider implements LLMProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.model,
+          model: this.modelName,
           stream: false,
           format: 'json',
           options: { num_predict: cap },
@@ -77,7 +82,7 @@ export class OllamaProvider implements LLMProvider {
       if (!response.ok) {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
-      const data = await response.json() as any;
+      const data = await response.json();
       this.reportUsage(data);
       const content = data?.message?.content ?? '{}';
       const truncated = data?.done_reason === 'length';
@@ -87,8 +92,8 @@ export class OllamaProvider implements LLMProvider {
     return withRetry(async () => {
       let { content, truncated } = await callOnce(requestedCap);
       if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
-        console.warn(
-          `[Ollama] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        this.logger.warn(
+          `Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
         );
         ({ content, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }
@@ -108,7 +113,7 @@ export class OllamaProvider implements LLMProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.model,
+          model: this.modelName,
           stream: false,
           messages: [
             { role: 'user', content: prompt, images: [imageBase64] },
@@ -118,7 +123,7 @@ export class OllamaProvider implements LLMProvider {
       if (!response.ok) {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
-      const data = await response.json() as any;
+      const data = await response.json();
       this.reportUsage(data);
       return data?.message?.content ?? '';
     }, 'Ollama');
@@ -136,7 +141,7 @@ export class OllamaProvider implements LLMProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: this.model,
+          model: this.modelName,
           stream: false,
           messages,
         }),
@@ -146,7 +151,7 @@ export class OllamaProvider implements LLMProvider {
         throw new LLMError(`HTTP ${response.status}: ${await response.text()}`);
       }
 
-      const data = await response.json() as any;
+      const data = await response.json();
       this.reportUsage(data);
       return data?.message?.content ?? '';
     }, 'Ollama');

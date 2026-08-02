@@ -10,6 +10,7 @@ import { Planner } from './planner.js';
 import { withSpan } from '../utils/telemetry.js';
 import { generateTOTP } from '../utils/totp.js';
 import { ConsoleLogger, type Logger } from '../utils/logger.js';
+import { ignoreRejection } from '../utils/ignore-rejection.js';
 
 /** Returns a key derived from `slug` that does not yet exist in `map`. */
 function uniqueKey(slug: string, map: Record<string, unknown>): string {
@@ -102,7 +103,7 @@ export class AgentLoop {
     private actionEngine: ActionEngine,
     private extractionEngine: ExtractionEngine,
     private stateParser: StateParser,
-    private gemini: LLMProvider,
+    gemini: LLMProvider,
     private page?: Page,
     private visionGrounding?: VisionGrounding,
     plannerLLM?: LLMProvider,
@@ -267,7 +268,7 @@ export class AgentLoop {
                 return false;
               }).catch(() => false);
               if (!popoverOpen) {
-                await this.page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+                await this.page.evaluate(() => window.scrollTo(0, 0)).catch(ignoreRejection);
               }
             }
             this.stateParser.invalidateCache();

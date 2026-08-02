@@ -1,9 +1,13 @@
+import { createLogger, type Logger } from './logger.js';
+
 const BASE_DELAY_MS = 1000;
 
 export async function withRetry<T>(
   fn: () => Promise<T>,
   label: string,
-  retries = 3
+  retries = 3,
+  /** Optional sink for retry diagnostics. Falls back to a console logger. */
+  logger?: Logger
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < retries; attempt++) {
@@ -29,7 +33,8 @@ export async function withRetry<T>(
       // line + status code.
       const status = err?.status ? ` [${err.status}]` : '';
       const reason = String(err?.message ?? err).split('\n')[0]?.slice(0, 160) ?? 'unknown';
-      console.warn(`[${label}] Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`);
+      (logger ?? createLogger(false, 1)).child(label)
+        .warn(`Retryable error${status} (attempt ${attempt + 1}/${retries}): ${reason}. Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

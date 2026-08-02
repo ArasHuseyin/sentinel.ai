@@ -5,7 +5,7 @@ import type { GenerateOptions, LLMProvider, SchemaInput } from '../utils/llm-pro
 // ─── Interface ────────────────────────────────────────────────────────────────
 
 export interface IPromptCache {
-  get(key: string): unknown | undefined;
+  get(key: string): unknown;
   set(key: string, value: unknown): void;
   clear(): void;
   readonly size: number;
@@ -45,7 +45,7 @@ export class InMemoryPromptCache implements IPromptCache {
     this.maxEntries = maxEntries;
   }
 
-  get(key: string): unknown | undefined {
+  get(key: string): unknown {
     return this.store.get(key);
   }
 
@@ -102,7 +102,7 @@ export class FilePromptCache implements IPromptCache {
     );
   }
 
-  get(key: string): unknown | undefined {
+  get(key: string): unknown {
     return this.store.get(key);
   }
 

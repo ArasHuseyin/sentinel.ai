@@ -1,6 +1,5 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, it, expect } from '@jest/globals';
 import { Sentinel } from '../index.js';
-import type { SentinelOptions } from '../index.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -14,7 +13,7 @@ function makeBoxModel(x = 10, y = 20, w = 80, h = 30) {
 
 function makeMockCDP(nodes: any[]) {
   return {
-    send: jest.fn(async (method: string, params?: any) => {
+    send: jest.fn(async (method: string, _params?: any) => {
       if (method === 'Accessibility.getFullAXTree') return { nodes };
       if (method === 'DOM.getBoxModel') return makeBoxModel();
       return {};
@@ -60,7 +59,7 @@ function makeSentinel() {
   };
 
   // Pass provider to bypass GeminiService construction (which requires GEMINI_VERSION)
-  const sentinel = new Sentinel({ apiKey: 'test', verbose: 0, provider: mockLLM } as SentinelOptions);
+  const sentinel = new Sentinel({ apiKey: 'test', verbose: 0, provider: mockLLM });
 
   // Stub page.context().newCDPSession() used by extend()
   page.context.mockReturnValue({
@@ -75,31 +74,31 @@ function makeSentinel() {
 describe('sentinel.extend(page)', () => {
   it('returns the same page object', async () => {
     const { sentinel, page } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     expect(extended).toBe(page);
   });
 
   it('attaches act() method to the page', async () => {
     const { sentinel, page } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     expect(typeof extended.act).toBe('function');
   });
 
   it('attaches extract() method to the page', async () => {
     const { sentinel, page } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     expect(typeof extended.extract).toBe('function');
   });
 
   it('attaches observe() method to the page', async () => {
     const { sentinel, page } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     expect(typeof extended.observe).toBe('function');
   });
 
   it('act() on extended page calls LLM and returns success', async () => {
     const { sentinel, page, mockLLM } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     const result = await extended.act('Click login button');
 
     expect(result.success).toBe(true);
@@ -108,7 +107,7 @@ describe('sentinel.extend(page)', () => {
 
   it('act() prompt contains the page url', async () => {
     const { sentinel, page, mockLLM } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     await extended.act('Click login button');
 
     const promptArg = (mockLLM.generateStructuredData as jest.Mock).mock.calls[0]?.[0] as string;
@@ -118,14 +117,14 @@ describe('sentinel.extend(page)', () => {
   it('creates a dedicated CDP session for the given page', async () => {
     const { sentinel, page } = makeSentinel();
     const ctx = page.context();
-    await sentinel.extend(page as any);
+    await sentinel.extend(page);
     expect(ctx.newCDPSession).toHaveBeenCalledWith(page);
   });
 
   it('extend() does not affect the main sentinel.page', async () => {
     const { sentinel, page } = makeSentinel();
     // sentinel.page would throw (not initialized), but extend() itself should succeed
-    await expect(sentinel.extend(page as any)).resolves.not.toThrow();
+    await expect(sentinel.extend(page)).resolves.not.toThrow();
   });
 
   it('multiple extend() calls on different pages are independent', async () => {
@@ -135,8 +134,8 @@ describe('sentinel.extend(page)', () => {
       newCDPSession: jest.fn(async () => makeMockCDP(makeAomNodes('link', 'Home'))),
     });
 
-    const extended1 = await sentinel.extend(page1 as any);
-    const extended2 = await sentinel.extend(page2 as any);
+    const extended1 = await sentinel.extend(page1);
+    const extended2 = await sentinel.extend(page2);
 
     // Both pages have independent act() methods
     expect(extended1.act).not.toBe(extended2.act);
@@ -147,7 +146,7 @@ describe('sentinel.extend(page)', () => {
     const extractResult = { title: 'My Page', count: 42 };
     (mockLLM.generateStructuredData as jest.Mock<any>).mockResolvedValueOnce(extractResult);
 
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     const result = await extended.extract('Get the page title and count', { type: 'object' } as any);
 
     expect(result).toEqual(extractResult);
@@ -163,7 +162,7 @@ describe('sentinel.extend(page)', () => {
     };
     (mockLLM.generateStructuredData as jest.Mock<any>).mockResolvedValueOnce(observeResult);
 
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     const actions = await extended.observe('Find login elements');
 
     expect(actions).toHaveLength(1);
@@ -172,7 +171,7 @@ describe('sentinel.extend(page)', () => {
 
   it('original page methods (url, mouse, keyboard) are still accessible after extend()', async () => {
     const { sentinel, page } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
 
     // Playwright's own methods must not be overwritten
     expect(extended.url()).toBe('https://example.com');
@@ -185,7 +184,7 @@ describe('sentinel.extend(page)', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     const { sentinel, page } = makeSentinel();
-    const extended = await sentinel.extend(page as any);
+    const extended = await sentinel.extend(page);
     await extended.act('Click login');
 
     expect(consoleSpy).not.toHaveBeenCalled();
@@ -202,14 +201,14 @@ describe('sentinel.extend(page)', () => {
     // First extend — records the CDP session
     const cdp1 = await ctx.newCDPSession(page);
     const detachSpy = jest.fn(async () => {});
-    (cdp1 as any).detach = detachSpy;
+    (cdp1).detach = detachSpy;
     // Replace newCDPSession to return our spy-equipped cdp1 on first call
-    ctx.newCDPSession.mockResolvedValueOnce(cdp1 as any);
+    ctx.newCDPSession.mockResolvedValueOnce(cdp1);
 
-    await sentinel.extend(page as any);
+    await sentinel.extend(page);
 
     // Second extend on the same page — old session should be detached
-    await sentinel.extend(page as any);
+    await sentinel.extend(page);
 
     expect(detachSpy).toHaveBeenCalledTimes(1);
   });
@@ -227,12 +226,16 @@ describe('sentinel.extend(page)', () => {
     page.context.mockReturnValue({ newCDPSession: jest.fn(async () => cdp) });
 
     // verbose: 1 — should log action summary
-    const sentinel = new Sentinel({ apiKey: 'test', verbose: 1, provider: mockLLM } as SentinelOptions);
-    const extended = await sentinel.extend(page as any);
+    const sentinel = new Sentinel({ apiKey: 'test', verbose: 1, provider: mockLLM });
+    const extended = await sentinel.extend(page);
     await extended.act('Click login');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
-    expect(allOutput).toContain('[Act]');
+    // ActionEngine logs through a child of Sentinel's logger, so the scope tag
+    // is the nested `Sentinel/Act` rather than a flat `Act` — that nesting is
+    // the point of Logger.child() and makes the origin unambiguous when
+    // several engines share one sink.
+    expect(allOutput).toContain('[Sentinel/Act]');
 
     consoleSpy.mockRestore();
   });

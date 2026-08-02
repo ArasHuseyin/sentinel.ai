@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { BudgetExceededError } from '../types/errors.js';
+import { createLogger, type Logger } from './logger.js';
 
 export interface TokenUsageEntry {
   operation: string;
@@ -23,6 +24,10 @@ export interface TokenBudget {
 
 // Approximate cost per 1M tokens (USD) – update as pricing changes
 // Sources: ai.google.dev/pricing, openai.com/pricing, anthropic.com/pricing
+//
+// Keys are matched exactly first, then by longest registered prefix, so dated
+// snapshot ids (e.g. "claude-haiku-4-5-20251001") resolve to their base entry
+// instead of silently falling through to "no pricing".
 const COST_PER_1M: Record<string, { input: number; output: number }> = {
   // Gemini — Flash models (budget tier)
   'gemini-2.5-flash-preview': { input: 0.075, output: 0.30 },
@@ -30,17 +35,45 @@ const COST_PER_1M: Record<string, { input: number; output: number }> = {
   'gemini-2.0-flash':         { input: 0.075, output: 0.30 },
   'gemini-1.5-flash':         { input: 0.075, output: 0.30 },
   // Gemini — Pro models
+  'gemini-3.1-pro-preview':   { input: 1.25,  output: 5.00 }, // estimate, update when GA
   'gemini-2.5-pro-preview':   { input: 1.25,  output: 5.00 },
   'gemini-1.5-pro':           { input: 3.50,  output: 10.50 },
   // OpenAI
   'gpt-4o':                   { input: 2.50,  output: 10.00 },
   'gpt-4o-mini':              { input: 0.15,  output: 0.60 },
   'o3-mini':                  { input: 1.10,  output: 4.40 },
-  // Anthropic
+  // Anthropic — current generation
+  'claude-opus-5':            { input: 5.00,  output: 25.00 },
+  'claude-sonnet-5':          { input: 3.00,  output: 15.00 },
+  'claude-haiku-4-5':         { input: 1.00,  output: 5.00 },
+  // Anthropic — legacy
   'claude-3-5-sonnet':        { input: 3.00,  output: 15.00 },
   'claude-3-5-haiku':         { input: 0.80,  output: 4.00 },
   'claude-3-haiku':           { input: 0.25,  output: 1.25 },
 };
+
+/**
+ * Resolves a model id to its pricing entry, or `null` when the model is not in
+ * the table.
+ *
+ * Returning `null` rather than a zero-cost fallback is deliberate: `getUsage()`
+ * used to default unknown models to `{ input: 0, output: 0 }`, so
+ * `estimatedCostUsd` stayed at exactly $0.00 forever and the `maxCostUsd`
+ * budget check could never fire. A spend cap that silently does nothing is
+ * worse than no cap at all.
+ */
+export function resolvePricing(model: string): { input: number; output: number } | null {
+  const exact = COST_PER_1M[model];
+  if (exact) return exact;
+
+  // Longest-prefix match handles dated snapshots ("claude-haiku-4-5-20251001")
+  // and regional/suffixed variants without needing an entry per snapshot.
+  let bestKey = '';
+  for (const key of Object.keys(COST_PER_1M)) {
+    if (model.startsWith(key) && key.length > bestKey.length) bestKey = key;
+  }
+  return bestKey ? COST_PER_1M[bestKey]! : null;
+}
 
 export interface TokenTrackerOptions {
   /** Per-run spend cap. See `TokenBudget` for semantics. */
@@ -55,6 +88,8 @@ export interface TokenTrackerOptions {
    * LLM calls per second). Not suitable for hot loops.
    */
   persistPath?: string;
+  /** Sink for budget diagnostics. Defaults to a console logger. */
+  logger?: Logger;
 }
 
 /**
@@ -72,6 +107,9 @@ export class TokenTracker {
   private model: string;
   private budget: TokenBudget;
   private readonly persistPath: string | undefined;
+  /** Guards the "cost cap cannot be enforced" warning to one emission per run. */
+  private warnedUnpriced = false;
+  private readonly logger: Logger;
 
   constructor(
     model = 'gemini-1.5-flash',
@@ -81,12 +119,14 @@ export class TokenTracker {
     // Support both legacy `(model, TokenBudget)` and new `(model, TokenTrackerOptions)` forms.
     const isOptions = 'budget' in budgetOrOptions || 'persistPath' in budgetOrOptions;
     if (isOptions) {
-      const opts = budgetOrOptions as TokenTrackerOptions;
+      const opts = budgetOrOptions;
       this.budget = opts.budget ?? {};
       this.persistPath = opts.persistPath;
+      this.logger = (opts.logger ?? createLogger(false, 1)).child('TokenTracker');
     } else {
       this.budget = budgetOrOptions as TokenBudget;
       this.persistPath = undefined;
+      this.logger = createLogger(false, 1).child('TokenTracker');
     }
     if (this.persistPath) this.load();
   }
@@ -140,12 +180,28 @@ export class TokenTracker {
         { usage, budget: this.budget }
       );
     }
-    if (this.budget.maxCostUsd !== undefined && usage.estimatedCostUsd > this.budget.maxCostUsd) {
-      throw new BudgetExceededError(
-        `Cost budget exceeded: $${usage.estimatedCostUsd.toFixed(5)} > limit $${this.budget.maxCostUsd.toFixed(5)}`,
-        { usage, budget: this.budget }
-      );
+    if (this.budget.maxCostUsd !== undefined) {
+      // An unpriced model cannot be cost-capped. Say so loudly once instead of
+      // letting a $0.00 estimate quietly satisfy the limit forever.
+      if (!usage.pricingKnown) {
+        this.warnUnpricedBudgetOnce();
+      } else if (usage.estimatedCostUsd > this.budget.maxCostUsd) {
+        throw new BudgetExceededError(
+          `Cost budget exceeded: $${usage.estimatedCostUsd.toFixed(5)} > limit $${this.budget.maxCostUsd.toFixed(5)}`,
+          { usage, budget: this.budget }
+        );
+      }
     }
+  }
+
+  private warnUnpricedBudgetOnce(): void {
+    if (this.warnedUnpriced) return;
+    this.warnedUnpriced = true;
+    this.logger.warn(
+      `maxCostUsd is set but no pricing is known for model "${this.model}" — ` +
+        `the cost cap cannot be enforced. Token counts are still tracked; use maxTokens for a ` +
+        `hard limit, or add "${this.model}" to the pricing table.`
+    );
   }
 
   getUsage(): {
@@ -153,22 +209,30 @@ export class TokenTracker {
     totalOutputTokens: number;
     totalTokens: number;
     estimatedCostUsd: number;
+    /**
+     * False when the model has no pricing entry. Callers must not read
+     * `estimatedCostUsd` as "this run cost nothing" in that case — it means
+     * "unknown", and it is why `maxCostUsd` is not enforceable for this model.
+     */
+    pricingKnown: boolean;
     entries: TokenUsageEntry[];
   } {
     const totalInputTokens = this.entries.reduce((s, e) => s + e.inputTokens, 0);
     const totalOutputTokens = this.entries.reduce((s, e) => s + e.outputTokens, 0);
     const totalTokens = totalInputTokens + totalOutputTokens;
 
-    const pricing = COST_PER_1M[this.model] ?? { input: 0, output: 0 };
-    const estimatedCostUsd =
-      (totalInputTokens / 1_000_000) * pricing.input +
-      (totalOutputTokens / 1_000_000) * pricing.output;
+    const pricing = resolvePricing(this.model);
+    const estimatedCostUsd = pricing
+      ? (totalInputTokens / 1_000_000) * pricing.input +
+        (totalOutputTokens / 1_000_000) * pricing.output
+      : 0;
 
     return {
       totalInputTokens,
       totalOutputTokens,
       totalTokens,
       estimatedCostUsd: Math.round(estimatedCostUsd * 100000) / 100000,
+      pricingKnown: pricing !== null,
       entries: [...this.entries],
     };
   }

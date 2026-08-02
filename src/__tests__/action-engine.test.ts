@@ -176,7 +176,6 @@ describe('ActionEngine', () => {
 
   it('handles scroll-down without target element (elementId 0)', async () => {
     const page = makeMockPage();
-    const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'scroll-down', reasoning: 'Scroll page down' });
     // Use a state with NO element id=0 so isScrollWithoutTarget logic triggers correctly
     const emptyState = makeState({ elements: [] });
@@ -933,7 +932,7 @@ describe('ActionEngine', () => {
       describeScreen: jest.fn(async () => 'A page with a submit button'),
     };
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, mockVisionGrounding as any);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { visionGrounding: mockVisionGrounding as any });
     const result = await engine.act('Click submit button');
 
     expect(result.success).toBe(true);
@@ -960,7 +959,7 @@ describe('ActionEngine', () => {
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit button found' });
 
     // maxElements = 2, instruction contains "submit" → Submit button should be top-scored
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 2);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 2 });
     await engine.act('Click the submit button');
 
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
@@ -977,7 +976,7 @@ describe('ActionEngine', () => {
     const stateParser = makeMockStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 10);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { maxElements: 10 });
     await engine.act('Click submit');
 
     const promptArg = ((llm.generateStructuredData as jest.Mock).mock.calls[0] as any[])[0] as string;
@@ -1001,7 +1000,7 @@ describe('ActionEngine', () => {
       describeScreen: jest.fn(async () => ''),
     };
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, mockVisionGrounding as any);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { visionGrounding: mockVisionGrounding as any });
     const result = await engine.act('Click submit button');
 
     // Falls through to semantic fallback which succeeds (locator.click is not mocked to fail)
@@ -1172,7 +1171,7 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     // Slider evaluate returns 'range' → native input[type=range] was set
     (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
-      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1] as any)) {
+      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1])) {
         return 'range';
       }
       return { x: 0, y: 0 };
@@ -1202,7 +1201,7 @@ describe('ActionEngine', () => {
     const page = makeMockPage();
     // Slider evaluate returns 'sibling' → sibling text input was filled
     (page.evaluate as jest.Mock).mockImplementation(async (...args: any[]) => {
-      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1] as any)) {
+      if (args.length >= 2 && args[1] && typeof args[1] === 'object' && 'val' in (args[1])) {
         return 'sibling';
       }
       return { x: 0, y: 0 };
@@ -1280,7 +1279,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 0);
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click submit');
 
     expect(consoleSpy).not.toHaveBeenCalled();
@@ -1292,7 +1291,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 1);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 1 });
     await engine.act('Click submit');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1305,7 +1304,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 2);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 2 });
     await engine.act('Click submit');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1326,7 +1325,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 2);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 2 });
     await engine.act('Click submit');
 
     const warnOutput = warnSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1341,7 +1340,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(state);
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 0);
+    const engine = new ActionEngine(page as any, stateParser as any, llm);
     await engine.act('Click submit');
 
     expect(warnSpy).not.toHaveBeenCalled();
@@ -1355,7 +1354,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState({ elements: manyElements }));
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 3, 3);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { maxElements: 3, verbose: 3 });
     await engine.act('Click link');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1368,7 +1367,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Submit found' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 3);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 3 });
     await engine.act('Click submit');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1382,7 +1381,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState()); // 3 elements, maxElements = 50
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 3);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 3 });
     await engine.act('Click submit');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1398,7 +1397,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'OK' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, cache, 50, 1);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { locatorCache: cache, verbose: 1 });
     await engine.act('Click submit');
 
     const allOutput = consoleSpy.mock.calls.map((c: any[]) => c[0]).join('\n');
@@ -1424,7 +1423,7 @@ describe('ActionEngine verbose logging', () => {
     const stateParser = makeMockStateParser(makeState());
     const llm = makeMockLLM({ elementId: 0, action: 'click', reasoning: 'Click submit' });
 
-    const engine = new ActionEngine(page as any, stateParser as any, llm, undefined, 3000, null, 50, 2);
+    const engine = new ActionEngine(page as any, stateParser as any, llm, { verbose: 2 });
     const result = await engine.act('Click submit');
 
     expect(result.success).toBe(false);

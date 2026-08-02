@@ -1,0 +1,16 @@
+// Emit configuration for the published package.
+//
+// `tsconfig.json` type-checks everything (src, tests, dev scripts); this file is
+// the only one that writes to dist/. Tests and ad-hoc scripts are excluded so
+// they never reach the tarball, which keeps `files: ["dist"]` in package.json
+// safe to use as a whole-directory allowlist — no per-file list to forget.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "noEmit": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/__tests__/**", "node_modules", "dist", "examples", "scripts"]
+}

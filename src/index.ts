@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import type { Page, BrowserContext } from 'playwright';
-import { z } from 'zod';
+
 
 import { SentinelDriver } from './core/driver.js';
 import type { DriverOptions } from './core/driver.js';
@@ -33,6 +33,7 @@ import { createPromptCache, createCachingProvider } from './core/prompt-cache.js
 import type { IPromptCache } from './core/prompt-cache.js';
 import { withSpan, createTracingProvider, actCounter, actDuration, agentSteps, llmTokens } from './utils/telemetry.js';
 import { NotInitializedError, CaptchaDetectedError } from './types/errors.js';
+import { ignoreRejection } from './utils/ignore-rejection.js';
 import type {
   SentinelOptions,
   ExtendedPage,
@@ -69,8 +70,9 @@ export class Sentinel extends EventEmitter {
   private plannerLLM: LLMProvider | null = null;
   private readonly visionFallback: boolean;
   private readonly mode: 'aom' | 'hybrid' | 'vision';
+  /** Model the active provider bills against — drives cost estimates and OTel labels. */
+  private readonly modelName: string;
   private readonly mfaConfig: { type: 'totp'; secret: string; digits?: number; period?: number } | undefined;
-  private readonly apiKey: string;
   /** Tracks active CDP sessions created by extend() so they can be detached on re-extend. */
   private readonly extendedPages = new WeakMap<Page, { detach(): Promise<void> }>();
 
@@ -101,7 +103,7 @@ export class Sentinel extends EventEmitter {
     };
     this.driver = new SentinelDriver(driverOptions);
     // Use custom provider if supplied, otherwise fall back to GeminiService
-    this.gemini = (options.provider as any) ?? new GeminiService(options.apiKey);
+    this.gemini = options.provider ?? new GeminiService(options.apiKey);
     this.verbose = options.verbose ?? 1;
     this.logger = createLogger(options.logFormat ?? false, this.verbose, options.logger).child('Sentinel');
     this.enableCaching = options.enableCaching ?? true;
@@ -115,16 +117,21 @@ export class Sentinel extends EventEmitter {
     this.locatorCacheInstance = createLocatorCache(options.locatorCache ?? false);
     this.promptCacheInstance = createPromptCache(options.promptCache ?? false);
     this.patternCacheInstance = createPatternCache(options.patternCache ?? true);
-    this.apiKey = options.apiKey;
-    this.recorder = new WorkflowRecorder();
+    this.recorder = new WorkflowRecorder('recorded-workflow', this.logger);
+    // Cost accounting must follow the provider that is actually billed. Reading
+    // GEMINI_VERSION here priced Claude/OpenAI runs at Gemini rates, and when
+    // the env var was unset the fallback model made every estimate $0.00 —
+    // which also disabled the maxCostUsd cap silently.
+    this.modelName = this.resolveModelName(this.gemini);
     this.tokenTracker = new TokenTracker(
-      process.env.GEMINI_VERSION ?? 'gemini-3-flash-preview',
+      this.modelName,
       {
         budget: {
           ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
           ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
         },
         ...(options.costAuditPath !== undefined ? { persistPath: options.costAuditPath } : {}),
+        logger: this.logger,
       }
     );
     this.captchaOption = options.captcha ?? 'auto';
@@ -147,6 +154,21 @@ export class Sentinel extends EventEmitter {
       };
       provider.onTokenUsage = this._tokenUsageCallback;
     }
+  }
+
+  /**
+   * Determines which model the given provider bills against.
+   *
+   * Built-in providers expose `modelName`. Third-party providers implementing
+   * `LLMProvider` may not, since the field is optional — those fall back to
+   * GEMINI_VERSION (correct only if they actually wrap Gemini) and finally to a
+   * sentinel string, which `TokenTracker` reports as "pricing unknown" instead
+   * of pretending the run was free.
+   */
+  private resolveModelName(provider: GeminiService | LLMProvider): string {
+    const declared = (provider as { modelName?: unknown }).modelName;
+    if (typeof declared === 'string' && declared.length > 0) return declared;
+    return process.env.GEMINI_VERSION ?? 'unknown-model';
   }
 
   // ─── Playwright passthrough ───────────────────────────────────────────────
@@ -173,7 +195,10 @@ export class Sentinel extends EventEmitter {
     // condition: modifying provider.onTokenUsage per-call is unsafe when multiple
     // LLM calls run concurrently (e.g. via sentinel.extend()). The callback is
     // set once at init time on the original provider.
-    const modelName = process.env.GEMINI_VERSION ?? 'unknown';
+    // Same model name the cost tracker uses — derived from the active provider,
+    // not from GEMINI_VERSION, so `llm.model` labels stay truthful when a
+    // Claude/OpenAI/Ollama provider is in play.
+    const modelName = this.modelName;
     if (this._tokenUsageCallback) {
       const prevCb = this._tokenUsageCallback;
       this._tokenUsageCallback = (usage) => {
@@ -192,14 +217,24 @@ export class Sentinel extends EventEmitter {
       this.gemini = createCachingProvider(this.gemini, this.promptCacheInstance);
     }
 
-    this.stateParser = new StateParser(page, cdp);
+    this.stateParser = new StateParser(page, cdp, this.logger);
     if (this.visionFallback) {
-      this.visionGrounding = new VisionGrounding(this.gemini, this.verbose);
+      this.visionGrounding = new VisionGrounding(this.gemini, this.verbose, this.logger);
     }
-    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, this.visionGrounding ?? undefined, this.domSettleTimeoutMs, this.locatorCacheInstance, this.maxElements, this.verbose, this.humanLike, this.mode, this.patternCacheInstance);
-    this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini);
-    this.observationEngine = new ObservationEngine(page, this.stateParser, this.gemini);
-    this.verifier = new Verifier(page, this.stateParser, this.gemini);
+    this.actionEngine = new ActionEngine(page, this.stateParser, this.gemini, {
+      visionGrounding: this.visionGrounding ?? undefined,
+      domSettleTimeoutMs: this.domSettleTimeoutMs,
+      locatorCache: this.locatorCacheInstance,
+      maxElements: this.maxElements,
+      verbose: this.verbose,
+      humanLike: this.humanLike,
+      mode: this.mode,
+      patternCache: this.patternCacheInstance,
+      logger: this.logger,
+    });
+    this.extractionEngine = new ExtractionEngine(page, this.stateParser, this.gemini, this.logger);
+    this.observationEngine = new ObservationEngine(this.stateParser, this.gemini);
+    this.verifier = new Verifier(this.gemini, this.logger);
     this.agentLoop = new AgentLoop(this.actionEngine, this.extractionEngine, this.stateParser, this.gemini, page, this.visionGrounding ?? undefined, this.plannerLLM ?? undefined, this.mfaConfig, this.logger);
 
     this.log(1, '🚀 Sentinel initialized');
@@ -340,9 +375,11 @@ export class Sentinel extends EventEmitter {
             // Don't let a close failure propagate — we still want the other tasks to finish
             // and the caller to see the task result. But surface it so zombie browsers
             // don't stay silently undetected.
-            if ((options.verbose ?? 1) >= 1) {
-              console.warn(`[Sentinel.parallel] close() failed for task ${index} (${task.url}): ${closeErr?.message ?? closeErr}`);
-            }
+            // `parallel` is static, so there is no instance logger to reach —
+            // build one from the same options the tasks run under.
+            createLogger(options.logFormat ?? false, options.verbose ?? 1, options.logger)
+              .child('Sentinel.parallel')
+              .warn(`close() failed for task ${index} (${task.url}): ${closeErr?.message ?? closeErr}`);
           }
         }
         completed++;
@@ -639,7 +676,7 @@ export class Sentinel extends EventEmitter {
           if (body) captured.push(body);
         } else {
           const text = await response.text().catch(() => null);
-          if (text) captured.push(text as any);
+          if (text) captured.push(text);
         }
       } catch {
         // Response body not available (e.g. redirects, streams)
@@ -652,7 +689,7 @@ export class Sentinel extends EventEmitter {
       // Wait for async/lazy-loaded responses. Use networkidle if possible,
       // fall back to fixed timeout. This catches GraphQL calls that fire
       // after the initial page navigation completes.
-      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(ignoreRejection);
       await page.waitForTimeout(500); // extra buffer for late responses
     } finally {
       page.off('response', handler);
@@ -733,21 +770,21 @@ export class Sentinel extends EventEmitter {
 
     const cdp = await page.context().newCDPSession(page);
     this.extendedPages.set(page, cdp);
-    const stateParser = new StateParser(page, cdp);
+    const stateParser = new StateParser(page, cdp, this.logger);
     const mode = this.visionFallback ? (this.visionGrounding ? 'hybrid' : 'aom') : 'aom';
-    const actionEngine = new ActionEngine(
-      page, stateParser, this.gemini,
-      this.visionGrounding ?? undefined,
-      this.domSettleTimeoutMs,
-      this.locatorCacheInstance,
-      this.maxElements,
-      this.verbose,
-      this.humanLike,
+    const actionEngine = new ActionEngine(page, stateParser, this.gemini, {
+      logger: this.logger,
+      visionGrounding: this.visionGrounding ?? undefined,
+      domSettleTimeoutMs: this.domSettleTimeoutMs,
+      locatorCache: this.locatorCacheInstance,
+      maxElements: this.maxElements,
+      verbose: this.verbose,
+      humanLike: this.humanLike,
       mode,
-      this.patternCacheInstance
-    );
-    const extractionEngine = new ExtractionEngine(page, stateParser, this.gemini);
-    const observationEngine = new ObservationEngine(page, stateParser, this.gemini);
+      patternCache: this.patternCacheInstance,
+    });
+    const extractionEngine = new ExtractionEngine(page, stateParser, this.gemini, this.logger);
+    const observationEngine = new ObservationEngine(stateParser, this.gemini);
 
     const extended = page as ExtendedPage;
     extended.act = (instruction, options) => actionEngine.act(instruction, options);
@@ -911,7 +948,7 @@ export class Sentinel extends EventEmitter {
       const item = queue.shift()!;
       if (item === null) break;      // done
       if (item instanceof Error) { await runPromise; throw item; }
-      yield item as AgentStepEvent | AgentResult;
+      yield item;
     }
 
     await runPromise;

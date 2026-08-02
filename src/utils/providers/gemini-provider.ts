@@ -4,6 +4,7 @@ import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../l
 import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
+import { createLogger, type Logger } from '../logger.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
   return (
@@ -36,6 +37,8 @@ function resolveJsonSchema<T>(schema: SchemaInput<T>): Record<string, any> {
 }
 
 export interface GeminiProviderOptions {
+  /** Sink for provider diagnostics (truncation retries). */
+  logger?: Logger;
   apiKey: string;
   model?: string;
 }
@@ -50,8 +53,9 @@ export class GeminiProvider implements LLMProvider {
    * identical request prefixes across calls and returns its cache hit discount.
    */
   private readonly systemModelCache = new Map<string, any>();
-  private readonly modelName: string;
+  readonly modelName: string;
   onTokenUsage?: (usage: TokenUsage) => void;
+  private readonly logger: Logger;
 
   constructor(options: GeminiProviderOptions) {
     this.genAI = new GoogleGenerativeAI(options.apiKey);
@@ -60,6 +64,7 @@ export class GeminiProvider implements LLMProvider {
     this.modelName = modelName;
     this.structuredModel = this.genAI.getGenerativeModel({ model: modelName });
     this.textModel = this.genAI.getGenerativeModel({ model: modelName });
+    this.logger = (options.logger ?? createLogger(false, 1)).child('Gemini');
   }
 
   private getModelFor(systemInstruction?: string): any {
@@ -114,8 +119,8 @@ export class GeminiProvider implements LLMProvider {
     return withRetry(async () => {
       let { text, truncated } = await callOnce(requestedCap);
       if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
-        console.warn(
-          `[Gemini] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        this.logger.warn(
+          `Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
         );
         ({ text, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }

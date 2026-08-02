@@ -72,6 +72,21 @@ export interface LLMProvider {
 
   /** Optional callback invoked after each LLM call with token usage data */
   onTokenUsage?: (usage: TokenUsage) => void;
+
+  /**
+   * The model this provider actually calls, e.g. "gemini-3-flash-preview" or
+   * "claude-sonnet-5".
+   *
+   * Cost accounting and OTel token metrics both need to know which model was
+   * billed. Without this they fell back to the GEMINI_VERSION env var, so a run
+   * driven by ClaudeProvider or OpenAIProvider was priced with Gemini rates —
+   * and if the fallback name had no pricing entry, estimated cost stayed $0.00,
+   * which silently disabled the `maxCostUsd` budget cap.
+   *
+   * Optional so third-party providers implementing this interface keep working;
+   * when absent, cost estimation reports itself as unavailable rather than zero.
+   */
+  readonly modelName?: string;
 }
 
 /**

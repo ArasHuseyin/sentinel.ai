@@ -1,4 +1,4 @@
-import { Sentinel, z } from './index.js';
+import { Sentinel, z } from '../src/index.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -27,7 +27,6 @@ async function whatsappTest() {
 
   try {
     await sentinel.init();
-    const page = sentinel.page;
 
     console.log('1. Navigating to WhatsApp Web...');
     await sentinel.goto('https://web.whatsapp.com');

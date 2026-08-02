@@ -41,10 +41,9 @@ function args(...parts: string[]) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('CLI: buildProgram', () => {
-  let consoleSpy: ReturnType<typeof jest.spyOn>;
 
   beforeEach(() => {
-    consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
     process.exitCode = undefined;
   });
@@ -84,7 +83,7 @@ describe('CLI: buildProgram', () => {
     const mock = makeMockSentinel();
     mock.run.mockResolvedValue({
       goalAchieved: false, success: false, totalSteps: 3, message: 'Failed', history: [],
-    } as any);
+    });
     const program = buildProgram(makeFactory(mock));
     await program.parseAsync(args('run', 'goal', '--url', 'https://example.com', '--api-key', 'key'));
 
@@ -112,7 +111,7 @@ describe('CLI: buildProgram', () => {
 
   it('act: sets exitCode 1 when action fails', async () => {
     const mock = makeMockSentinel();
-    mock.act.mockResolvedValue({ success: false, message: 'Element not found' } as any);
+    mock.act.mockResolvedValue({ success: false, message: 'Element not found' });
     const program = buildProgram(makeFactory(mock));
     await program.parseAsync(args('act', 'Click missing button', '--url', 'https://example.com', '--api-key', 'key'));
 

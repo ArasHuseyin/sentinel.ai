@@ -90,7 +90,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel()]);
     const page = makeMockPage('https://test.com', 'Test Page');
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state: SimplifiedState = await parser.parse();
 
     expect(state.url).toBe('https://test.com');
@@ -102,7 +102,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel(5, 10, 80, 25)]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     expect(state.elements).toHaveLength(1);
@@ -124,7 +124,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel(), makeBoxModel(), makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     // Only 'link' is interactive
@@ -140,7 +140,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel(), makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     expect(state.elements).toHaveLength(1);
@@ -155,7 +155,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel(), makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     expect(state.elements).toHaveLength(1);
@@ -174,7 +174,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP([node], [makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     expect(state.elements[0]!.name).toBe('Close dialog');
@@ -185,7 +185,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     await parser.parse();
     await parser.parse(); // second call – should use cache
 
@@ -201,7 +201,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     await parser.parse();
     parser.invalidateCache();
     await parser.parse();
@@ -221,7 +221,7 @@ describe('StateParser', () => {
     const cdp = makeMockCDP(nodes, [makeBoxModel(), makeBoxModel(), makeBoxModel()]);
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     expect(state.elements.map((e) => e.id)).toEqual([0, 1, 2]);
@@ -236,7 +236,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeEnrichmentPage({ 0: 'Kelag | Fixtarif | 58,17 €' });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements[0]!.name).toBe('Kelag | Fixtarif | 58,17 €: Tarif auswählen');
@@ -248,7 +248,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeEnrichmentPage({});
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements[0]!.name).toBe('Login');
@@ -259,7 +259,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeEnrichmentPage({ 0: '' }); // empty context
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements[0]!.name).toBe('weiter');
@@ -283,7 +283,7 @@ describe('StateParser', () => {
         5: 'Weiter context', // "weiter" is generic
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const names = state.elements.map(e => e.name);
@@ -300,7 +300,7 @@ describe('StateParser', () => {
       // Simulate DOM returning a generic word as context
       const page = makeEnrichmentPage({ 0: 'ok' });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       // "ok" is in GENERIC_NAMES — enrichWithDOMContext won't apply it
@@ -353,7 +353,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeMockPage(); // frames() returns [self], mainFrame() === self
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
@@ -367,7 +367,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'Frame Button', x: 5, y: 10, width: 80, height: 30 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const frameBtn = state.elements.find(e => e.name === '[frame] Frame Button');
@@ -382,7 +382,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'Offset Button', x: 5, y: 10, width: 80, height: 30 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const el = state.elements.find(e => e.name === '[frame] Offset Button')!;
@@ -402,7 +402,7 @@ describe('StateParser', () => {
         evaluateThrows: true,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       // Should not throw
       const state = await parser.parse();
       expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
@@ -416,7 +416,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'Frame Button', x: 0, y: 0, width: 10, height: 10 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
       expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
     });
@@ -429,7 +429,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'Invisible Frame', x: 0, y: 0, width: 10, height: 10 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
       expect(state.elements.every(e => !e.name.startsWith('[frame]'))).toBe(true);
     });
@@ -443,7 +443,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'Login', x: 5, y: 5, width: 80, height: 30 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       // [frame] Login deduplicated (name "[frame] Login" doesn't match "Login" in existingNames,
@@ -468,7 +468,7 @@ describe('StateParser', () => {
         },
       ]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const frameSubmits = state.elements.filter(e => e.name === '[frame] Submit');
@@ -484,7 +484,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'Inner Button', x: 5, y: 5, width: 80, height: 30 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const frameEl = state.elements.find(e => e.name === '[frame] Inner Button')!;
@@ -498,7 +498,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeMockPage();
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const topEl = state.elements.find(e => e.name === 'Top Button')!;
@@ -515,7 +515,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       await parser.parse();
 
       const frame = parser.getFrame('frame-0');
@@ -529,7 +529,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeMockPage();
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       await parser.parse();
 
       expect(parser.getFrame('frame-99')).toBeUndefined();
@@ -549,7 +549,7 @@ describe('StateParser', () => {
         },
       ]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const a = state.elements.find(e => e.name === '[frame] A')!;
@@ -569,7 +569,7 @@ describe('StateParser', () => {
         elements: [{ role: 'button', name: 'X', x: 5, y: 5, width: 80, height: 30 }],
       }]);
 
-      const parser = new StateParser(pageWithFrame as any, cdp as any);
+      const parser = new StateParser(pageWithFrame, cdp as any);
       await parser.parse();
       expect(parser.getFrame('frame-0')).toBeDefined();
 
@@ -594,7 +594,7 @@ describe('StateParser', () => {
         },
       ]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements.some(e => e.name === '[frame] Frame1 Button')).toBe(true);
@@ -626,7 +626,7 @@ describe('StateParser', () => {
         return [{ role: 'textbox', name: 'editor', x: 10, y: 400, width: 300, height: 40 }];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const editorEl = state.elements.find(e => e.name === 'editor');
@@ -653,7 +653,7 @@ describe('StateParser', () => {
         return [{ role: 'textbox', name: 'Write something...', x: 10, y: 300, width: 500, height: 60 }];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const el = state.elements.find(e => e.name === 'Write something...');
@@ -681,7 +681,7 @@ describe('StateParser', () => {
         return [];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       // No contenteditable element should appear
@@ -718,7 +718,7 @@ describe('StateParser', () => {
         }];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const editable = state.elements.find(e => e.name === 'Type a message');
@@ -752,7 +752,7 @@ describe('StateParser', () => {
         }];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const messageInputs = state.elements.filter(e => e.name === 'Message input');
@@ -774,7 +774,7 @@ describe('StateParser', () => {
     };
     const page = makeMockPage();
 
-    const parser = new StateParser(page as any, cdp as any);
+    const parser = new StateParser(page, cdp as any);
     const state = await parser.parse();
 
     expect(state.elements).toHaveLength(1);
@@ -807,7 +807,7 @@ describe('StateParser', () => {
         return []; // contenteditable / other
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements[0]!.region).toBe('header');
@@ -820,7 +820,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, [makeBoxModel()]);
       const page = makeMockPage();
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       // Default mock returns [] for evaluate → no regions assigned
@@ -845,7 +845,7 @@ describe('StateParser', () => {
         return [];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements.every(e => e.region === 'modal')).toBe(true);
@@ -869,7 +869,7 @@ describe('StateParser', () => {
         return [];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements.every(e => e.region === 'popup')).toBe(true);
@@ -943,7 +943,7 @@ describe('StateParser', () => {
         x: 200, y: 100, width: 250, height: 40,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Baujahr auswählen');
@@ -963,7 +963,7 @@ describe('StateParser', () => {
         x: 300, y: 50, width: 120, height: 35,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Sort by');
@@ -982,7 +982,7 @@ describe('StateParser', () => {
         x: 100, y: 200, width: 200, height: 40,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Marke');
@@ -1001,7 +1001,7 @@ describe('StateParser', () => {
         x: 50, y: 300, width: 200, height: 30,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Browser');
@@ -1022,7 +1022,7 @@ describe('StateParser', () => {
         x: 0, y: 50, width: 600, height: 45,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.role === 'tablist');
@@ -1043,7 +1043,7 @@ describe('StateParser', () => {
         x: 100, y: 250, width: 200, height: 35,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Geburtsdatum');
@@ -1061,7 +1061,7 @@ describe('StateParser', () => {
         x: 100, y: 300, width: 150, height: 35,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Uhrzeit');
@@ -1081,7 +1081,7 @@ describe('StateParser', () => {
         x: 50, y: 400, width: 300, height: 38,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Country');
@@ -1102,7 +1102,7 @@ describe('StateParser', () => {
         x: 200, y: 350, width: 180, height: 40,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Größe');
@@ -1131,7 +1131,7 @@ describe('StateParser', () => {
         x: 10, y: 20, width: 100, height: 30,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const baujahr = state.elements.filter(e => e.name === 'Baujahr');
@@ -1150,7 +1150,7 @@ describe('StateParser', () => {
         x: 500, y: 500, width: 200, height: 40,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       // Original 5 elements + 1 new widget
@@ -1167,7 +1167,7 @@ describe('StateParser', () => {
         { role: 'datepicker', name: 'Date', x: 300, y: 400, width: 200, height: 40 },
       ]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       expect(state.elements.find(e => e.name === 'Size')).toBeDefined();
@@ -1184,7 +1184,7 @@ describe('StateParser', () => {
         x: 100, y: 500, width: 200, height: 40,
       }]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       const widget = state.elements.find(e => e.name === 'Empty Select');
@@ -1197,7 +1197,7 @@ describe('StateParser', () => {
       const cdp = makeMockCDP(nodes, nodes.map(() => makeBoxModel()));
       const page = makeWidgetPage([]);
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const state = await parser.parse();
 
       // Only the 5 AOM elements
@@ -1211,7 +1211,7 @@ describe('StateParser', () => {
     it('returns an empty Map when no targets are provided', async () => {
       const cdp = makeMockCDP([], []);
       const page = makeMockPage();
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const out = await parser.computeTargetFingerprints([]);
       expect(out.size).toBe(0);
     });
@@ -1228,7 +1228,7 @@ describe('StateParser', () => {
         }, {} as Record<number, unknown>);
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const out = await parser.computeTargetFingerprints([
         { id: 7, x: 10, y: 20 },
         { id: 42, x: 50, y: 60 },
@@ -1247,7 +1247,7 @@ describe('StateParser', () => {
         return [];
       });
 
-      const parser = new StateParser(page as any, cdp as any);
+      const parser = new StateParser(page, cdp as any);
       const out = await parser.computeTargetFingerprints([{ id: 1, x: 0, y: 0 }]);
       expect(out.size).toBe(0);
     });

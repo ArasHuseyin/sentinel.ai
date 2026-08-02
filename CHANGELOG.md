@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.1.7] - 2026-08-02
+
+### Fixed
+
+- **The published 4.1.6 package could not be imported at all.** `package.json`'s `files` field was a hand-maintained per-path allowlist, and the 4.1.6 refactor added `dist/exports.js` without updating it. Since `dist/index.js` starts with `export * from './exports.js'`, every `import { Sentinel } from '@isoldex/sentinel'` threw `ERR_MODULE_NOT_FOUND`. Type-checking and the unit suite were both green — only resolving the real tarball surfaced it. `files` is now the whole-directory allowlist `["dist", …]`, and `tsconfig.build.json` keeps tests and dev scripts out of `dist` so that stays safe.
+- **`ClaudeProvider` and `OpenAIProvider` never worked in any published build.** Both loaded their optional SDK with the bare `require` identifier, which does not exist in an ESM package (`"type": "module"`). Every construction threw `ReferenceError`, was swallowed by the surrounding `catch`, and surfaced as `"<sdk>" package not found` — even with the SDK correctly installed. Both now resolve via `createRequire(import.meta.url)`, and the "not found" message includes the underlying resolver error instead of masking it. The optional SDKs are devDependencies so this path is covered by tests.
+- **`@isoldex/sentinel/test` was unusable for consumers.** The Playwright fixture imports `@playwright/test`, which was only a devDependency, so the subpath threw on import. It is now declared as an optional peer dependency.
+- **`maxCostUsd` silently did nothing for most configurations.** `TokenTracker` was always constructed with `process.env.GEMINI_VERSION`, regardless of the active provider, so Claude/OpenAI runs were priced at Gemini rates. Worse, an unpriced model fell back to `{input: 0, output: 0}`, pinning `estimatedCostUsd` at exactly $0.00 — a spend cap that could never trigger. The tracker now takes its model from the provider (`LLMProvider.modelName`), `getUsage()` reports `pricingKnown`, and configuring `maxCostUsd` against an unpriced model warns once instead of passing silently. `maxTokens` is unaffected and works regardless of pricing.
+- **`withTimeout` leaked a timer on every call.** `Promise.race` abandons the losing promise but does not cancel it, so each guarded mouse/keyboard call kept Node's event loop alive for the full timeout window (10 s default) after the work had finished. The timer is now cleared when the race settles. This was also the cause of Jest's "worker process failed to exit gracefully"; `forceExit` has been removed from the Jest config so a future leak fails loudly instead of being masked.
+- **Unhandled rejections in the MCP server's signal and HTTP handlers.** `process.on('SIGINT', async …)` discards the returned promise, so a failing cleanup became an unhandled rejection and the process never reached `process.exit()`. Both signal handlers and the HTTP request handler now attach explicit terminal handling.
+
+### Changed
+
+- **`ActionEngine`'s eight optional constructor parameters became an `ActionEngineOptions` object.** Full call sites were previously an unlabelled `(…, undefined, 3000, null, 50, 0, false, 'aom', cache)` tail. The three required parameters (`page`, `stateParser`, `gemini`) stay positional, so existing three-argument construction is unchanged.
+- **Library diagnostics route through the `Logger` abstraction** instead of writing to `console` directly — `ActionEngine`, `Verifier`, `StateParser`, `ExtractionEngine`, `VisionGrounding`, `SentinelDriver`, `WorkflowRecorder`, `TokenTracker`, `withRetry`, and all four providers now accept an optional logger and default to a console logger, so `logFormat: 'json'` and custom sinks capture everything. CLI and MCP entry points still write to the console directly by design. Scope tags nest (`[Sentinel/Act]`), and `verbose: 0` remains fully silent.
+- **Default Claude model updated** from `claude-sonnet-4-6` to `claude-sonnet-5`, and the cost table gained the current Claude generation plus longest-prefix matching so dated snapshot ids (e.g. `claude-haiku-4-5-20251001`) resolve to their base pricing instead of "unknown".
+- **Deliberate promise-swallowing is now explicit** via `ignoreRejection` instead of 18 inline `.catch(() => {})`, so intentional swallows are greppable and an accidental one stands out in review.
+
+### Added
+
+- **`npm run verify:package`** — packs the tarball, installs it into a scratch project and imports it exactly as a consumer would, asserting every documented root export and subpath resolves. Wired into `prepublishOnly` and CI. This is the check that would have caught the 4.1.6 breakage; writing it also surfaced the two other packaging defects fixed above.
+- **ESLint 9 (flat config, type-aware on `src/`) and Prettier**, with `lint` / `format:check` gates in CI. `no-floating-promises`, `no-misused-promises` and `await-thenable` are errors; `no-explicit-any` is a warning so the ~116 pre-existing sites stay visible without blocking.
+- **Stricter TypeScript**: `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noImplicitOverride`, `noFallthroughCasesInSwitch`. Type-checking now covers tests and dev scripts as well as library source.
+- **Test coverage for the least-covered modules** — 672 tests (up from 605). `mouse.ts` 0 → 100 %, `selector-generator.ts` 23 → 100 %, `page-settle.ts` 13 → 85 %, `dropdown.ts` 5 → 45 %, plus `pickDateFromPopup` loop-termination coverage. A `coverageThreshold` ratchet keeps it from eroding. The provider "model defaults" tests now exercise the real constructors instead of local stub classes that re-implemented the logic — that stubbing is why the broken `require` shipped unnoticed.
+
+### Removed
+
+- **Hardcoded login credentials** (`src/onix-test.ts` and an e2e block) that were committed to this public repository. **The exposed password must be rotated** — deleting the files does not remove them from git history.
+- 27 compiled build artifacts (`.d.ts`, `.js.map`) accidentally committed under `src/`, and seven ad-hoc dev scripts moved from `src/` to `scripts/` so they no longer compile into `dist`.
+
+---
+
 ## [4.1.6] - 2026-05-19
 
 ### Changed

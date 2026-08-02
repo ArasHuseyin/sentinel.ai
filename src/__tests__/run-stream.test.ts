@@ -46,7 +46,7 @@ async function* makeRunStream(
     const item = queue.shift()!;
     if (item === null) break;
     if (item instanceof Error) { await runPromise; throw item; }
-    yield item as AgentStepEvent | AgentResult;
+    yield item;
   }
 
   await runPromise;

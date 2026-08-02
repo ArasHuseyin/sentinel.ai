@@ -1,14 +1,18 @@
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import type { GenerateOptions, LLMProvider, SchemaInput, TokenUsage } from '../llm-provider.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS, RETRY_MAX_OUTPUT_TOKENS } from '../llm-provider.js';
 import { LLMError } from '../../types/errors.js';
 import { withRetry } from '../with-retry.js';
+import { createLogger, type Logger } from '../logger.js';
 
 function isZodSchema(schema: unknown): schema is z.ZodType {
   return typeof schema === 'object' && schema !== null && '_def' in schema && typeof (schema as any).parse === 'function';
 }
 
 export interface OpenAIProviderOptions {
+  /** Sink for provider diagnostics (truncation retries). */
+  logger?: Logger;
   apiKey: string;
   model?: string;
   baseURL?: string;
@@ -20,23 +24,32 @@ export interface OpenAIProviderOptions {
  */
 export class OpenAIProvider implements LLMProvider {
   private client: any;
-  private model: string;
+  readonly modelName: string;
   onTokenUsage?: (usage: TokenUsage) => void;
+  private readonly logger: Logger;
 
   constructor(options: OpenAIProviderOptions) {
+    let OpenAI: new (opts: Record<string, unknown>) => unknown;
     try {
-      // Dynamic import to keep openai as optional peer dependency
-      const { OpenAI } = require('openai');
-      this.client = new OpenAI({
-        apiKey: options.apiKey,
-        ...(options.baseURL ? { baseURL: options.baseURL } : {}),
-      });
-    } catch {
+      // `openai` stays an optional dependency, so it is resolved at runtime
+      // rather than imported at module load. This package is ESM ("type":
+      // "module"), where the bare `require` identifier does not exist — using
+      // it threw ReferenceError and the catch below reported "not found" even
+      // when the SDK *was* installed, making this provider permanently unusable.
+      // createRequire gives ESM a real resolver anchored at this module.
+      const mod = createRequire(import.meta.url)('openai');
+      OpenAI = mod.OpenAI ?? mod.default ?? mod;
+    } catch (err) {
       throw new LLMError(
-        '"openai" package not found. Install it with: npm install openai'
+        `"openai" package not found. Install it with: npm install openai (${(err as Error).message})`
       );
     }
-    this.model = options.model ?? 'gpt-4o';
+    this.client = new OpenAI({
+      apiKey: options.apiKey,
+      ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+    });
+    this.modelName = options.model ?? 'gpt-4o';
+    this.logger = (options.logger ?? createLogger(false, 1)).child('OpenAI');
   }
 
   private reportUsage(response: any): void {
@@ -67,7 +80,7 @@ export class OpenAIProvider implements LLMProvider {
       }
       messages.push({ role: 'user', content: prompt });
       const response = await this.client.chat.completions.create({
-        model: this.model,
+        model: this.modelName,
         messages,
         max_tokens: cap,
         response_format: {
@@ -89,8 +102,8 @@ export class OpenAIProvider implements LLMProvider {
     return withRetry(async () => {
       let { content, truncated } = await callOnce(requestedCap);
       if (truncated && requestedCap < RETRY_MAX_OUTPUT_TOKENS) {
-        console.warn(
-          `[OpenAI] Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
+        this.logger.warn(
+          `Output truncated at ${requestedCap} tokens — retrying once at ${RETRY_MAX_OUTPUT_TOKENS}.`
         );
         ({ content, truncated } = await callOnce(RETRY_MAX_OUTPUT_TOKENS));
       }
@@ -108,7 +121,7 @@ export class OpenAIProvider implements LLMProvider {
   async analyzeImage(prompt: string, imageBase64: string, mimeType = 'image/png'): Promise<string> {
     return withRetry(async () => {
       const response = await this.client.chat.completions.create({
-        model: this.model,
+        model: this.modelName,
         messages: [
           {
             role: 'user',
@@ -133,7 +146,7 @@ export class OpenAIProvider implements LLMProvider {
       messages.push({ role: 'user', content: prompt });
 
       const response = await this.client.chat.completions.create({
-        model: this.model,
+        model: this.modelName,
         messages,
       });
       this.reportUsage(response);

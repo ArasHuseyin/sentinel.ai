@@ -1,5 +1,6 @@
 import type { Page } from 'playwright';
 import type { LLMProvider } from '../utils/llm-provider.js';
+import { createLogger, type Logger } from '../utils/logger.js';
 
 export interface BoundingBox {
   x: number;
@@ -24,10 +25,20 @@ const MIN_CONFIDENCE = 0.5;
  * OllamaProvider (with a vision model such as llava or bakllava).
  */
 export class VisionGrounding {
-  constructor(private provider: LLMProvider, private verbose: number = 1) {
+  private readonly logger: Logger;
+
+  constructor(
+    private provider: LLMProvider,
+    private verbose: number = 1,
+    logger?: Logger
+  ) {
+    // Falls back to a console logger at the same verbosity, so output is
+    // unchanged when no logger is injected — but a caller that configured JSON
+    // logging or a custom sink now captures these messages too.
+    this.logger = (logger ?? createLogger(false, (verbose as 0 | 1 | 2 | 3) ?? 1)).child('Vision');
     if (!provider.analyzeImage && this.verbose >= 1) {
-      console.warn(
-        '[VisionGrounding] The configured LLM provider does not implement analyzeImage. ' +
+      this.logger.warn(
+        'The configured LLM provider does not implement analyzeImage. ' +
         'Vision fallback will be disabled. Use a vision-capable model (Gemini, GPT-4o, Claude 3, llava).'
       );
     }
@@ -61,7 +72,7 @@ export class VisionGrounding {
     // silently reject every bbox with an unclear error.
     if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) ||
         viewportWidth < 1 || viewportHeight < 1) {
-      this.warnMsg(1, `[Vision] Refusing to run with invalid viewport ${viewportWidth}x${viewportHeight}`);
+      this.warnMsg(1, `Refusing to run with invalid viewport ${viewportWidth}x${viewportHeight}`);
       return null;
     }
 
@@ -99,7 +110,7 @@ If you cannot confidently locate the element, set found to false and omit the co
       const parsed = extractJSON(raw);
 
       if (!parsed?.found) {
-        this.warnMsg(1, `[Vision] Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`);
+        this.warnMsg(1, `Element not found: "${instruction}" — ${parsed?.reasoning ?? 'no reason given'}`);
         return null;
       }
 
@@ -111,13 +122,13 @@ If you cannot confidently locate the element, set found to false and omit the co
         parsed.width <= 0 ||
         parsed.height <= 0
       ) {
-        this.warnMsg(1, `[Vision] Incomplete bbox for "${instruction}" — missing or invalid coordinates`);
+        this.warnMsg(1, `Incomplete bbox for "${instruction}" — missing or invalid coordinates`);
         return null;
       }
 
       const confidence = typeof parsed.confidence === 'number' ? parsed.confidence : 1;
       if (confidence < MIN_CONFIDENCE) {
-        this.warnMsg(1, `[Vision] Low confidence (${confidence.toFixed(2)}) for "${instruction}" — rejecting`);
+        this.warnMsg(1, `Low confidence (${confidence.toFixed(2)}) for "${instruction}" — rejecting`);
         return null;
       }
 
@@ -131,15 +142,15 @@ If you cannot confidently locate the element, set found to false and omit the co
       if (cx < 0 || cy < 0 || cx > viewportWidth || cy > viewportHeight) {
         this.warnMsg(
           1,
-          `[Vision] Out-of-bounds bbox for "${instruction}": center (${cx.toFixed(0)},${cy.toFixed(0)}) outside viewport ${viewportWidth}x${viewportHeight}`
+          `Out-of-bounds bbox for "${instruction}": center (${cx.toFixed(0)},${cy.toFixed(0)}) outside viewport ${viewportWidth}x${viewportHeight}`
         );
         return null;
       }
 
-      this.log(2, `[Vision] Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`);
+      this.log(2, `Found element: "${instruction}" at (${cssX.toFixed(0)}, ${cssY.toFixed(0)}) conf=${confidence.toFixed(2)} — ${parsed.reasoning}`);
       return { x: cssX, y: cssY, width: cssW, height: cssH };
     } catch (err: any) {
-      console.error(`[Vision] findElement failed: ${err.message}`);
+      this.logger.warn(`findElement failed: ${err.message}`);
       return null;
     }
   }
@@ -159,17 +170,21 @@ If you cannot confidently locate the element, set found to false and omit the co
         'image/png'
       );
     } catch (err: any) {
-      console.error(`[Vision] describeScreen failed: ${err.message}`);
+      this.logger.warn(`describeScreen failed: ${err.message}`);
       return 'Could not describe screen.';
     }
   }
 
+  /** Level maps onto the shared verbose scale: 1 = info, 2 = notice, 3 = debug. */
   private log(level: number, msg: string): void {
-    if (this.verbose >= level) console.log(msg);
+    if (level >= 3) this.logger.debug(msg);
+    else if (level === 2) this.logger.notice(msg);
+    else this.logger.info(msg);
   }
 
+  /** See ActionEngine.warn: `verbose: 0` means silent, Logger.warn is always-on. */
   private warnMsg(level: number, msg: string): void {
-    if (this.verbose >= level) console.warn(msg);
+    if (this.verbose >= level) this.logger.warn(msg);
   }
 }
 
