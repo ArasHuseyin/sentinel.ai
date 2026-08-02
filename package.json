@@ -94,7 +94,7 @@
     "@playwright/test": "^1.59.1",
     "@types/dotenv": "^6.1.1",
     "@types/jest": "^30.0.0",
-    "@types/node": "^25.5.2",
+    "@types/node": "^26.1.2",
     "cross-env": "^10.1.0",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
