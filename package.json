@@ -70,6 +70,14 @@
   ],
   "author": "Huseyin Aras <hueseyin.aras1@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArasHuseyin/sentinel.ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ArasHuseyin/sentinel.ai/issues"
+  },
+  "homepage": "https://isoldex.ai",
   "peerDependencies": {
     "@playwright/test": ">=1.40.0",
     "playwright": ">=1.40.0"
