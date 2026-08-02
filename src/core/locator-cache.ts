@@ -158,7 +158,11 @@ export class FileLocatorCache implements ILocatorCache {
     const payload = JSON.stringify(Object.fromEntries(this.store), null, 2);
     try {
       await fs.promises.mkdir(dir, { recursive: true });
-      await fs.promises.writeFile(tmpPath, payload, 'utf-8');
+      // 0600: cached entries describe what was typed where. Values are redacted
+      // before they reach the cache, but the file still maps a site to the exact
+      // fields an automation touches — not something to leave world-readable on
+      // a shared host. The mode survives the rename into place.
+      await fs.promises.writeFile(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
       await fs.promises.rename(tmpPath, this.filePath);
     } catch (err) {
       try {
@@ -179,7 +183,10 @@ export class FileLocatorCache implements ILocatorCache {
       const dir = path.dirname(this.filePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const tmpPath = `${this.filePath}.${process.pid}.sync.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(Object.fromEntries(this.store), null, 2), 'utf-8');
+      fs.writeFileSync(tmpPath, JSON.stringify(Object.fromEntries(this.store), null, 2), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
       fs.renameSync(tmpPath, this.filePath);
     } catch {
       // Best-effort; final-flush errors are swallowed to avoid blocking process exit

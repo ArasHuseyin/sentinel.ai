@@ -10,7 +10,11 @@ import { createRequire } from 'node:module';
  * and from `dist/` in the published package, and npm always includes
  * package.json in the tarball.
  */
-const require = createRequire(import.meta.url);
-const pkg = require('../package.json') as { version?: string };
+// Deliberately not named `require`: when a toolchain transpiles this module to
+// CommonJS (ts-jest does, for parts of the graph), `const require = ...`
+// collides with the module wrapper's own `require` parameter and the file fails
+// to parse with "Identifier 'require' has already been declared".
+const requireFromHere = createRequire(import.meta.url);
+const pkg = requireFromHere('../package.json') as { version?: string };
 
 export const SENTINEL_VERSION: string = pkg.version ?? '0.0.0';

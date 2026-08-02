@@ -1,6 +1,7 @@
 import { jest, describe, it, expect } from '@jest/globals';
 import { Sentinel } from '../index.js';
 import type { ParallelTask, ParallelResult, SentinelOptions } from '../index.js';
+import { perTaskOptions } from '../core/parallel-runner.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -381,5 +382,49 @@ describe('Sentinel.parallel()', () => {
 
     expect(results).toHaveLength(2);
     expect(factory).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── Per-task option derivation ───────────────────────────────────────────────
+
+describe('perTaskOptions', () => {
+  it('leaves options untouched when no cost audit is configured', () => {
+    const options = { apiKey: 'k' } as SentinelOptions;
+    expect(perTaskOptions(options, 3)).toBe(options);
+  });
+
+  it('gives each task its own cost audit file', () => {
+    // Every worker builds its own TokenTracker, and TokenTracker.flush()
+    // rewrites the whole file on every LLM call. Sharing one path meant the
+    // workers overwrote each other and the audit under-reported spend by
+    // roughly a factor of `concurrency`.
+    const options = { apiKey: 'k', costAuditPath: 'audit/costs.json' } as SentinelOptions;
+    expect(perTaskOptions(options, 0).costAuditPath).toBe('audit/costs.0.json');
+    expect(perTaskOptions(options, 7).costAuditPath).toBe('audit/costs.7.json');
+  });
+
+  it('appends the index when the path has no extension', () => {
+    const options = { apiKey: 'k', costAuditPath: 'costs' } as SentinelOptions;
+    expect(perTaskOptions(options, 2).costAuditPath).toBe('costs.2');
+  });
+
+  it('preserves every other option', () => {
+    const options = {
+      apiKey: 'k',
+      costAuditPath: 'costs.json',
+      headless: true,
+      maxTokens: 500,
+    } as SentinelOptions;
+    const derived = perTaskOptions(options, 1);
+    expect(derived.headless).toBe(true);
+    expect(derived.maxTokens).toBe(500);
+  });
+
+  it('produces a distinct path for every index', () => {
+    const options = { apiKey: 'k', costAuditPath: 'costs.json' } as SentinelOptions;
+    const paths = new Set(
+      Array.from({ length: 8 }, (_, i) => perTaskOptions(options, i).costAuditPath)
+    );
+    expect(paths.size).toBe(8);
   });
 });

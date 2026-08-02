@@ -1,0 +1,70 @@
+name: Release
+
+# Publishing is triggered by pushing a version tag:
+#
+#   npm version 4.1.8 && git push --follow-tags
+#
+# The tag is the trigger *and* the source of truth: the job refuses to publish
+# if the tag and package.json disagree, which is what stops a mistyped tag from
+# shipping the wrong version under the right name.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for npm provenance — the published package carries a signed
+      # attestation linking it to this workflow run and commit.
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG" >&2
+            exit 1
+          fi
+          echo "Publishing $PKG"
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # `prepublishOnly` runs build + verify:package again during `npm publish`.
+      # Running it here as well means a packaging failure stops the job before
+      # it touches the registry, where nothing can be taken back.
+      - name: Build
+        run: npm run build
+
+      - name: Verify published package is importable
+        run: npm run verify:package
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

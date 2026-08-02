@@ -17,32 +17,30 @@ import { waitForPageSettle } from './act/page-settle.js';
 import { moveMouse } from './act/mouse.js';
 import { buildFailureMessage } from './act/diagnostics.js';
 import { filterRelevantElements } from './act/chunking.js';
-import { parseDateValue, formatNativeInputValue, pickDateFromPopup } from './act/datepicker.js';
 import { PatternCacheCoordinator } from './act/pattern-cache.js';
 import { BlockerRecovery } from './act/blocker-recovery.js';
 import { clickLocator as clickLocatorFn } from './act/click-locator.js';
-import { ignoreRejection } from '../utils/ignore-rejection.js';
+import { interpolateVariables, redactVariables, containsSecret } from './act/secrets.js';
 import {
-  focusDropdownPopupInput,
-  trySetNativeSelectValue,
-  clickBestMatchingOption,
-  isListboxPopoverVisible,
-  ensurePopoverClosed,
-} from './act/dropdown.js';
+  documentCentroid,
+  hasImpossibleCoordinates,
+  resolveViewportPoint,
+  readLabelAtPoint,
+  isCoordinateMismatch,
+  type ViewportPoint,
+} from './act/coordinates.js';
+import { fillSlider } from './act/slider.js';
+import { fillDateLike } from './act/date-fill.js';
+import { fillText, appendText } from './act/text-fill.js';
+import { performSelect } from './act/select-action.js';
+import { ignoreRejection } from '../utils/ignore-rejection.js';
+import { isListboxPopoverVisible } from './act/dropdown.js';
 
 // Public re-exports — consumers import these from '../api/act.js'.
 export type { ActOptions, ActionAttempt, ActionResult, ActionType } from './act/types.js';
 export type { DateParts } from './act/datepicker.js';
 export { filterRelevantElements } from './act/chunking.js';
 export { parseDateValue, formatNativeInputValue } from './act/datepicker.js';
-
-/**
- * Replaces %variable% placeholders in an instruction string.
- */
-function interpolateVariables(instruction: string, variables?: Record<string, string>): string {
-  if (!variables) return instruction;
-  return instruction.replace(/%(\w+)%/g, (_, key) => variables[key] ?? `%${key}%`);
-}
 
 /** Max retries after the LLM signals `notFound: true` (one scroll + re-ask per retry). */
 const MAX_NOT_FOUND_SCROLL_RETRIES = 1;
@@ -395,8 +393,44 @@ export class ActionEngine {
     }
   }
 
+  /**
+   * Writes a successful locator into the self-healing cache with any
+   * variable-derived value redacted back to its `%placeholder%`.
+   *
+   * `containsSecret` is a belt-and-braces check: if redaction did not fully
+   * cover the value (a variable shorter than the substring threshold embedded in
+   * a longer string, say), the value is dropped entirely rather than persisted.
+   * Losing a cached fill value costs one LLM call on the next run; leaking it
+   * costs a credential.
+   */
+  private cacheLocator(
+    url: string,
+    keyInstruction: string,
+    target: UIElement,
+    decision: { action: ActionType; value?: string },
+    variables?: Record<string, string>
+  ): void {
+    if (!this.locatorCache) return;
+    let value =
+      decision.value === undefined ? undefined : redactVariables(decision.value, variables);
+    if (value !== undefined && containsSecret(value, variables)) value = undefined;
+    this.locatorCache.set(url, keyInstruction, {
+      action: decision.action,
+      role: target.role,
+      name: target.name,
+      ...(value !== undefined ? { value } : {}),
+    });
+  }
+
   async act(instruction: string, options?: ActOptions): Promise<ActionResult> {
-    const resolvedInstruction = interpolateVariables(instruction, options?.variables);
+    const variables = options?.variables;
+    const resolvedInstruction = interpolateVariables(instruction, variables);
+    // Caches key on the *template*, never the resolved text. The resolved form
+    // contains whatever the caller passed as a variable — passwords, TANs, card
+    // numbers — and both caches can be file-backed, so using it as a key wrote
+    // those straight to disk. The template identifies the element just as well
+    // and additionally makes the entry reusable across different credentials.
+    const cacheKeyInstruction = instruction;
     const state = await this.stateParser.parse();
 
     // ── Self-Healing Locator: cache lookup ────────────────────────────────────
@@ -404,7 +438,7 @@ export class ActionEngine {
     // the cached locator is the one that just failed verification, so reusing
     // it would just cycle. Fix D forces a re-plan with verifier feedback.
     if (this.locatorCache && !(options?.previousFailures && options.previousFailures.length > 0)) {
-      const cached = this.locatorCache.get(state.url, resolvedInstruction);
+      const cached = this.locatorCache.get(state.url, cacheKeyInstruction);
       if (cached) {
         const target =
           state.elements.find(e => e.role === cached.role && e.name === cached.name) ?? null;
@@ -413,7 +447,14 @@ export class ActionEngine {
           this.log(1, `⚡ ${actionLabel}`);
           this.stateParser.invalidateCache();
           try {
-            await this.performAction(cached.action, target, cached.value);
+            // The stored value is redacted back to %placeholders% — re-resolve
+            // it against this call's variables so a cache hit types the current
+            // credential, not a stale one.
+            const cachedValue =
+              cached.value === undefined
+                ? undefined
+                : interpolateVariables(cached.value, variables);
+            await this.performAction(cached.action, target, cachedValue);
             await waitForPageSettle(this.page, this.domSettleTimeoutMs);
             return {
               success: true,
@@ -422,11 +463,11 @@ export class ActionEngine {
             };
           } catch {
             // Cached action failed — invalidate and fall through to LLM
-            this.locatorCache.invalidate(state.url, resolvedInstruction);
+            this.locatorCache.invalidate(state.url, cacheKeyInstruction);
           }
         } else {
           // Element no longer in DOM — invalidate stale entry
-          this.locatorCache.invalidate(state.url, resolvedInstruction);
+          this.locatorCache.invalidate(state.url, cacheKeyInstruction);
         }
       }
     }
@@ -695,13 +736,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
         await this.performAction(decision.action, target, decision.value, dropTarget);
         await waitForPageSettle(this.page, this.domSettleTimeoutMs);
         // ── Self-Healing Locator: populate cache on success ──────────────────
-        if (this.locatorCache && target && !isScrollWithoutTarget) {
-          this.locatorCache.set(currentState.url, resolvedInstruction, {
-            action: decision.action,
-            role: target.role,
-            name: target.name,
-            ...(decision.value !== undefined ? { value: decision.value } : {}),
-          });
+        if (target && !isScrollWithoutTarget) {
+          this.cacheLocator(currentState.url, cacheKeyInstruction, target, decision, variables);
         }
         // ── Pattern cache: record widget-level success for cross-site reuse ──
         if (target && !isScrollWithoutTarget) {
@@ -711,9 +747,11 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
               action: decision.action,
               role: target.role,
               name: target.name,
-              ...(decision.value !== undefined ? { value: decision.value } : {}),
+              ...(decision.value !== undefined
+                ? { value: redactVariables(decision.value, variables) }
+                : {}),
             },
-            resolvedInstruction,
+            cacheKeyInstruction,
             preActionFingerprints
           );
         }
@@ -751,13 +789,8 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
             // Retry the same candidate after removing the blocker
             await this.performAction(decision.action, target, decision.value, dropTarget);
             await waitForPageSettle(this.page, this.domSettleTimeoutMs);
-            if (this.locatorCache && target && !isScrollWithoutTarget) {
-              this.locatorCache.set(currentState.url, resolvedInstruction, {
-                action: decision.action,
-                role: target.role,
-                name: target.name,
-                ...(decision.value !== undefined ? { value: decision.value } : {}),
-              });
+            if (target && !isScrollWithoutTarget) {
+              this.cacheLocator(currentState.url, cacheKeyInstruction, target, decision, variables);
             }
             return {
               success: true,
@@ -949,6 +982,23 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
     }
   }
 
+  /**
+   * Executes one action against one element. Everything above this point has
+   * decided *what* to do; this decides *how*, and it is the only place that
+   * touches the mouse and keyboard.
+   *
+   * The order below is not arbitrary — each early return is a path where
+   * coordinates are either unnecessary or actively wrong:
+   *
+   *   target-less scroll → nothing to aim at
+   *   cross-frame        → coordinates are relative to the wrong document
+   *   upload / drag      → Playwright's locator APIs do it properly
+   *   radio              → the AOM rect covers the whole radio group
+   *   impossible coords  → scrolling cannot rescue y = -3184
+   *
+   * What remains needs a real viewport point, so it is resolved once, verified
+   * once, and then handed to the per-action handlers.
+   */
   private async performActionOnce(
     action: ActionType,
     target: UIElement | null,
@@ -1019,779 +1069,289 @@ ${visibleElements.map(e => `${e.id} | ${e.role} | ${e.name}${e.region ? ` | ${e.
       }
     }
 
-    const { x, y, width, height } = target.boundingClientRect;
-    const cx = x + width / 2;
-    const cy = y + height / 2;
-
-    const viewport = this.page.viewportSize() ?? { width: 1920, height: 1080 };
-
-    // Skip coordinate-based clicking entirely when coordinates are clearly impossible
-    // (e.g. y=-3184 on Booking.com autocomplete). Go straight to locator fallback.
-    if (cy < -500 || cx < -500) {
+    if (hasImpossibleCoordinates(documentCentroid(target))) {
+      const centroid = documentCentroid(target);
       this.warn(
         2,
-        `Impossible coordinates (${cx.toFixed(0)}, ${cy.toFixed(0)}) for "${target.name}" — using locator`
+        `Impossible coordinates (${centroid.x.toFixed(0)}, ${centroid.y.toFixed(0)}) for "${target.name}" — using locator`
       );
-      const locator = this.page.getByRole(target.role as any, { name: target.name, exact: false });
-      if (action === 'fill') {
-        await locator.fill(value || '', { timeout: 5000 });
-      } else {
-        await this.clickLocator(locator, { timeout: 5000 });
-      }
+      await this.actViaLocator(target, action, value, 5000);
       return;
     }
 
-    // Get scroll position to convert document coords to viewport coords
-    let scrollOffset = await this.page
-      .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
-      .catch(() => ({ x: 0, y: 0 }));
-    let vpCx = cx - (scrollOffset?.x ?? 0);
-    let vpCy = cy - (scrollOffset?.y ?? 0);
+    const point = await resolveViewportPoint(this.page, target);
 
-    // If element is outside viewport, scroll it into view
-    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
-      await this.page.evaluate(
-        ({ x, y }: { x: number; y: number }) => {
-          window.scrollTo({
-            left: Math.max(0, x - window.innerWidth / 2),
-            top: Math.max(0, y - window.innerHeight / 2),
-            behavior: 'instant',
-          });
-        },
-        { x: cx, y: cy }
-      );
-      await this.page.waitForTimeout(100);
-
-      scrollOffset = await this.page
-        .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
-        .catch(() => ({ x: 0, y: 0 }));
-      vpCx = cx - (scrollOffset?.x ?? 0);
-      vpCy = cy - (scrollOffset?.y ?? 0);
+    const mismatch = await this.detectCoordinateMismatch(action, target, point);
+    if (mismatch !== null) {
+      await this.recoverFromCoordinateMismatch(target, action, value, point, mismatch);
+      return;
     }
 
-    // Fallback: if scrollTo didn't work (SPAs may override scroll),
-    // try scrolling to page top first, then re-check
-    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
-      await this.page.evaluate(() => window.scrollTo(0, 0)).catch(ignoreRejection);
-      await this.page.waitForTimeout(100);
-      scrollOffset = await this.page
-        .evaluate(() => ({ x: window.scrollX, y: window.scrollY }))
-        .catch(() => ({ x: 0, y: 0 }));
-      vpCx = cx - (scrollOffset?.x ?? 0);
-      vpCy = cy - (scrollOffset?.y ?? 0);
+    await this.moveMouseHumanLike(action, point);
+    await this.dispatchAction(action, target, value, point);
+  }
+
+  /**
+   * Performs `action` through a Playwright locator instead of coordinates.
+   * Used whenever the AOM's geometry cannot be trusted.
+   */
+  private async actViaLocator(
+    target: UIElement,
+    action: ActionType,
+    value: string | undefined,
+    timeout: number,
+    name = target.name
+  ): Promise<void> {
+    const locator = this.page.getByRole(target.role as any, { name, exact: false });
+    if (action === 'fill') {
+      await locator.fill(value || '', { timeout });
+    } else {
+      await this.clickLocator(locator, { timeout });
     }
+  }
 
-    if (vpCx < 0 || vpCy < 0 || vpCx > viewport.width || vpCy > viewport.height) {
-      throw new ActionError(
-        `Element "${target.name}" is outside viewport at (${vpCx.toFixed(0)}, ${vpCy.toFixed(0)}) even after scrolling`,
-        { element: target.name, x: vpCx, y: vpCy }
-      );
+  /**
+   * Confirms the element at `point` is the one we meant to act on.
+   *
+   * Catches stale AOM geometry, where a dynamically-appeared element leaves
+   * coordinates pointing at a different field — the reproducible case was a
+   * "Motorleistung" input whose coordinates landed on "Treibstoff".
+   *
+   * Three cases opt out, all for the same underlying reason: the element at the
+   * coordinates is legitimately not the target.
+   *  - **slider + fill** — the locator fallback fails silently on ARIA-only
+   *    sliders, and `fillSlider` has its own three-strategy element lookup.
+   *  - **datepicker + fill** — same, via `fillDateLike`.
+   *  - **select with an open popover** — the popover structurally covers the
+   *    trigger, so `elementFromPoint` returns one of its options by design.
+   *
+   * @returns the conflicting label, or null when the coordinates are trustworthy.
+   */
+  private async detectCoordinateMismatch(
+    action: ActionType,
+    target: UIElement,
+    point: ViewportPoint
+  ): Promise<string | null> {
+    if (action !== 'fill' && action !== 'click' && action !== 'select') return null;
+    if (target.role === 'slider' && action === 'fill') return null;
+    if ((target.role === 'datepicker' || target.role === 'timepicker') && action === 'fill') {
+      return null;
     }
+    if (action === 'select' && (await isListboxPopoverVisible(this.page))) return null;
 
-    const clickX = vpCx;
-    const clickY = vpCy;
+    const hitName = await readLabelAtPoint(this.page, point);
+    if (!isCoordinateMismatch(hitName, target.name)) return null;
 
-    // Click-target verification: confirm the element at (clickX, clickY)
-    // actually corresponds to the intended target. Catches coordinate mismatches
-    // where a dynamically-appeared element has stale AOM coordinates pointing
-    // to a different field (e.g., Motorleistung coords hit Treibstoff).
-    //
-    // Skip for slider+fill: the locator.fill() fallback fails silently on ARIA-only
-    // sliders, but the dedicated slider-fill logic in the switch below has its own
-    // locator-based element lookup with 3 fallback strategies.
-    const isSliderFill = target?.role === 'slider' && action === 'fill';
-    const isDatepickerFill =
-      (target?.role === 'datepicker' || target?.role === 'timepicker') && action === 'fill';
+    this.warn(
+      2,
+      `Coordinate mismatch: "${target.name}" at (${point.x.toFixed(0)}, ${point.y.toFixed(0)}) hits "${hitName}" — using locator fallback`
+    );
+    return hitName;
+  }
 
-    // For `select` with a visible listbox popover: skip the coord-mismatch
-    // check. The popover structurally covers the trigger area with its first
-    // option, so `elementFromPoint(triggerX, triggerY)` legitimately returns
-    // an option element — not a real target mismatch. The switch-case below
-    // handles this via `isListboxPopoverVisible` → `clickBestMatchingOption`.
-    const skipCoordCheckForOpenSelect =
-      action === 'select' && (await isListboxPopoverVisible(this.page));
-
-    if (
-      target &&
-      !isSliderFill &&
-      !isDatepickerFill &&
-      !skipCoordCheckForOpenSelect &&
-      (action === 'fill' || action === 'click' || action === 'select')
-    ) {
-      const hitName = await this.page
-        .evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y) as HTMLElement | null;
-            if (!el) return '';
-            // Walk up to find the nearest labeled container
-            let node: HTMLElement | null = el;
-            for (let d = 0; d < 5 && node; d++) {
-              const label =
-                node.getAttribute('aria-label') ||
-                node.getAttribute('placeholder') ||
-                node.getAttribute('name') ||
-                '';
-              if (label) return label.toLowerCase();
-              const labelledBy = node.getAttribute('aria-labelledby');
-              if (labelledBy) {
-                const ref = document.getElementById(labelledBy);
-                if (ref) return ref.textContent?.trim().toLowerCase() || '';
-              }
-              node = node.parentElement;
-            }
-            return el.textContent?.trim().slice(0, 40).toLowerCase() || '';
-          },
-          { x: clickX, y: clickY }
-        )
-        .catch(() => '');
-
-      if (hitName && target.name) {
-        const targetLower = target.name.toLowerCase();
-        // Technical IDs (contain dots, no spaces) are container/group names, not real mismatches.
-        // e.g. "auto.fahrzeug.erstbesitzv-radiogroup" is the radiogroup containing the radio button.
-        const hitIsTechnicalId = /^[\w.-]+$/.test(hitName) && hitName.includes('.');
-        const mismatch =
-          !hitIsTechnicalId &&
-          hitName.length > 2 &&
-          targetLower.length > 2 &&
-          !hitName.includes(targetLower) &&
-          !targetLower.includes(hitName);
-        if (mismatch) {
-          // Coordinates point to wrong element — use Playwright locator as direct fallback.
-          // This is more reliable than coordinate-based clicking for dynamically positioned
-          // elements (dropdown options, conditional form fields, etc.).
-          this.warn(
-            2,
-            `Coordinate mismatch: "${target.name}" at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) hits "${hitName}" — using locator fallback`
-          );
-          // Try multiple locator strategies: full name, short name (after ':'), just last word
-          const nameVariants = [target.name];
-          if (target.name.includes(':')) {
-            nameVariants.push(target.name.split(':').pop()!.trim());
-          }
-          for (const name of nameVariants) {
-            try {
-              const locator = this.page.getByRole(target.role as any, { name, exact: false });
-              if (action === 'fill') {
-                await locator.fill(value || '', { timeout: 3000 });
-              } else {
-                await this.clickLocator(locator, { timeout: 3000 });
-              }
-              return; // locator click succeeded
-            } catch {
-              continue; // try next name variant
-            }
-          }
-          // All variants failed
-          throw new ActionError(
-            `Coordinate mismatch: target is "${target.name}" but element at (${clickX.toFixed(0)}, ${clickY.toFixed(0)}) is "${hitName}"`,
-            { element: target.name, hitElement: hitName }
-          );
-        }
+  /**
+   * Falls back to locators after a coordinate mismatch.
+   *
+   * Tries the full accessible name first, then the part after a colon —
+   * composite names like "Filter: Marke" are common, and the visible control is
+   * usually labelled with just the tail.
+   */
+  private async recoverFromCoordinateMismatch(
+    target: UIElement,
+    action: ActionType,
+    value: string | undefined,
+    point: ViewportPoint,
+    hitName: string
+  ): Promise<void> {
+    const nameVariants = [target.name];
+    if (target.name.includes(':')) {
+      nameVariants.push(target.name.split(':').pop()!.trim());
+    }
+    for (const name of nameVariants) {
+      try {
+        await this.actViaLocator(target, action, value, 3000, name);
+        return;
+      } catch {
+        continue;
       }
     }
+    throw new ActionError(
+      `Coordinate mismatch: target is "${target.name}" but element at (${point.x.toFixed(0)}, ${point.y.toFixed(0)}) is "${hitName}"`,
+      { element: target.name, hitElement: hitName }
+    );
+  }
 
-    // Human-like: move mouse along a Bézier curve to the target
-    if (
-      this.humanLike &&
-      (action === 'click' ||
-        action === 'double-click' ||
-        action === 'right-click' ||
-        action === 'hover' ||
-        action === 'fill' ||
-        action === 'append')
-    ) {
-      const cur = await this.page
-        .evaluate(() => ({
-          x: (window as any).__sentinelMouseX ?? 0,
-          y: (window as any).__sentinelMouseY ?? 0,
-        }))
-        .catch(() => ({ x: 0, y: 0 }));
-      await moveMouse(this.page, cur.x, cur.y, clickX, clickY);
-      await this.page
-        .evaluate(
-          ({ x, y }) => {
-            (window as any).__sentinelMouseX = x;
-            (window as any).__sentinelMouseY = y;
-          },
-          { x: clickX, y: clickY }
-        )
-        .catch(ignoreRejection);
-      await this.page.waitForTimeout(80 + Math.round(Math.random() * 120));
-    }
+  /**
+   * Moves the cursor to the target along a Bézier curve before acting.
+   *
+   * Only for actions a real user would approach with the mouse — keyboard-only
+   * and scroll actions get nothing, because a mouse path to them would be a
+   * fabricated signal rather than a realistic one.
+   */
+  private async moveMouseHumanLike(action: ActionType, point: ViewportPoint): Promise<void> {
+    if (!this.humanLike) return;
+    const MOUSE_ACTIONS: ActionType[] = [
+      'click',
+      'double-click',
+      'right-click',
+      'hover',
+      'fill',
+      'append',
+    ];
+    if (!MOUSE_ACTIONS.includes(action)) return;
 
+    const cur = await this.page
+      .evaluate(() => ({
+        x: (window as any).__sentinelMouseX ?? 0,
+        y: (window as any).__sentinelMouseY ?? 0,
+      }))
+      .catch(() => ({ x: 0, y: 0 }));
+    await moveMouse(this.page, cur.x, cur.y, point.x, point.y);
+    await this.page
+      .evaluate(
+        ({ x, y }) => {
+          (window as any).__sentinelMouseX = x;
+          (window as any).__sentinelMouseY = y;
+        },
+        { x: point.x, y: point.y }
+      )
+      .catch(ignoreRejection);
+    await this.page.waitForTimeout(80 + Math.round(Math.random() * 120));
+  }
+
+  /** Routes a verified action + point to the handler that knows how to do it. */
+  private async dispatchAction(
+    action: ActionType,
+    target: UIElement,
+    value: string | undefined,
+    point: ViewportPoint
+  ): Promise<void> {
     switch (action) {
       case 'click':
-        if (target.role === 'radio' || target.role === 'checkbox') {
-          await this.page.evaluate(
-            ({ x, y }: { x: number; y: number }) => {
-              const el = document.elementFromPoint(x, y) as HTMLElement | null;
-              if (!el) return;
-              const hiddenInput = el.querySelector(
-                'input[type="radio"], input[type="checkbox"]'
-              ) as HTMLInputElement | null;
-              if (hiddenInput) {
-                hiddenInput.click();
-                return;
-              }
-              const label = el.closest('label') as HTMLLabelElement | null;
-              if (label) {
-                label.click();
-                return;
-              }
-              el.click();
-            },
-            { x: clickX, y: clickY }
-          );
-        } else {
-          await withTimeout(
-            this.page.mouse.click(clickX, clickY),
-            10_000,
-            `click "${target.name}"`
-          );
-        }
-        break;
+        await this.performClick(target, point);
+        return;
 
       case 'double-click':
         await withTimeout(
-          this.page.mouse.dblclick(clickX, clickY),
+          this.page.mouse.dblclick(point.x, point.y),
           10_000,
           `double-click "${target.name}"`
         );
-        break;
+        return;
 
       case 'right-click':
         await withTimeout(
-          this.page.mouse.click(clickX, clickY, { button: 'right' }),
+          this.page.mouse.click(point.x, point.y, { button: 'right' }),
           10_000,
           `right-click "${target.name}"`
         );
-        break;
+        return;
 
-      case 'fill': {
-        // Slider: three strategies, in order:
-        //  1. Native <input type="range"> — set .value directly
-        //  2. Sibling text/number/tel input in shared container (e.g. Amazon price filter,
-        //     idealo, Zalando) — fill the spatially-closest input
-        //  3. Keyboard simulation on the slider itself (ARIA-only sliders) — uses
-        //     aria-valuemin/valuemax/valuenow + Arrow keys to reach target value
-        if (target && target.role === 'slider' && value) {
-          // Get an element handle for the actual slider via Playwright locator.
-          // Coordinates from the AOM may be stale or point to a different element
-          // (Amazon's Mindestpreis slider reports coords under the header).
-          let sliderHandle: import('playwright').ElementHandle | null = null;
-          try {
-            const loc = this.page.getByRole('slider', { name: target.name, exact: false }).first();
-            sliderHandle = await loc.elementHandle({ timeout: 2000 });
-          } catch {
-            /* fall through to coord-based lookup */
-          }
-
-          const handled = await this.page.evaluate(
-            ({ slider, x, y, val }: { slider: Node | null; x: number; y: number; val: string }) => {
-              const sliderEl =
-                (slider as HTMLElement | null) ??
-                (document.elementFromPoint(x, y) as HTMLElement | null);
-              if (!sliderEl) return 'none';
-
-              // Strategy 1: native range input
-              const rangeInput =
-                sliderEl.tagName === 'INPUT' && (sliderEl as HTMLInputElement).type === 'range'
-                  ? (sliderEl as HTMLInputElement)
-                  : (sliderEl.querySelector('input[type="range"]') as HTMLInputElement | null);
-              if (rangeInput) {
-                // Controlled-input bypass: frameworks (React, Preact, Solid,
-                // Vue with v-model) replace the value descriptor on the input
-                // instance to track their own state. A direct `.value = val`
-                // assignment writes to the framework-wrapped setter and is
-                // ignored / reverted on the next re-render. Using the native
-                // HTMLInputElement.prototype setter writes to the real DOM
-                // property, which the subsequent `input` event then carries
-                // back into the framework's state tree as a user-originated
-                // change. Universal across any framework built on controlled
-                // inputs — no library-specific detection.
-                // Detaching the setter is the point — re-bound via .call() below.
-                // eslint-disable-next-line @typescript-eslint/unbound-method
-                const nativeSetter = Object.getOwnPropertyDescriptor(
-                  window.HTMLInputElement.prototype,
-                  'value'
-                )?.set;
-                rangeInput.focus();
-                nativeSetter?.call(rangeInput, val);
-                rangeInput.dispatchEvent(new Event('input', { bubbles: true }));
-                rangeInput.dispatchEvent(new Event('change', { bubbles: true }));
-                return 'range';
-              }
-
-              // Strategy 2: sibling text/number/tel input in shared container
-              // Walk up until we find a container with numeric text inputs
-              let container: HTMLElement | null = sliderEl;
-              for (let depth = 0; depth < 8 && container; depth++) {
-                const inputs = Array.from(
-                  container.querySelectorAll<HTMLInputElement>(
-                    'input[type="text"], input[type="tel"], input[type="number"], input:not([type])'
-                  )
-                ).filter(inp => inp.offsetParent !== null && !inp.disabled && !inp.readOnly);
-
-                if (inputs.length > 0) {
-                  // Pick the input closest to the slider's centroid
-                  const sliderRect = sliderEl.getBoundingClientRect();
-                  const sx = sliderRect.left + sliderRect.width / 2;
-                  const sy = sliderRect.top + sliderRect.height / 2;
-                  const closest = inputs
-                    .map(inp => {
-                      const r = inp.getBoundingClientRect();
-                      const cx = r.left + r.width / 2;
-                      const cy = r.top + r.height / 2;
-                      return { inp, dist: Math.hypot(cx - sx, cy - sy) };
-                    })
-                    .sort((a, b) => a.dist - b.dist)[0];
-
-                  if (closest) {
-                    const input = closest.inp;
-                    // Detaching the setter is the point — re-bound via .call() below.
-                    // eslint-disable-next-line @typescript-eslint/unbound-method
-                    const nativeSetter = Object.getOwnPropertyDescriptor(
-                      window.HTMLInputElement.prototype,
-                      'value'
-                    )?.set;
-                    input.focus();
-                    nativeSetter?.call(input, val);
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                    return 'sibling';
-                  }
-                }
-                container = container.parentElement;
-              }
-
-              return 'keyboard'; // signal to caller to try keyboard simulation
-            },
-            { slider: sliderHandle, x: clickX, y: clickY, val: value }
-          );
-
-          if (handled === 'keyboard') {
-            // Strategy 3: keyboard simulation using aria-valuemin/valuemax/valuenow.
-            //
-            // Critical detail: many component libraries (MUI, Material-UI, Chakra,
-            // Radix) place `role="slider"` on an inner thumb element, with ARIA
-            // attributes ONLY on that thumb. `elementFromPoint` at the slider
-            // centroid returns the track or wrapper, which has no aria-* attrs
-            // and cannot receive focus meaningfully. We must walk from the hit
-            // element to the nearest `[role="slider"]` descendant/ancestor and
-            // focus it explicitly — arrow keys only move the thumb if it's the
-            // active element.
-            const sliderInfo = await this.page
-              .evaluate(
-                ({ slider, x, y }: { slider: Node | null; x: number; y: number }) => {
-                  const hit =
-                    (slider as HTMLElement | null) ??
-                    (document.elementFromPoint(x, y) as HTMLElement | null);
-                  if (!hit) return null;
-                  // Ancestor-walk to find the focusable slider element. The hit
-                  // target may be a track, rail, label, or styled wrapper that
-                  // doesn't itself respond to arrow keys. We walk UP (bounded)
-                  // and at each level check current + descendants.
-                  //
-                  // Preference order when both exist in the same subtree:
-                  //   1. input[type="range"] — native keyboard handler, reliable
-                  //      focus target, value stays in sync with aria-valuenow.
-                  //   2. [role="slider"] — explicit ARIA role on a custom element
-                  //      (span, div) that the library listens to for keydown.
-                  //
-                  // ARIA attributes may live on either element; we read them
-                  // from whichever we focus.
-                  let sliderEl: HTMLElement | null = null;
-                  let cursor: HTMLElement | null = hit;
-                  for (let depth = 0; depth < 8 && cursor && !sliderEl; depth++) {
-                    // Native range input wins — directly focusable and keyboard-native
-                    const nativeInput = cursor.matches?.('input[type="range"]')
-                      ? (cursor as HTMLInputElement)
-                      : cursor.querySelector<HTMLInputElement>('input[type="range"]');
-                    if (nativeInput) {
-                      sliderEl = nativeInput;
-                      break;
-                    }
-                    // Fall back to explicit ARIA slider role
-                    if (cursor.matches?.('[role="slider"]')) {
-                      sliderEl = cursor;
-                      break;
-                    }
-                    sliderEl = cursor.querySelector<HTMLElement>('[role="slider"]');
-                    if (!sliderEl) cursor = cursor.parentElement;
-                  }
-                  if (!sliderEl) return null;
-                  // Focus inside the evaluate so page.keyboard.press arrow
-                  // events land on the active element without a round-trip.
-                  sliderEl.focus();
-                  // Read ARIA values from sliderEl directly; if missing (e.g. we
-                  // focused the native input and ARIA lives on a sibling thumb),
-                  // fall back to ancestor/descendant lookup within a small window.
-                  const readAria = (attr: string): string | null => {
-                    const own = sliderEl!.getAttribute(attr);
-                    if (own !== null) return own;
-                    const parent = sliderEl!.parentElement;
-                    const sibling = parent?.querySelector(`[${attr}]`);
-                    return sibling?.getAttribute(attr) ?? null;
-                  };
-                  const min = parseFloat(readAria('aria-valuemin') ?? '0');
-                  const max = parseFloat(readAria('aria-valuemax') ?? '100');
-                  // When the focused element is a native range input, its .value
-                  // is the authoritative current value (always a number).
-                  const inputValue = (sliderEl as HTMLInputElement).value;
-                  const parsedInput = inputValue !== undefined ? parseFloat(inputValue) : NaN;
-                  const now = !isNaN(parsedInput)
-                    ? parsedInput
-                    : parseFloat(readAria('aria-valuenow') ?? String(min));
-                  return { min, max, now };
-                },
-                { slider: sliderHandle, x: clickX, y: clickY }
-              )
-              .catch(() => null);
-
-            if (sliderInfo && !isNaN(sliderInfo.min) && !isNaN(sliderInfo.max)) {
-              const targetValue = parseFloat(value);
-              if (
-                !isNaN(targetValue) &&
-                targetValue >= sliderInfo.min &&
-                targetValue <= sliderInfo.max
-              ) {
-                // Extra focus attempt via the Playwright handle if we have one —
-                // belt-and-suspenders for cases where the in-evaluate focus() is
-                // overridden by framework effects after return.
-                if (sliderHandle) {
-                  await sliderHandle.focus().catch(ignoreRejection);
-                }
-                const steps = Math.round(targetValue - sliderInfo.now);
-                const key = steps >= 0 ? 'ArrowRight' : 'ArrowLeft';
-                const count = Math.min(Math.abs(steps), 500); // cap to avoid runaway
-                for (let i = 0; i < count; i++) {
-                  await this.page.keyboard.press(key);
-                }
-              }
-            }
-          }
-
-          if (sliderHandle) {
-            await sliderHandle.dispose().catch(ignoreRejection);
-          }
-          break;
-        }
-
-        // Datepicker / Timepicker: universal three-strategy cascade.
-        //  1. Native <input type="date|time|datetime-local|month|week"> →
-        //     format to ISO, set via native value setter + dispatch events.
-        //     Avoids opening the OS-level picker UI.
-        //  2. Wrapped writable <input> (MUI, Ant Design, react-datepicker) →
-        //     click to focus, Ctrl+A to clear, type raw value, Tab to commit.
-        //  3. Popup-only (flatpickr readonly, pure-UI calendars) →
-        //     open popup, navigate via ARIA headings + locale-aware Intl
-        //     month detection, click target day cell.
-        if (target && (target.role === 'datepicker' || target.role === 'timepicker') && value) {
-          const parts = parseDateValue(value);
-
-          const classification = await this.page.evaluate(
-            ({ x, y }: { x: number; y: number }) => {
-              const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-              if (!hit) return { kind: 'unknown' as const };
-              const NATIVE_SEL =
-                'input[type="date"], input[type="time"], input[type="datetime-local"], ' +
-                'input[type="month"], input[type="week"]';
-              let node: HTMLElement | null = hit;
-              for (let depth = 0; depth < 6 && node; depth++) {
-                const nativeHere: HTMLInputElement | null = node.matches?.(NATIVE_SEL)
-                  ? (node as HTMLInputElement)
-                  : node.querySelector<HTMLInputElement>(NATIVE_SEL);
-                if (nativeHere) return { kind: 'native' as const, type: nativeHere.type };
-
-                const writable = Array.from(node.querySelectorAll<HTMLInputElement>('input')).find(
-                  i =>
-                    i.offsetParent !== null &&
-                    !i.disabled &&
-                    !i.readOnly &&
-                    i.type !== 'hidden' &&
-                    i.type !== 'button' &&
-                    i.type !== 'submit'
-                );
-                if (writable) return { kind: 'writable' as const };
-                node = node.parentElement;
-              }
-              return { kind: 'popup' as const };
-            },
-            { x: clickX, y: clickY }
-          );
-
-          // Strategy 1: native input
-          if (classification.kind === 'native' && parts) {
-            const formatted = formatNativeInputValue(classification.type, parts);
-            if (formatted) {
-              await this.page.evaluate(
-                ({ x, y, val, sel }: { x: number; y: number; val: string; sel: string }) => {
-                  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-                  if (!hit) return;
-                  let input: HTMLInputElement | null = null;
-                  let node: HTMLElement | null = hit;
-                  for (let d = 0; d < 6 && node && !input; d++) {
-                    input = node.matches?.(sel)
-                      ? (node as HTMLInputElement)
-                      : node.querySelector<HTMLInputElement>(sel);
-                    if (!input) node = node.parentElement;
-                  }
-                  if (!input) return;
-                  // Detaching the setter is the point — re-bound via .call() below.
-                  // eslint-disable-next-line @typescript-eslint/unbound-method
-                  const setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype,
-                    'value'
-                  )?.set;
-                  input.focus();
-                  setter?.call(input, val);
-                  input.dispatchEvent(new Event('input', { bubbles: true }));
-                  input.dispatchEvent(new Event('change', { bubbles: true }));
-                  input.blur();
-                },
-                {
-                  x: clickX,
-                  y: clickY,
-                  val: formatted,
-                  sel: 'input[type="date"], input[type="time"], input[type="datetime-local"], input[type="month"], input[type="week"]',
-                }
-              );
-              break;
-            }
-          }
-
-          // Strategy 2: writable wrapped input — click, clear, type, commit via Tab.
-          if (classification.kind === 'writable') {
-            await withTimeout(
-              this.page.mouse.click(clickX, clickY),
-              10_000,
-              `focus "${target.name}"`
-            );
-            await this.page.waitForTimeout(150);
-            await this.page.keyboard.press('Control+a');
-            await this.page.waitForTimeout(50);
-            const typeDelay = this.humanLike ? 90 + Math.round(Math.random() * 40) : 90;
-            await this.page.keyboard.type(value, { delay: typeDelay });
-            await this.page.keyboard.press('Tab').catch(ignoreRejection);
-            break;
-          }
-
-          // Strategy 3: popup-only — open calendar, navigate months, click day.
-          if (classification.kind === 'popup' && parts && parts.year && parts.month && parts.day) {
-            await this.page.mouse.click(clickX, clickY);
-            await this.page.waitForTimeout(400);
-            const ok = await pickDateFromPopup(this.page, parts);
-            if (!ok) {
-              await this.page.keyboard.press('Escape').catch(ignoreRejection);
-              throw new ActionError(
-                `Could not navigate datepicker popup for "${target.name}" to ${parts.year}-${parts.month}-${parts.day}`,
-                { element: target.name, value }
-              );
-            }
-            break;
-          }
-
-          // Unclassifiable or unparsable value → fall through to generic fill.
-        }
-
-        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
-
-        // For combobox/listbox: click may open a dropdown trigger.
-        // Locate the dropdown's internal search input via the ARIA popup
-        // contract (aria-controls / aria-owns, trigger subtree, or a
-        // visible popup-role element). See `focusDropdownPopupInput` for
-        // the scope rules — never ascends to ancestor divs, so it cannot
-        // grab unrelated inputs elsewhere on the page.
-        let isDropdownInput = false;
-        if (target.role === 'combobox' || target.role === 'listbox') {
-          isDropdownInput = await focusDropdownPopupInput(this.page, clickX, clickY);
-          if (!isDropdownInput) {
-            await this.page.waitForTimeout(300);
-            isDropdownInput = await focusDropdownPopupInput(this.page, clickX, clickY);
-          }
-        }
-
-        await this.page.keyboard.press('Control+a');
-        await this.page.waitForTimeout(150);
-        if (this.humanLike) {
-          await this.page.keyboard.type(value || '', {
-            delay: 90 + Math.round(Math.random() * 40),
-          });
-        } else {
-          await this.page.keyboard.type(value || '', { delay: 90 });
-        }
-
-        // Auto-select: after typing into a dropdown search, click the best
-        // matching option. Completes the dropdown interaction in one step
-        // instead of requiring a separate click step.
-        if (isDropdownInput && value) {
-          await this.page.waitForTimeout(400); // wait for filter/render
-          await clickBestMatchingOption(this.page, value).catch(() => false);
-        }
-        break;
-      }
+      case 'fill':
+        await this.performFill(target, value, point);
+        return;
 
       case 'append':
-        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
-        await this.page.keyboard.press('End');
-        await this.page.keyboard.press('Control+End');
-        await this.page.waitForTimeout(150);
-        if (this.humanLike) {
-          await this.page.keyboard.type(value || '', {
-            delay: 90 + Math.round(Math.random() * 40),
-          });
-        } else {
-          await this.page.keyboard.type(value || '', { delay: 90 });
-        }
-        break;
+        await appendText(this.page, target, value, point, this.humanLike);
+        return;
 
       case 'hover':
-        await withTimeout(this.page.mouse.move(clickX, clickY), 10_000, `hover "${target.name}"`);
-        break;
+        await withTimeout(this.page.mouse.move(point.x, point.y), 10_000, `hover "${target.name}"`);
+        return;
 
       case 'press':
-        await withTimeout(this.page.mouse.click(clickX, clickY), 10_000, `focus "${target.name}"`);
+        await withTimeout(
+          this.page.mouse.click(point.x, point.y),
+          10_000,
+          `focus "${target.name}"`
+        );
         await this.page.keyboard.press(value || 'Enter');
-        break;
+        return;
 
-      case 'select': {
-        // If a listbox popover is ALREADY visible, the planner opened it in a
-        // prior step — go straight to clicking the matching option. We skip
-        // both the native <select>.value setter AND the opening click here:
-        //   - The setter-shortcut is wrong for sites that surface options via
-        //     custom anchor widgets backed by a hidden <select>: Amazon-style
-        //     dropdowns route user intent through anchor clicks, not through
-        //     programmatic change events on the underlying <select>, so
-        //     setting the value silently succeeds but the UI never reacts.
-        //   - Clicking the trigger would TOGGLE the popover closed.
-        // Matches real-user behaviour: dropdown is open, pick the visible option.
-        const popoverAlreadyOpen = await isListboxPopoverVisible(this.page);
-        if (popoverAlreadyOpen && value) {
-          const clicked = await clickBestMatchingOption(this.page, value).catch(() => false);
-          if (clicked) {
-            await ensurePopoverClosed(this.page, clickX, clickY);
-            break;
-          }
-          // Match failed — fall through to fresh open+select.
-        }
-
-        // Native <select> first. AOM reports native selects as `combobox`,
-        // which previously routed them through the custom-dropdown flow
-        // (click → search-input walk → type → option-click). That path is
-        // wrong for OS-owned popups — the dropdown can't be driven from
-        // the DOM, and the ancestor-walk input search could grab unrelated
-        // inputs on the page (e.g. a top-nav search bar) because a common
-        // layout container lived within 5 levels. Bypass the click entirely
-        // and drive the HTMLSelectElement via its native value setter.
-        if (value && (await trySetNativeSelectValue(this.page, clickX, clickY, value))) {
-          break;
-        }
-
-        if (!popoverAlreadyOpen) {
-          await withTimeout(
-            this.page.mouse.click(clickX, clickY),
-            10_000,
-            `open select "${target.name}"`
-          );
-        }
-
-        if (target.role === 'combobox' || target.role === 'listbox') {
-          // Custom dropdown: open → focus popup-scoped input → type → click option.
-          const activeIsInput = await this.page
-            .evaluate(() => {
-              const active = document.activeElement;
-              return active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
-            })
-            .catch(() => false);
-
-          // Only type the value when we actually focused a search input inside
-          // the popover. Listboxes WITHOUT a search input (plain <li>/<a
-          // role="option"> lists) would otherwise receive keystrokes into the
-          // document body, which on many sites closes the popover or shifts
-          // focus to an unrelated global search bar — destroying the options
-          // before we can match+click them.
-          let hasInput = activeIsInput;
-          if (!hasInput) {
-            await this.page.waitForTimeout(300);
-            hasInput = await focusDropdownPopupInput(this.page, clickX, clickY);
-          }
-
-          if (hasInput) {
-            await this.page.keyboard.type(value || '');
-            await this.page.waitForTimeout(500);
-          } else {
-            // No search input — give the popover a beat to finish rendering
-            // its options, then go straight to match-and-click.
-            await this.page.waitForTimeout(200);
-          }
-
-          const clicked = await clickBestMatchingOption(this.page, value || '').catch(() => false);
-
-          if (!clicked) {
-            // Fallback: press Enter to confirm current selection. Native
-            // <select> dropdowns close on Enter; custom popovers may not
-            // — the trailing `ensurePopoverClosed` takes care of that.
-            await this.page.keyboard.press('Enter');
-          }
-
-          // Universal close: if the popover is still open (trigger's
-          // aria-expanded still true near our click coords), dispatch
-          // Escape. Covers custom popovers whose close-handler didn't
-          // fire from our synthetic option click or from Enter — without
-          // affecting spec-compliant widgets (they've already closed, so
-          // the stuck check returns false and Escape is skipped).
-          await ensurePopoverClosed(this.page, clickX, clickY);
-        } else {
-          // Native <select> fallback when the upfront detection missed
-          // (e.g. an overlay sits on top of the <select> at click coords).
-          await this.page.evaluate(
-            ({ x, y, val }: { x: number; y: number; val: string }) => {
-              const el = document.elementFromPoint(x, y) as HTMLSelectElement | null;
-              if (el && el.tagName === 'SELECT') {
-                const opt = Array.from(el.options).find(o => o.text === val || o.value === val);
-                if (opt) {
-                  el.value = opt.value;
-                  el.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-              }
-            },
-            { x: clickX, y: clickY, val: value || '' }
-          );
-        }
-        break;
-      }
+      case 'select':
+        await performSelect(this.page, target, value, point);
+        return;
 
       case 'scroll-down':
-        await this.page.evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y);
-            if (el) el.scrollBy(0, 300);
-          },
-          { x: clickX, y: clickY }
-        );
-        break;
+        await this.scrollElementAt(point, 300);
+        return;
 
       case 'scroll-up':
-        await this.page.evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y);
-            if (el) el.scrollBy(0, -300);
-          },
-          { x: clickX, y: clickY }
-        );
-        break;
+        await this.scrollElementAt(point, -300);
+        return;
 
       case 'scroll-to':
-        await this.page.evaluate(
-          ({ x, y }: { x: number; y: number }) => {
-            const el = document.elementFromPoint(x, y);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          },
-          { x: clickX, y: clickY }
-        );
-        break;
+        await this.page.evaluate(({ x, y }: ViewportPoint) => {
+          document.elementFromPoint(x, y)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, point);
+        return;
     }
+  }
+
+  /**
+   * Clicks at `point`.
+   *
+   * Radios and checkboxes are clicked from inside the page rather than with the
+   * mouse: the visible control is routinely a styled `<span>` with the real
+   * `<input>` hidden beneath it, and a synthetic mouse click on the decoration
+   * does not toggle anything. Preference order — the hidden input, then the
+   * wrapping `<label>` (which forwards the click), then the element itself.
+   */
+  private async performClick(target: UIElement, point: ViewportPoint): Promise<void> {
+    if (target.role !== 'radio' && target.role !== 'checkbox') {
+      await withTimeout(this.page.mouse.click(point.x, point.y), 10_000, `click "${target.name}"`);
+      return;
+    }
+    await this.page.evaluate(({ x, y }: ViewportPoint) => {
+      const el = document.elementFromPoint(x, y) as HTMLElement | null;
+      if (!el) return;
+      const hiddenInput = el.querySelector(
+        'input[type="radio"], input[type="checkbox"]'
+      ) as HTMLInputElement | null;
+      if (hiddenInput) {
+        hiddenInput.click();
+        return;
+      }
+      const label = el.closest('label') as HTMLLabelElement | null;
+      if (label) {
+        label.click();
+        return;
+      }
+      el.click();
+    }, point);
+  }
+
+  /**
+   * Fills a control, choosing by role.
+   *
+   * Sliders and date controls own their interaction completely; a date control
+   * whose value could not be parsed falls through to a plain text fill, since a
+   * free-format date field is just a text field.
+   */
+  private async performFill(
+    target: UIElement,
+    value: string | undefined,
+    point: ViewportPoint
+  ): Promise<void> {
+    if (target.role === 'slider' && value) {
+      await fillSlider(this.page, target, value, point);
+      return;
+    }
+    if ((target.role === 'datepicker' || target.role === 'timepicker') && value) {
+      const handled = await fillDateLike(this.page, target, value, point, this.humanLike);
+      if (handled) return;
+    }
+    await fillText(this.page, target, value, point, this.humanLike);
+  }
+
+  /** Scrolls whichever element sits at `point` by `dy` pixels. */
+  private async scrollElementAt(point: ViewportPoint, dy: number): Promise<void> {
+    await this.page.evaluate(
+      ({ x, y, delta }: { x: number; y: number; delta: number }) => {
+        document.elementFromPoint(x, y)?.scrollBy(0, delta);
+      },
+      { x: point.x, y: point.y, delta: dy }
+    );
   }
 
   /**

@@ -427,8 +427,14 @@ describeE2E('E2E: Real Browser Tests', () => {
       const usage = sentinel.getTokenUsage();
       console.log(`Cost: ${usage.totalTokens} tokens, $${usage.estimatedCostUsd.toFixed(5)}`);
 
-      // We should have captured at least one API response
-      expect(responses.length).toBeGreaterThanOrEqual(0); // lenient — network interception is best-effort
+      // `>= 0` is what this used to assert — a condition no array can violate,
+      // so the test reported success whether interception worked, returned
+      // nothing, or was never wired up at all. The whole point of the test is
+      // that a search fires GraphQL calls and we capture them.
+      expect(responses.length).toBeGreaterThan(0);
+      // And that what came back is actually parsed response data, not the
+      // pattern-matching machinery yielding empty objects.
+      expect(responses.some(r => r !== null && typeof r === 'object')).toBe(true);
     }, 120_000);
   });
 

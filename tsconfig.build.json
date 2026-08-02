@@ -9,7 +9,15 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "noEmit": false
+    "noEmit": false,
+    // No maps in the tarball. The base config emits both for local debugging,
+    // but `files: ["dist"]` ships no `src/`, so every published .js.map and
+    // .d.ts.map pointed at sources that were not there — 108 files and 390 kB
+    // (37% of the package) of references that no debugger could resolve.
+    // The alternatives were shipping src/ or inlining it via `inlineSources`,
+    // both of which make the package bigger to fix a problem nobody hit.
+    "sourceMap": false,
+    "declarationMap": false
   },
   "include": ["src/**/*"],
   "exclude": ["src/__tests__/**", "node_modules", "dist", "examples", "scripts"]

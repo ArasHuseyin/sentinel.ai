@@ -80,9 +80,13 @@ export interface TokenTrackerOptions {
   budget?: TokenBudget;
   /**
    * Optional JSON file path for persistent cost audit. When set, the tracker
-   * loads prior entries at construction time and appends every `track()` call
-   * back to disk. Survives process restarts and is mergeable across parallel
-   * runs (each run gets a distinct file, aggregated externally).
+   * loads prior entries at construction time and rewrites the whole file on
+   * every `track()` call. Survives process restarts.
+   *
+   * One tracker per file. Two trackers sharing a path overwrite each other —
+   * `Sentinel.parallel()` therefore suffixes the caller's path per task
+   * (`costs.json` → `costs.0.json`, …) instead of handing the same path to
+   * every worker.
    *
    * Writes are synchronous — acceptable at typical agent cadences (≪100
    * LLM calls per second). Not suitable for hot loops.

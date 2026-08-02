@@ -14,37 +14,36 @@ import { Sentinel } from '../index.js';
 import { SENTINEL_VERSION } from '../version.js';
 import type { SentinelOptions } from '../index.js';
 import { ignoreRejection } from '../utils/ignore-rejection.js';
+import { createSessionManager, type RunExclusive } from './session.js';
+import {
+  readSecurityConfig,
+  checkRebinding,
+  checkAuth,
+  readBodyLimited,
+  BodyTooLargeError,
+  isPubliclyBound,
+} from './http-security.js';
 
 // ─── Sentinel session ─────────────────────────────────────────────────────
 //
 // The MCP server keeps a single browser session alive for the duration of the
 // process. Tools that don't specify a URL operate on the currently open page.
+// Initialisation and tool execution are serialised — see ./session.ts.
 
-let sentinel: Sentinel | null = null;
-
-async function getOrInit(): Promise<Sentinel> {
-  if (sentinel) return sentinel;
-
+const sessionManager = createSessionManager((): SentinelOptions => {
   const apiKey = process.env.GEMINI_API_KEY ?? '';
   if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
-
-  const options: SentinelOptions = {
+  return {
     apiKey,
     headless: process.env.SENTINEL_HEADLESS !== 'false',
     verbose: 0,
   };
+});
 
-  sentinel = new Sentinel(options);
-  await sentinel.init();
-  return sentinel;
-}
-
-async function cleanup() {
-  if (sentinel) {
-    await sentinel.close().catch(ignoreRejection);
-    sentinel = null;
-  }
-}
+// Wrapped rather than aliased: passing the members directly as values detaches
+// them from the manager, which is exactly what `unbound-method` warns about.
+const getOrInit = (): Promise<Sentinel> => sessionManager.getOrInit();
+const cleanup = (): Promise<void> => sessionManager.cleanup();
 
 // `process.on` discards the returned promise, so an async listener that rejects
 // becomes an unhandled rejection and the process never reaches process.exit().
@@ -61,29 +60,56 @@ process.on('SIGTERM', exitAfterCleanup);
 export type SessionFactory = () => Promise<Sentinel>;
 export type CleanupFn = () => Promise<void>;
 
+/** Shape the MCP SDK expects back from a tool handler. */
+type ToolResult = {
+  content: Array<
+    { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+  >;
+  isError?: boolean;
+};
+
+const text = (value: string): ToolResult => ({ content: [{ type: 'text', text: value }] });
+const json = (value: unknown): ToolResult => text(JSON.stringify(value, null, 2));
+
 export function registerTools(
   server: McpServer,
   sessionFactory: SessionFactory,
-  cleanupFn: CleanupFn = async () => {}
+  cleanupFn: CleanupFn = async () => {},
+  /**
+   * Serialises tool execution against the shared browser. Defaults to running
+   * inline so tests (and the stdio transport, which is single-client by
+   * construction) need not care.
+   */
+  runExclusive: RunExclusive = fn => fn()
 ): void {
+  /**
+   * Every tool body is "get the session, do one thing, report errors as tool
+   * errors rather than transport errors". Factoring it out removes seven
+   * identical try/catch blocks and — more importantly — guarantees no handler
+   * can forget the exclusivity wrapper.
+   */
+  const tool = (fn: (s: Sentinel) => Promise<ToolResult>) => (): Promise<ToolResult> =>
+    runExclusive(async () => {
+      try {
+        return await fn(await sessionFactory());
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `❌ Error: ${(err as Error).message}` }],
+          isError: true,
+        };
+      }
+    });
   // ── goto ──────────────────────────────────────────────────────────────────
 
   server.tool(
     'sentinel_goto',
     'Navigate the browser to a URL',
     { url: z.string().describe('The URL to navigate to') },
-    async ({ url }) => {
-      try {
-        const s = await sessionFactory();
+    ({ url }) =>
+      tool(async s => {
         await s.goto(url);
-        return { content: [{ type: 'text' as const, text: `Navigated to ${url}` }] };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+        return text(`Navigated to ${url}`);
+      })()
   );
 
   // ── act ───────────────────────────────────────────────────────────────────
@@ -98,25 +124,11 @@ export function registerTools(
         .optional()
         .describe('Variable substitutions for %varName% placeholders'),
     },
-    async ({ instruction, variables }) => {
-      try {
-        const s = await sessionFactory();
-        const result = await s.act(instruction, variables ? { variables: variables } : undefined);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+    ({ instruction, variables }) =>
+      tool(async s => {
+        const result = await s.act(instruction, variables ? { variables } : undefined);
+        return text(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
+      })()
   );
 
   // ── extract ───────────────────────────────────────────────────────────────
@@ -131,25 +143,8 @@ export function registerTools(
         .optional()
         .describe('JSON Schema describing the expected output structure'),
     },
-    async ({ instruction, schema }) => {
-      try {
-        const s = await sessionFactory();
-        const result = await s.extract(instruction, (schema ?? { type: 'object' }) as any);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+    ({ instruction, schema }) =>
+      tool(async s => json(await s.extract(instruction, (schema ?? { type: 'object' }) as any)))()
   );
 
   // ── observe ───────────────────────────────────────────────────────────────
@@ -163,25 +158,7 @@ export function registerTools(
         .optional()
         .describe('Optional focus hint, e.g. "Find login-related elements"'),
     },
-    async ({ instruction }) => {
-      try {
-        const s = await sessionFactory();
-        const elements = await s.observe(instruction ?? undefined);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(elements, null, 2),
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+    ({ instruction }) => tool(async s => json(await s.observe(instruction ?? undefined)))()
   );
 
   // ── run ───────────────────────────────────────────────────────────────────
@@ -195,32 +172,17 @@ export function registerTools(
         .describe('The goal to achieve, e.g. "Search for laptops and extract the top 3 results"'),
       maxSteps: z.number().optional().describe('Maximum number of steps (default: 15)'),
     },
-    async ({ goal, maxSteps }) => {
-      try {
-        const s = await sessionFactory();
+    ({ goal, maxSteps }) =>
+      tool(async s => {
         const result = await s.run(goal, { maxSteps: maxSteps ?? 15 });
-        const summary = {
+        return json({
           goalAchieved: result.goalAchieved,
           totalSteps: result.totalSteps,
           message: result.message,
           data: result.data ?? null,
           tokens: s.getTokenUsage(),
-        };
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(summary, null, 2),
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+        });
+      })()
   );
 
   // ── screenshot ────────────────────────────────────────────────────────────
@@ -229,34 +191,24 @@ export function registerTools(
     'sentinel_screenshot',
     'Take a screenshot of the current page and return it as base64',
     {},
-    async () => {
-      try {
-        const s = await sessionFactory();
-        const buf = await s.screenshot();
-        return {
-          content: [
-            {
-              type: 'image' as const,
-              data: buf.toString('base64'),
-              mimeType: 'image/png',
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+    tool(async s => {
+      const buf = await s.screenshot();
+      return {
+        content: [{ type: 'image', data: buf.toString('base64'), mimeType: 'image/png' }],
+      };
+    })
   );
 
   // ── close ─────────────────────────────────────────────────────────────────
 
-  server.tool('sentinel_close', 'Close the browser session', {}, async () => {
-    await cleanupFn();
-    return { content: [{ type: 'text' as const, text: 'Browser session closed.' }] };
-  });
+  // Closing must queue behind in-flight tool calls, otherwise it can tear the
+  // browser down while another request is mid-action.
+  server.tool('sentinel_close', 'Close the browser session', {}, () =>
+    runExclusive(async () => {
+      await cleanupFn();
+      return text('Browser session closed.');
+    })
+  );
 
   // ── token_usage ───────────────────────────────────────────────────────────
 
@@ -264,25 +216,7 @@ export function registerTools(
     'sentinel_token_usage',
     'Get accumulated token usage and estimated cost for this session',
     {},
-    async () => {
-      try {
-        const s = await sessionFactory();
-        const usage = s.getTokenUsage();
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(usage, null, 2),
-            },
-          ],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `❌ Error: ${(err as Error).message}` }],
-          isError: true,
-        };
-      }
-    }
+    tool(async s => json(s.getTokenUsage()))
   );
 }
 
@@ -301,6 +235,21 @@ export function registerTools(
  * process are decoupled — shared team instance, Docker/Kubernetes deployments,
  * and local dev workflows where you want to rebuild Sentinel without
  * restarting the MCP client (client auto-reconnects with exponential backoff).
+ *
+ * HTTP-mode security knobs (all optional, safe defaults):
+ *
+ *   SENTINEL_MCP_TOKEN            Shared secret; clients send
+ *                                 `Authorization: Bearer <token>`. **Required**
+ *                                 when SENTINEL_MCP_HOST is not loopback —
+ *                                 startup fails otherwise.
+ *   SENTINEL_MCP_ALLOWED_HOSTS    Comma-separated extra `Host` values to accept
+ *                                 (loopback is always accepted).
+ *   SENTINEL_MCP_ALLOWED_ORIGINS  Comma-separated extra `Origin` values.
+ *   SENTINEL_MCP_MAX_BODY_BYTES   Request body cap (default 4 MiB).
+ *
+ * Note that every request drives the *same* browser session, and tool calls are
+ * therefore serialised. HTTP mode is for decoupling the client, not for serving
+ * concurrent users.
  */
 export async function startServer() {
   if (process.env.SENTINEL_MCP_HTTP === '1') {
@@ -309,7 +258,8 @@ export async function startServer() {
     await startHttpTransport();
   } else {
     const server = new McpServer({ name: 'sentinel', version: SENTINEL_VERSION });
-    registerTools(server, getOrInit, cleanup);
+    // JSON-RPC permits pipelined requests even over stdio, so serialise here too.
+    registerTools(server, getOrInit, cleanup, sessionManager.runExclusive);
     const transport = new StdioServerTransport();
     await server.connect(transport);
   }
@@ -325,6 +275,20 @@ const SSE_HEARTBEAT_INTERVAL_MS = 25_000;
 async function startHttpTransport(): Promise<void> {
   const port = Number(process.env.SENTINEL_MCP_PORT ?? 3333);
   const host = process.env.SENTINEL_MCP_HOST ?? '127.0.0.1';
+  const security = readSecurityConfig(host, port);
+
+  // Fail closed. Binding to 0.0.0.0 is the documented move for the Docker and
+  // Kubernetes setups, and without a token it publishes unauthenticated remote
+  // control of a real browser — including whatever sessions it has logged into.
+  // Refusing to start is the only safe default; an operator who genuinely wants
+  // an open endpoint can set SENTINEL_MCP_TOKEN to a known value.
+  if (isPubliclyBound(host) && !security.token) {
+    throw new Error(
+      `Refusing to start: SENTINEL_MCP_HOST=${host} exposes the MCP server beyond this machine ` +
+        `but SENTINEL_MCP_TOKEN is not set. Set a token (clients send it as ` +
+        `"Authorization: Bearer <token>"), or bind to 127.0.0.1.`
+    );
+  }
 
   // Stateless mode pattern (per MCP SDK docs): create a fresh McpServer and
   // transport per HTTP request. Sharing a single transport across requests
@@ -337,6 +301,23 @@ async function startHttpTransport(): Promise<void> {
     if (req.url !== '/mcp') {
       res.statusCode = 404;
       res.end('Not Found — MCP endpoint is /mcp');
+      return;
+    }
+
+    // DNS-rebinding guard before anything else: any web page can POST to
+    // 127.0.0.1, so a loopback bind is not by itself an access control.
+    const rebinding = checkRebinding(req, security);
+    if (rebinding) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ error: rebinding }));
+      return;
+    }
+
+    const unauthorised = checkAuth(req, security);
+    if (unauthorised) {
+      res.statusCode = 401;
+      res.setHeader('WWW-Authenticate', 'Bearer');
+      res.end(JSON.stringify({ error: unauthorised }));
       return;
     }
 
@@ -387,7 +368,9 @@ async function startHttpTransport(): Promise<void> {
     let perReqTransport: StreamableHTTPServerTransport | null = null;
     try {
       perReqServer = new McpServer({ name: 'sentinel', version: SENTINEL_VERSION });
-      registerTools(perReqServer, getOrInit, cleanup);
+      // All requests drive the same browser, so tool execution is serialised
+      // through the session manager's queue.
+      registerTools(perReqServer, getOrInit, cleanup, sessionManager.runExclusive);
       perReqTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       } as unknown as ConstructorParameters<typeof StreamableHTTPServerTransport>[0]);
@@ -396,9 +379,8 @@ async function startHttpTransport(): Promise<void> {
       );
 
       // Parse JSON body (pre-parsing lets the transport skip its own body reader).
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      const bodyStr = Buffer.concat(chunks).toString('utf-8');
+      // Size-capped: an unterminated body used to be buffered without limit.
+      const bodyStr = await readBodyLimited(req, security.maxBodyBytes);
       const body = bodyStr ? JSON.parse(bodyStr) : undefined;
 
       // On response close, tear down the per-request plumbing (but NOT the
@@ -415,7 +397,9 @@ async function startHttpTransport(): Promise<void> {
       console.error('[Sentinel MCP] HTTP request error:', (err as Error).message);
       stopHeartbeat();
       if (!res.writableEnded) {
-        res.statusCode = 500;
+        // An oversized body is the client's error, not the server's — say so,
+        // otherwise it looks like a crash and clients retry it.
+        res.statusCode = err instanceof BodyTooLargeError ? 413 : 500;
         res.end(JSON.stringify({ error: (err as Error).message }));
       }
       perReqTransport?.close().catch(ignoreRejection);
@@ -437,18 +421,23 @@ async function startHttpTransport(): Promise<void> {
     });
   });
 
-  // Disable Node's request timeouts. SSE responses for long agent runs sit
+  // Disable Node's *request* timeout. SSE responses for long agent runs sit
   // open with no incoming/outgoing bytes for minutes at a time, which Node 18+
-  // would otherwise kill after `requestTimeout` (default 300 s) or the legacy
-  // `socket.timeout`. With the per-request heartbeat injector above and the
-  // 127.0.0.1 default bind, removing the timeout is safe — the heartbeat keeps
-  // genuine activity flowing, and a hung client connection eventually gets
-  // collected by `res.on('close')` cleanup.
+  // would otherwise kill after `requestTimeout` (default 300 s). The
+  // per-request heartbeat injector above keeps genuine activity flowing, and
+  // `res.on('close')` collects hung connections.
   http.requestTimeout = 0;
   http.timeout = 0;
+  // Headers, unlike bodies, are never slow for a legitimate client. Keeping
+  // this bound is what stops a Slowloris-style hold from accumulating sockets —
+  // the body cap alone does not help if the request never reaches the body.
+  http.headersTimeout = 30_000;
 
   http.listen(port, host, () => {
-    console.error(`[Sentinel MCP] HTTP transport listening on http://${host}:${port}/mcp`);
+    const auth = security.token ? 'bearer token required' : 'no auth (loopback only)';
+    console.error(
+      `[Sentinel MCP] HTTP transport listening on http://${host}:${port}/mcp — ${auth}`
+    );
   });
 
   // Graceful shutdown — close HTTP server + browser session on SIGINT/SIGTERM.

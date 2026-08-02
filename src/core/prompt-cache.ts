@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { GenerateOptions, LLMProvider, SchemaInput } from '../utils/llm-provider.js';
+import { writeFilePrivateSync } from '../utils/write-private.js';
 
 // ─── Interface ────────────────────────────────────────────────────────────────
 
@@ -93,11 +94,9 @@ export class FilePromptCache implements IPromptCache {
   private flush(): void {
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      this.filePath,
-      JSON.stringify(Object.fromEntries(this.store), null, 2),
-      'utf-8'
-    );
+    // 0600: cached prompts contain the full instruction text, which is where a
+    // caller's interpolated variables would surface if any ever slipped through.
+    writeFilePrivateSync(this.filePath, JSON.stringify(Object.fromEntries(this.store), null, 2));
   }
 
   get(key: string): unknown {

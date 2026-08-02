@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ActionType } from '../api/act.js';
 import type { PatternFingerprint } from './pattern-signature.js';
+import { writeFilePrivateSync } from '../utils/write-private.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -285,7 +286,8 @@ export class FilePatternCache extends BasePatternCache {
         entries: Array.from(this.store.entries()),
         stats: this.stats,
       };
-      fs.writeFileSync(this.filePath, JSON.stringify(snapshot, null, 2), 'utf-8');
+      // 0600 — see FileLocatorCache.writeAtomic for the reasoning.
+      writeFilePrivateSync(this.filePath, JSON.stringify(snapshot, null, 2));
     } catch {
       // Persistence failures must not abort the action — in-memory store
       // remains authoritative for the duration of the run.

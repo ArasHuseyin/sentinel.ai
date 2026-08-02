@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) 
 
 ---
 
+## [4.2.0] - 2026-08-02
+
+Follow-up to the 4.1.7 review: everything that audit flagged and 4.1.7 did not get to, plus the leftovers 4.1.7 half-fixed.
+
+### Security
+
+- **The MCP HTTP transport had no access control.** It validated neither `Origin` nor `Host`, so any web page the operator visited could POST to `http://127.0.0.1:3333/mcp` and drive the browser — including whatever sessions it was logged into — and a DNS name resolving to loopback defeated the bind address entirely. Requests are now rejected unless the `Host` is loopback (or allow-listed) and any `Origin` present is loopback (or allow-listed). A missing `Origin` is still accepted: real MCP clients (Claude Desktop, Cursor, curl) do not send one, and browsers always do.
+- **Binding the MCP server outside loopback now requires a token.** `SENTINEL_MCP_HOST=0.0.0.0` is the documented move for the Docker and Kubernetes setups, and it published unauthenticated remote control of a real browser. Startup now fails unless `SENTINEL_MCP_TOKEN` is set, which clients send as `Authorization: Bearer <token>`.
+- **The MCP HTTP request body was read without a size limit.** An unterminated body was buffered until the process ran out of memory, no authentication required. Bodies are now capped (4 MiB default, `SENTINEL_MCP_MAX_BODY_BYTES`) and over-sized requests get a `413`. `headersTimeout` is bounded too, so a Slowloris-style hold cannot accumulate sockets — `requestTimeout` stays disabled because SSE responses legitimately sit idle for minutes.
+- **Interpolated `variables` no longer reach any cache.** `act('fill %password%', { variables })` resolved the placeholder and then used the _resolved_ string as the locator- and pattern-cache key, storing the fill value alongside it. With a file-backed cache that wrote the caller's password to disk in plaintext, where it outlived the run. Caches now key on the template and store values redacted back to `%placeholder%`, re-interpolated on read — so a cache hit types the current credential, not a stale one.
+- **Cache and session files are written `0600`.** `storageState()` output in particular is live authentication material: anyone who could read the file could resume the session. Applies to the locator, prompt and pattern caches and to `saveSession()`, with an explicit `chmod` so files created by an earlier version are tightened too.
+
+### Fixed
+
+- **`sentinel --version` reported `3.8.0`.** 4.1.7 moved the MCP server and telemetry onto `src/version.ts` but missed the CLI, which kept its own hardcoded literal three minor releases out of date.
+- **A streamed run kept going after its consumer left.** `runStream()` ran the agent detached from the generator, so an SSE client disconnecting — or any `break` out of `for await` — left a browser driving and an LLM billing against a page nobody was reading. The generator now aborts the run in a `finally` and waits for it to unwind, so `break` followed by `close()` is safe. `AgentRunOptions.signal` cancels from the outside, and `AgentResult.aborted` distinguishes "cancelled" from "tried and failed".
+- **Concurrent MCP requests raced over one browser.** `getOrInit()` checked `if (session)` and then awaited, so two requests arriving before the first `init()` resolved each launched a Chromium and the loser leaked. Initialisation is now latched, and tool execution is serialised — the server gets slow under concurrent load instead of wrong. A failed init clears the latch so one transient launch failure no longer bricks the server.
+- **`Sentinel.parallel()` corrupted its own cost audit.** Every worker got the same `options` object and therefore the same `costAuditPath`, while `TokenTracker.flush()` rewrites the whole file on each LLM call — so workers overwrote each other and the audit under-reported spend by roughly a factor of `concurrency`. Each task now writes `costs.0.json`, `costs.1.json`, … Caches deliberately keep sharing a path: their writes are atomic and a lost entry costs one LLM call.
+- **`withRetry` had no jitter and ignored `Retry-After`.** After a shared 429 every `parallel()` worker slept exactly the same interval and retried in lockstep, reproducing the burst that caused the rate limit. Backoff is now full-jittered, and a server-supplied `Retry-After` (delta-seconds or HTTP-date, from either common SDK shape) takes precedence, capped at 30 s.
+- **`intercept()` rebuilt its URL matcher on every response** via a substitute-escape-substitute round-trip through placeholder strings, which corrupted any pattern containing them. Matching is compiled once, in a single pass, and a pattern with no wildcards is a plain substring test — so regex metacharacters in a literal URL fragment can no longer be read as syntax.
+- **`src/version.ts` could not be loaded under a CommonJS transpile.** `const require = createRequire(…)` collides with the CJS module wrapper's own `require`, which meant no Jest test could import `src/index.ts` at all.
+- **A coordinate resolution path could produce `NaN`.** Introduced while extracting the geometry helpers and caught by the existing suite: an unreadable scroll offset must collapse to the origin, because `NaN` coordinates satisfy every bounds check and then click nowhere.
+
+### Changed
+
+- **`apiKey` is only required when no `provider` is given.** `SentinelOptions` is now a union of "has an `apiKey`" and "has a `provider`", so OpenAI / Claude / Ollama users no longer pass a dummy Gemini key for a field that is never read — and the compiler now rejects a `Sentinel` constructed with neither. `requireApiKey()` gives the same message at runtime for JavaScript callers.
+- **The package no longer ships source maps.** 108 `.js.map` / `.d.ts.map` files, 390 kB and 37 % of the tarball, every one pointing at `src/` paths that are not in the package — nothing could resolve them. Shipping `src/` or inlining it via `inlineSources` would have made the package bigger to fix a problem nobody hit. The tarball is now 140 files / 0.73 MB unpacked, down from 220 / 1.05 MB. `npm run build` also cleans `dist/` first, so a stale artifact can no longer survive into a release.
+- **`act.ts` 1908 → 1479 lines, `state-parser.ts` 1668 → 909.** `performActionOnce` was an 850-line function; the coordinate resolution, mismatch detection, slider, date, text-fill and select paths now live in focused modules and it reads as a dispatcher. `parseWidgetPatterns` (~500 lines) and `enrichAndDetectRegions` moved out of `StateParser`, and the `Sentinel.parallel` worker pool moved to `core/parallel-runner.ts`.
+- **The MCP tool handlers lost seven identical `try`/`catch` blocks** to a shared wrapper, which is also what guarantees no handler can forget the exclusivity lock.
+
+### Added
+
+- **Windows in the CI matrix**, a nightly + manually-dispatchable E2E job (`npm run test:e2e`), a tag-triggered release workflow that refuses to publish when the tag and `package.json` disagree and publishes with npm provenance, and Dependabot for npm and Actions.
+- **771 tests, up from 672** — `runStream` cancellation, MCP rebinding/auth/body limits, the session lock and execution queue, URL glob matching, variable redaction, `Retry-After` parsing and jitter, coordinate resolution, and per-task cost-audit paths.
+
+### Fixed (tests)
+
+- **`run-stream.test.ts` tested a copy of `runStream` pasted into the test file.** The production generator could have been deleted outright and the suite would still have passed. It now drives the real `Sentinel.runStream()`.
+- **`e2e.test.ts` asserted `responses.length >= 0`** — a condition no array can violate, so the interception test reported success whether it worked, returned nothing, or was never wired up.
+- **`locator-cache.test.ts` hardcoded `/tmp/…`**, which resolves to `C:\tmp\…` on Windows and, being a fixed name, made concurrent Jest workers fight over one file. Each test now gets its own `mkdtempSync` directory.
+- `CONTRIBUTING.md` documented Vitest; the project uses Jest.
+
+---
+
 ## [4.1.7] - 2026-08-02
 
 ### Fixed

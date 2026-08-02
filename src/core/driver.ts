@@ -6,6 +6,7 @@ import { isProxyProvider } from '../utils/proxy-provider.js';
 import type { IProxyProvider } from '../utils/proxy-provider.js';
 import { createLogger, type Logger } from '../utils/logger.js';
 import { ignoreRejection } from '../utils/ignore-rejection.js';
+import { writeFilePrivateSync } from '../utils/write-private.js';
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit';
 
@@ -226,7 +227,10 @@ export class SentinelDriver {
     const state = await this.context.storageState();
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(state, null, 2), 'utf-8');
+    // 0600, not the default 0644: storageState() contains session cookies and
+    // localStorage — i.e. live authentication material. Anyone who can read this
+    // file can resume the session.
+    writeFilePrivateSync(filePath, JSON.stringify(state, null, 2));
     this.logger.info(`Session saved to ${filePath}`);
   }
 

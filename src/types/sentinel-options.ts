@@ -59,9 +59,19 @@ export interface ParallelOptions {
   onProgress?: (completed: number, total: number, result: ParallelResult) => void;
 }
 
-export interface SentinelOptions {
-  /** Gemini API key */
-  apiKey: string;
+/**
+ * Every Sentinel option except the credential requirement.
+ *
+ * Exported so consumers can write `Partial<SentinelOptionsBase>` or extend the
+ * shape; the credential rule lives in `SentinelOptions` below.
+ */
+export interface SentinelOptionsBase {
+  /**
+   * Gemini API key. Required only when no `provider` is supplied — see
+   * `SentinelOptions`. Also used for `plannerModel`, which builds a
+   * `GeminiProvider` under the hood.
+   */
+  apiKey?: string;
   /** Run browser in headless mode (default: false) */
   headless?: boolean;
   /** Viewport size (default: 1280x720) */
@@ -282,4 +292,34 @@ export interface SentinelOptions {
    * On cache miss the LLM path runs as normal — no behaviour change.
    */
   patternCache?: false | true | string;
+}
+
+/**
+ * Options for `new Sentinel(...)`.
+ *
+ * Exactly one credential path must be satisfied: either a Gemini `apiKey`, or a
+ * custom `provider` that brings its own credentials. `apiKey` used to be
+ * unconditionally required, which forced OpenAI / Claude / Ollama users to pass
+ * a dummy string for a key that was never read — and made it impossible for the
+ * type system to catch a Sentinel constructed with neither.
+ *
+ * @example
+ * new Sentinel({ apiKey: process.env.GEMINI_API_KEY! })
+ * @example
+ * new Sentinel({ provider: new OllamaProvider({ model: 'llama3.2' }) })
+ */
+export type SentinelOptions = SentinelOptionsBase &
+  ({ apiKey: string } | { provider: LLMProvider });
+
+/**
+ * Runtime counterpart to the `SentinelOptions` union, for callers that reach
+ * Sentinel from plain JavaScript or from a `Partial<...>` the compiler could not
+ * check. Returns the key; throws with the actionable message otherwise.
+ */
+export function requireApiKey(options: SentinelOptionsBase, purpose: string): string {
+  if (options.apiKey) return options.apiKey;
+  throw new Error(
+    `apiKey is required for ${purpose}. Pass { apiKey: '<gemini-key>' }, ` +
+      `or supply a custom provider (e.g. { provider: new OpenAIProvider({ apiKey, model }) }).`
+  );
 }

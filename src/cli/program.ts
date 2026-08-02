@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Sentinel } from '../index.js';
+import { SENTINEL_VERSION } from '../version.js';
 
 // ─── Injected factory type ────────────────────────────────────────────────────
 //
@@ -57,7 +58,7 @@ export function buildProgram(factory: SentinelFactory = defaultFactory): Command
   program
     .name('sentinel')
     .description('AI-powered browser automation — Sentinel CLI')
-    .version('3.8.0')
+    .version(SENTINEL_VERSION)
     .exitOverride(); // throw instead of process.exit so tests can catch errors
 
   // ── run ────────────────────────────────────────────────────────────────────

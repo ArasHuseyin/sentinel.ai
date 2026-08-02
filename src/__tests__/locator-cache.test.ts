@@ -7,6 +7,8 @@ import {
 } from '../core/locator-cache.js';
 import type { CachedLocator } from '../core/locator-cache.js';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 // ─── buildCacheKey ────────────────────────────────────────────────────────────
 
@@ -124,25 +126,24 @@ describe('InMemoryLocatorCache', () => {
 // ─── FileLocatorCache ─────────────────────────────────────────────────────────
 
 describe('FileLocatorCache', () => {
-  const filePath = '/tmp/sentinel-locator-cache-test.json';
+  // A fresh directory per test, under the platform temp dir.
+  //
+  // This used to be the literal '/tmp/sentinel-locator-cache-test.json', which
+  // resolves to C:\tmp\... on Windows — a directory outside any temp cleanup —
+  // and, being a fixed name, made two concurrent Jest workers fight over the
+  // same file. mkdtempSync gives each test its own namespace on every platform.
+  let dir: string;
+  let filePath: string;
   const entry: CachedLocator = { action: 'click', role: 'button', name: 'Submit' };
 
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sentinel-locator-cache-'));
+    filePath = path.join(dir, 'cache.json');
+  });
+
   afterEach(() => {
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      /* already gone */
-    }
-    try {
-      fs.unlinkSync(`${filePath}.${process.pid}.tmp`);
-    } catch {
-      /* ok */
-    }
-    try {
-      fs.unlinkSync(`${filePath}.${process.pid}.sync.tmp`);
-    } catch {
-      /* ok */
-    }
+    // Removing the directory takes the cache file and any .tmp siblings with it.
+    fs.rmSync(dir, { recursive: true, force: true });
     jest.restoreAllMocks();
   });
 
@@ -266,14 +267,11 @@ describe('createLocatorCache', () => {
   });
 
   it('returns FileLocatorCache when option is a string', () => {
-    const cache = createLocatorCache('/tmp/sentinel-test-factory.json');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sentinel-locator-factory-'));
+    const cache = createLocatorCache(path.join(dir, 'cache.json'));
     expect(cache).toBeInstanceOf(FileLocatorCache);
     (cache as FileLocatorCache).close();
-    try {
-      fs.unlinkSync('/tmp/sentinel-test-factory.json');
-    } catch {
-      /* ok */
-    }
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

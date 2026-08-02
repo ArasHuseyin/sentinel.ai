@@ -25,7 +25,7 @@ src/
   recorder/     # Record & Replay
   reliability/  # Verifier
   types/        # Error classes
-  __tests__/    # Vitest test suite
+  __tests__/    # Jest test suite
 examples/       # Runnable example scripts
 ```
 
@@ -54,11 +54,21 @@ examples/       # Runnable example scripts
 
 ```bash
 npm run build        # compile TypeScript
-npm test             # run full test suite (Vitest)
+npm test             # run full test suite (Jest)
 npm run test:watch   # watch mode
+npm run typecheck    # tsc --noEmit over src/ and scripts/
+npm run lint         # ESLint (type-aware)
+npm run format:check # Prettier
+npm run verify:package # pack, install into a temp project, import as a consumer
 ```
 
-Tests use [Vitest](https://vitest.dev/). Browser-level tests require a real Chromium install (`npx playwright install chromium`).
+Tests use [Jest](https://jestjs.io/) in ESM mode (`node --experimental-vm-modules`).
+Browser-level tests require a real Chromium install (`npx playwright install chromium`).
+
+`npm run verify:package` is the gate that catches broken packaging (a missing
+`files` entry, an unresolvable subpath export). It runs in CI and on
+`prepublishOnly`; run it locally before proposing anything that touches
+`package.json`, `tsconfig.build.json`, or the module layout.
 
 ## Code style
 

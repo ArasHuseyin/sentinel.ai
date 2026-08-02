@@ -40,6 +40,9 @@ import {
 } from './utils/telemetry.js';
 import { NotInitializedError, CaptchaDetectedError } from './types/errors.js';
 import { ignoreRejection } from './utils/ignore-rejection.js';
+import { compileUrlPattern } from './utils/url-glob.js';
+import { runParallelTasks } from './core/parallel-runner.js';
+import { requireApiKey } from './types/sentinel-options.js';
 import type {
   SentinelOptions,
   ExtendedPage,
@@ -111,8 +114,11 @@ export class Sentinel extends EventEmitter {
       ...(options.userDataDir ? { userDataDir: options.userDataDir } : {}),
     };
     this.driver = new SentinelDriver(driverOptions);
-    // Use custom provider if supplied, otherwise fall back to GeminiService
-    this.gemini = options.provider ?? new GeminiService(options.apiKey);
+    // Use custom provider if supplied, otherwise fall back to GeminiService.
+    // Only the Gemini path needs apiKey — a custom provider carries its own
+    // credentials, which is why apiKey is not unconditionally required.
+    this.gemini =
+      options.provider ?? new GeminiService(requireApiKey(options, 'the Gemini provider'));
     this.verbose = options.verbose ?? 1;
     this.logger = createLogger(options.logFormat ?? false, this.verbose, options.logger).child(
       'Sentinel'
@@ -151,7 +157,12 @@ export class Sentinel extends EventEmitter {
     if (options.plannerProvider) {
       this.plannerLLM = options.plannerProvider;
     } else if (options.plannerModel) {
-      this.plannerLLM = new GeminiProvider({ apiKey: options.apiKey, model: options.plannerModel });
+      // plannerModel is Gemini shorthand, so it needs the Gemini key even when
+      // the main provider is something else. plannerProvider is the escape hatch.
+      this.plannerLLM = new GeminiProvider({
+        apiKey: requireApiKey(options, 'plannerModel'),
+        model: options.plannerModel,
+      });
     }
 
     // Wire token usage tracking
@@ -324,6 +335,13 @@ export class Sentinel extends EventEmitter {
    * @param tasks      Array of `{ url, goal, maxSteps? }` descriptors.
    * @param options    Shared `SentinelOptions` for every session plus `concurrency` and `onProgress`.
    *
+   * `costAuditPath` is split per task — `costs.json` becomes `costs.0.json`,
+   * `costs.1.json`, … — because every session runs its own `TokenTracker` and
+   * each one rewrites the whole file on every LLM call. Sharing one path meant
+   * the workers overwrote each other and the audit under-reported spend by
+   * roughly a factor of `concurrency`. Aggregate the parts by concatenating
+   * their `entries` arrays.
+   *
    * @example
    * const results = await Sentinel.parallel(
    *   [
@@ -339,14 +357,9 @@ export class Sentinel extends EventEmitter {
     /** @internal Injectable factory — used by tests to avoid spawning real browsers. */
     _factory?: (opts: SentinelOptions) => Promise<Sentinel>
   ): Promise<ParallelResult[]> {
-    if (tasks.length === 0) return [];
-
-    // ── Monetisation hook ──────────────────────────────────────────────────────
-    // Clamp concurrency to the tier limit here. Example:
-    //   const tierLimit = getTierLimit(options.apiKey);  // Free=1, Pro=5, Enterprise=∞
-    //   const concurrency = Math.min(options.concurrency ?? 3, tierLimit);
-    const concurrency = Math.max(1, options.concurrency ?? 3);
-
+    // The worker pool lives in core/parallel-runner.ts and knows nothing about
+    // Sentinel beyond goto/run/close — this method's only job is to supply the
+    // default factory.
     const factory =
       _factory ??
       (async (opts: SentinelOptions) => {
@@ -354,76 +367,7 @@ export class Sentinel extends EventEmitter {
         await s.init();
         return s;
       });
-
-    const results: ParallelResult[] = new Array(tasks.length);
-    let completed = 0;
-
-    // Shared mutable queue — each worker pops tasks until empty
-    const queue = tasks.map((task, index) => ({ task, index }));
-
-    const runOne = async (task: ParallelTask, index: number): Promise<void> => {
-      let sentinel: Sentinel | null = null;
-      try {
-        sentinel = await factory(options);
-        await sentinel.goto(task.url);
-        const result = await sentinel.run(task.goal, { maxSteps: task.maxSteps ?? 15 });
-        results[index] = {
-          index,
-          url: task.url,
-          goal: task.goal,
-          goalAchieved: result.goalAchieved,
-          success: result.success,
-          totalSteps: result.totalSteps,
-          message: result.message,
-          ...(result.data !== undefined ? { data: result.data } : {}),
-        };
-      } catch (err: any) {
-        const msg = String(err?.message ?? err);
-        results[index] = {
-          index,
-          url: task.url,
-          goal: task.goal,
-          goalAchieved: false,
-          success: false,
-          totalSteps: 0,
-          message: msg,
-          error: msg,
-        };
-      } finally {
-        if (sentinel) {
-          try {
-            await sentinel.close();
-          } catch (closeErr: any) {
-            // Don't let a close failure propagate — we still want the other tasks to finish
-            // and the caller to see the task result. But surface it so zombie browsers
-            // don't stay silently undetected.
-            // `parallel` is static, so there is no instance logger to reach —
-            // build one from the same options the tasks run under.
-            createLogger(options.logFormat ?? false, options.verbose ?? 1, options.logger)
-              .child('Sentinel.parallel')
-              .warn(
-                `close() failed for task ${index} (${task.url}): ${closeErr?.message ?? closeErr}`
-              );
-          }
-        }
-        completed++;
-        options.onProgress?.(completed, tasks.length, results[index]!);
-      }
-    };
-
-    // Worker: drains the queue sequentially
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        const item = queue.shift();
-        if (!item) break;
-        await runOne(item.task, item.index);
-      }
-    };
-
-    // Spawn min(concurrency, tasks.length) workers in parallel
-    await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
-
-    return results;
+    return runParallelTasks(tasks, options, factory);
   }
 
   // ─── Recording ─────────────────────────────────────────────────────────────
@@ -713,18 +657,12 @@ export class Sentinel extends EventEmitter {
     if (!this.actionEngine) throw new Error('Sentinel not initialized. Call init() first.');
     const page = this.driver.getPage();
     const captured: T[] = [];
+    // Compiled once, not once per response — see compileUrlPattern.
+    const matches = compileUrlPattern(urlPattern);
 
     const handler = async (response: any) => {
       try {
-        const url = response.url();
-        // Match URL pattern (convert glob to simple matching)
-        const pattern = urlPattern
-          .replace(/\*\*/g, '___GLOBSTAR___')
-          .replace(/\*/g, '___STAR___')
-          .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-          .replace(/___GLOBSTAR___/g, '.*')
-          .replace(/___STAR___/g, '[^/]*');
-        if (!new RegExp(pattern).test(url)) return;
+        if (!matches(response.url())) return;
 
         const contentType = response.headers()['content-type'] ?? '';
         if (contentType.includes('json')) {
@@ -968,6 +906,17 @@ export class Sentinel extends EventEmitter {
    *   });
    *   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
    * }
+   *
+   * Cancellation is automatic: stop iterating — `break`, an exception, or the
+   * consumer cancelling the `ReadableStream` when an SSE client disconnects —
+   * and the background agent is aborted at its next step boundary. Pass
+   * `options.signal` to additionally cancel from the outside (e.g. from
+   * `request.signal`).
+   *
+   * @example
+   * for await (const event of sentinel.runStream(goal)) {
+   *   if (isEnough(event)) break;   // agent stops; no further tokens are spent
+   * }
    */
   async *runStream(
     goal: string,
@@ -996,9 +945,23 @@ export class Sentinel extends EventEmitter {
         };
       });
 
+    // The agent runs detached from the generator, so nothing stops it when the
+    // consumer walks away — an SSE client closing its connection used to leave a
+    // browser driving and an LLM billing until maxSteps ran out. This controller
+    // is aborted from the `finally` below, which the runtime invokes on `break`,
+    // on `throw`, and on `ReadableStream.cancel()`.
+    const controller = new AbortController();
+    const external = options?.signal;
+    const forwardAbort = () => controller.abort();
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener('abort', forwardAbort, { once: true });
+    }
+
     // Run the agent in the background, feeding steps into the queue
     const runPromise = this.run(goal, {
       ...options,
+      signal: controller.signal,
       onStep: (step: AgentStepEvent) => {
         enqueue(step);
         options?.onStep?.(step);
@@ -1013,19 +976,35 @@ export class Sentinel extends EventEmitter {
         enqueue(null);
       });
 
-    // Drain the queue as items arrive
-    while (true) {
-      await waitForItem();
-      const item = queue.shift()!;
-      if (item === null) break; // done
-      if (item instanceof Error) {
-        await runPromise;
-        throw item;
+    try {
+      // Drain the queue as items arrive
+      while (true) {
+        await waitForItem();
+        const item = queue.shift()!;
+        if (item === null) break; // done
+        if (item instanceof Error) {
+          await runPromise;
+          throw item;
+        }
+        yield item;
       }
-      yield item;
-    }
 
-    await runPromise;
+      await runPromise;
+    } finally {
+      // Idempotent: on the normal path the run has already settled and this is a
+      // no-op. On early exit it is what actually stops the agent.
+      controller.abort();
+      external?.removeEventListener('abort', forwardAbort);
+      // Wait for the detached run to unwind before returning, so the generator
+      // never resolves while a step is still touching the page — that is what
+      // makes `break` followed by `sentinel.close()` safe. The wait is bounded
+      // by one step, not by the rest of the run, because the abort above stops
+      // the loop at the next step boundary.
+      //
+      // runPromise never rejects (it converts failures into queue items); the
+      // catch keeps that an internal detail rather than a contract.
+      await runPromise.catch(ignoreRejection);
+    }
   }
 
   // ─── Internal helpers ─────────────────────────────────────────────────────

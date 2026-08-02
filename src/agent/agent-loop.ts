@@ -30,6 +30,17 @@ export interface AgentRunOptions {
    * messages. When omitted, only `maxSteps` bounds the run.
    */
   timeoutMs?: number;
+  /**
+   * Cancels the run. Checked at each step boundary — the same granularity as
+   * `timeoutMs` — so the loop stops before starting further LLM calls or browser
+   * actions and returns whatever progress it made.
+   *
+   * `Sentinel.runStream()` wires this automatically: when the consumer stops
+   * iterating (an SSE client disconnecting, a `break` out of `for await`), the
+   * generator aborts the background agent instead of leaving it burning tokens
+   * against a page nobody is watching.
+   */
+  signal?: AbortSignal;
 }
 
 export interface AgentStepEvent {
@@ -49,6 +60,11 @@ export interface AgentResult {
   totalSteps: number;
   message: string;
   history: AgentStepEvent[];
+  /**
+   * Set when the run stopped because its `AbortSignal` fired. Distinguishes
+   * "cancelled" from "tried and failed" — `success` is false either way.
+   */
+  aborted?: boolean;
   data?: any;
   /**
    * Stable CSS selectors for each element the agent interacted with,
@@ -210,6 +226,7 @@ export class AgentLoop {
     const stepEvents: AgentStepEvent[] = [];
     const collectedSelectors: Record<string, string> = {};
     let timedOut = false;
+    let aborted = false;
     this.memory.clear();
     this.recoveryAttempts.clear();
 
@@ -232,6 +249,13 @@ export class AgentLoop {
           { elapsedMs: Date.now() - startTime, timeoutMs, stepNumber }
         );
         timedOut = true;
+        break;
+      }
+      // Cancellation guard: same placement as the timeout guard, so an aborted
+      // run never starts a step it cannot finish.
+      if (options.signal?.aborted) {
+        this.logger.warn(`⏹️  Run aborted after ${stepNumber} step(s).`, { stepNumber });
+        aborted = true;
         break;
       }
       stepNumber++;
@@ -668,8 +692,11 @@ export class AgentLoop {
     // LLM call entirely on timeout: reflect needs a real signal to be meaningful,
     // and logging a late "Goal achieved" after an external wrapper has already
     // reported FAIL is worse than a clean timeout message.
+    // Abort skips reflection for the same reason timeout does — and more
+    // bluntly: the caller has gone away, so spending an LLM call to describe a
+    // run nobody will read is exactly the waste the signal exists to prevent.
     let goalAchieved = false;
-    if (!timedOut) {
+    if (!timedOut && !aborted) {
       this.stateParser.invalidateCache();
       const finalState = await this.stateParser.parse();
       try {
@@ -679,15 +706,18 @@ export class AgentLoop {
       }
     }
 
-    const message = timedOut
-      ? `Agent stopped after ${stepNumber} step(s) due to timeout.`
-      : goalAchieved
-        ? `Goal achieved in ${stepNumber} step(s).`
-        : `Agent stopped after ${stepNumber} step(s) without fully achieving the goal.`;
+    const message = aborted
+      ? `Agent aborted after ${stepNumber} step(s).`
+      : timedOut
+        ? `Agent stopped after ${stepNumber} step(s) due to timeout.`
+        : goalAchieved
+          ? `Goal achieved in ${stepNumber} step(s).`
+          : `Agent stopped after ${stepNumber} step(s) without fully achieving the goal.`;
 
     this.logger.info(`${goalAchieved ? '✅' : '⚠️ '} ${message}`, {
       goalAchieved,
       ...(timedOut ? { timedOut: true } : {}),
+      ...(aborted ? { aborted: true } : {}),
     });
 
     return {
@@ -696,6 +726,7 @@ export class AgentLoop {
       totalSteps: stepNumber,
       message,
       history: stepEvents,
+      ...(aborted ? { aborted: true } : {}),
       ...(extractedData !== undefined ? { data: extractedData } : {}),
       ...(Object.keys(collectedSelectors).length > 0 ? { selectors: collectedSelectors } : {}),
     };

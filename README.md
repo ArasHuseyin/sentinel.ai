@@ -38,7 +38,7 @@ Using the Playwright test fixture (`@isoldex/sentinel/test`) additionally requir
 ```typescript
 import { Sentinel } from '@isoldex/sentinel';
 
-const sentinel = new Sentinel({ apiKey: process.env.GEMINI_API_KEY });
+const sentinel = new Sentinel({ apiKey: process.env.GEMINI_API_KEY! });
 await sentinel.init();
 await sentinel.goto('https://github.com/trending');
 
@@ -70,6 +70,50 @@ Full benchmark methodology and raw data: [isoldex.ai/benchmark](https://isoldex.
 - **MFA/TOTP** — auto-generate 2FA codes during login flows
 - **CLI** — `npx sentinel run "goal" --url https://...`
 - **MCP Server** — use Sentinel from Claude Desktop, Cursor, or any MCP client (stdio or standalone HTTP transport)
+
+## Credentials
+
+Either a Gemini `apiKey` or a custom `provider` — the type system enforces one of them, and providers carry their own credentials:
+
+```typescript
+new Sentinel({ apiKey: process.env.GEMINI_API_KEY! });
+new Sentinel({
+  provider: new OpenAIProvider({ apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' }),
+});
+new Sentinel({ provider: new OllamaProvider({ model: 'llama3.2' }) }); // no key at all
+```
+
+Use `variables` for anything secret. The placeholder is resolved for the browser but never for a cache, so a file-backed cache stores `%password%` rather than the value:
+
+```typescript
+await sentinel.act('Fill %password% into the password field', {
+  variables: { password: process.env.APP_PASSWORD! },
+});
+```
+
+## Cancelling a run
+
+`runStream()` stops the agent as soon as you stop consuming it — a `break`, an exception, or an SSE client disconnecting. Pass `signal` to cancel from elsewhere (e.g. `request.signal`):
+
+```typescript
+for await (const event of sentinel.runStream(goal, { signal })) {
+  if (isEnough(event)) break; // agent halts; no further tokens are spent
+}
+```
+
+## MCP server over HTTP
+
+Defaults to `127.0.0.1:3333` with no authentication, which is safe only because it is loopback-only: requests are rejected unless `Host` and any `Origin` are loopback. Exposing it further requires a token, and the server refuses to start without one.
+
+| Variable                                  | Default              | Purpose                                              |
+| ----------------------------------------- | -------------------- | ---------------------------------------------------- |
+| `SENTINEL_MCP_HTTP`                       | –                    | Set to `1` for HTTP instead of stdio                 |
+| `SENTINEL_MCP_HOST` / `SENTINEL_MCP_PORT` | `127.0.0.1` / `3333` | Bind address                                         |
+| `SENTINEL_MCP_TOKEN`                      | –                    | Bearer token. **Required** for a non-loopback host   |
+| `SENTINEL_MCP_ALLOWED_HOSTS` / `_ORIGINS` | –                    | Comma-separated additions to the loopback allow-list |
+| `SENTINEL_MCP_MAX_BODY_BYTES`             | `4194304`            | Request body cap                                     |
+
+All requests share one browser session, so tool calls are serialised. HTTP mode decouples the client from the process; it is not a way to serve concurrent users.
 
 ## Documentation
 

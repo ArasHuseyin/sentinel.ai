@@ -31,10 +31,10 @@ const config: Config = {
   // areas today are state-parser.ts, driver.ts and mcp/server.ts.
   coverageThreshold: {
     global: {
-      statements: 54,
-      branches: 45,
-      functions: 60,
-      lines: 57,
+      statements: 57,
+      branches: 48,
+      functions: 64,
+      lines: 59,
     },
   },
   // Deliberately NOT setting forceExit. It was masking a real defect: every

@@ -1,6 +1,6 @@
 {
   "name": "@isoldex/sentinel",
-  "version": "4.1.7",
+  "version": "4.2.0",
   "description": "AI-powered browser automation with Gemini – fast, cheap Stagehand alternative",
   "type": "module",
   "main": "dist/index.js",
@@ -28,6 +28,8 @@
     "LICENSE"
   ],
   "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild": "npm run clean",
     "build": "tsc -p tsconfig.build.json",
     "build:watch": "tsc -p tsconfig.build.json --watch",
     "typecheck": "tsc --noEmit",
@@ -40,6 +42,7 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns=/node_modules/ --testMatch=\"**/src/__tests__/e2e/**/*.test.ts\" --runInBand",
     "mcp:stdio": "node dist/mcp/index.js",
     "mcp:http": "cross-env SENTINEL_MCP_HTTP=1 node dist/mcp/index.js",
     "mcp:dev": "cross-env SENTINEL_MCP_HTTP=1 node --watch dist/mcp/index.js"

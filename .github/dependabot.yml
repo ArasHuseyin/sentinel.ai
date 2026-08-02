@@ -1,0 +1,33 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # One PR per group instead of one per package: the dev toolchain moves
+    # constantly and individually-versioned PRs drown the real ones.
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: ['minor', 'patch']
+      production-minor-patch:
+        dependency-type: production
+        update-types: ['minor', 'patch']
+    ignore:
+      # Playwright is a peer dependency — the supported range is a deliberate
+      # compatibility decision, not something to bump automatically.
+      - dependency-name: 'playwright'
+      - dependency-name: '@playwright/test'
+    commit-message:
+      prefix: 'chore(deps)'
+      prefix-development: 'chore(deps-dev)'
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: 'chore(ci)'
