@@ -36,6 +36,25 @@ const REQUIRED_ROOT_EXPORTS = [
 /** Subpath exports declared in package.json that must also resolve. */
 const REQUIRED_SUBPATHS = [{ specifier: '@isoldex/sentinel/test', exports: ['test'] }];
 
+/**
+ * Environment for the child npm invocations.
+ *
+ * npm exports its own config into the environment as `npm_config_*`, and child
+ * npm processes read it back. Under `npm publish --dry-run` that means
+ * `npm_config_dry_run=true` reaches our inner `npm pack`, which then prints the
+ * tarball JSON *without writing the file* — and the subsequent install failed
+ * with an opaque ENOENT. The verification must run for real regardless of how
+ * the outer npm was invoked, so that flag is stripped.
+ */
+function childEnv() {
+  const env = { ...process.env };
+  delete env.npm_config_dry_run;
+  // The consumer project needs the playwright peer dep to resolve the import
+  // graph, but the smoke test never launches a browser — skip the download.
+  env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
+  return env;
+}
+
 function run(cmd, args, cwd) {
   // Node refuses to execFile a .cmd shim without a shell (CVE-2024-27980), so
   // npm on Windows needs shell: true. Every argument here is a literal or a
@@ -46,9 +65,7 @@ function run(cmd, args, cwd) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     shell,
-    // The consumer project needs the playwright peer dep to resolve the import
-    // graph, but the smoke test never launches a browser — skip the download.
-    env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' },
+    env: childEnv(),
   });
 }
 
@@ -61,6 +78,15 @@ try {
   console.log('· packing tarball…');
   const packed = JSON.parse(run(npm, ['pack', '--json'], repoRoot));
   const tarball = join(repoRoot, packed[0].filename);
+
+  // `npm pack` reports a filename even when it did not write one. Fail here
+  // with a readable message instead of letting the install trip over ENOENT.
+  if (!existsSync(tarball)) {
+    throw new Error(
+      `npm pack reported ${packed[0].filename} but wrote no file. ` +
+        `Something put npm into dry-run mode for the child process.`
+    );
+  }
 
   workdir = mkdtempSync(join(tmpdir(), 'sentinel-verify-'));
   console.log(`· installing into ${workdir}…`);
