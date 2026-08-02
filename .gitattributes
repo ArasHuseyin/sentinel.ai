@@ -1,0 +1,19 @@
+# Line endings are normalised to LF in the repository AND in the working tree.
+#
+# Without this, `core.autocrlf=true` (the Windows default) converts files to
+# CRLF on checkout, while `.prettierrc.json` sets `endOfLine: "lf"` — so
+# `prettier --check` fails on every file on any Windows machine, including the
+# Windows CI runner. `eol=lf` overrides autocrlf for this repository, which is
+# what makes the two settings agree.
+#
+# Nothing here is a shell script or a Windows batch file that would need CRLF.
+* text=auto eol=lf
+
+# Binary assets: never touch their bytes.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
